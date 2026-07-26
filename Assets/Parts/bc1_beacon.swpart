@@ -1,0 +1,175 @@
+{
+  "id": 105,
+  "type": "Structural",
+  "name": "BC-1 Nav Beacon",
+  "dryMassKg": 3200.0,
+  "costCredits": 0.0,
+  "volumeM3": 6.0,
+  "crashToleranceMps": 6,
+  "breakingForceN": 120000.0,
+  "dragCoefficientArea": 1.2,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0.0,
+  "capacities": [],
+  "building": {
+    "category": "beacon",
+    "footprintM": [
+      6,
+      6
+    ],
+    "powerKw": -4.0,
+    "inventoryVolumeM3": 0.0,
+    "maxSlopeTangent": 0.35,
+    "minOreDensity": 0.0
+  },
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [
+        0,
+        0.5,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        4.4,
+        1.0,
+        4.4
+      ],
+      "color": [
+        0.34,
+        0.36,
+        0.4
+      ],
+      "emissive": 0.0,
+      "specular": 0.25,
+      "gloss": 0.3,
+      "segments": 20,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [
+        0,
+        12.0,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.8,
+        22.0,
+        0.8
+      ],
+      "color": [
+        0.78,
+        0.8,
+        0.82
+      ],
+      "emissive": 0.0,
+      "specular": 0.35,
+      "gloss": 0.4,
+      "segments": 12,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [
+        0,
+        7.0,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        2.6,
+        0.35,
+        2.6
+      ],
+      "color": [
+        1.0,
+        0.45,
+        0.15
+      ],
+      "emissive": 0.9,
+      "specular": 0.2,
+      "gloss": 0.2,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [
+        0,
+        16.0,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        2.6,
+        0.35,
+        2.6
+      ],
+      "color": [
+        1.0,
+        0.45,
+        0.15
+      ],
+      "emissive": 0.9,
+      "specular": 0.2,
+      "gloss": 0.2,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "sphere",
+      "position": [
+        0,
+        24.2,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        2.6,
+        2.6,
+        2.6
+      ],
+      "color": [
+        1.0,
+        0.72,
+        0.25
+      ],
+      "emissive": 1.0,
+      "specular": 0.1,
+      "gloss": 0.1,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": []
+}

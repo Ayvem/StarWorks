@@ -1,0 +1,158 @@
+{
+  "id": 7,
+  "type": "Decoupler",
+  "name": "DC-2 Decoupler",
+  "dryMassKg": 140,
+  "costCredits": 600,
+  "volumeM3": 0.5,
+  "crashToleranceMps": 9,
+  "breakingForceN": 250000.0,
+  "dragCoefficientArea": 0.4,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.1,
+        0.25,
+        0
+      ],
+      "color": [
+        0.72,
+        0.6,
+        0.24
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "tube",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.115,
+        0.1,
+        1.04
+      ],
+      "color": [
+        0.12,
+        0.12,
+        0.12
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [
+        0,
+        1.05,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.12,
+        0.08,
+        0.14
+      ],
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [
+        0,
+        -1.05,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.12,
+        0.08,
+        0.14
+      ],
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "top",
+      "position": [
+        0,
+        0,
+        -0.25
+      ],
+      "direction": [
+        0,
+        0,
+        -1
+      ],
+      "type": "stack",
+      "size": 1.1
+    },
+    {
+      "name": "bottom",
+      "position": [
+        0,
+        0,
+        0.25
+      ],
+      "direction": [
+        0,
+        0,
+        1
+      ],
+      "type": "stack",
+      "size": 1.1
+    }
+  ]
+}

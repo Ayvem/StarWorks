@@ -1,0 +1,567 @@
+#include "Physics/PhysicsSystems.hpp"
+
+#include "Core/Log.hpp"
+#include "ECS/World.hpp"
+#include "Simulation/Simulation.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+namespace sw::phys
+{
+    // ------------------------------------------------------------------------
+    // GravityIntegrationSystem
+    // ------------------------------------------------------------------------
+    void GravityIntegrationSystem::update(ecs::World& world, f32 deltaSeconds)
+    {
+        // Collect gravity sources (a handful of celestial bodies).
+        m_sources.clear();
+        world.forEach<TransformComponent, GravitySourceComponent>(
+            [this](ecs::Entity, TransformComponent& transform,
+                   GravitySourceComponent& source) {
+                m_sources.push_back({transform.position, source.mu});
+            });
+
+        const f64 dt = static_cast<f64>(deltaSeconds);
+
+        // Semi-implicit (symplectic) Euler: v then p — stable for orbits.
+        world.forEach<TransformComponent, DynamicBodyComponent>(
+            [this, dt](ecs::Entity, TransformComponent& transform,
+                       DynamicBodyComponent& body) {
+                WorldVec3 acceleration{0.0};
+                for (const Source& source : m_sources)
+                {
+                    const WorldVec3 toSource = source.position - transform.position;
+                    const f64 distanceSq = glm::dot(toSource, toSource);
+                    if (distanceSq > 1.0)
+                    {
+                        const f64 distance = std::sqrt(distanceSq);
+                        acceleration += toSource * (source.mu / (distanceSq * distance));
+                    }
+                }
+                body.velocity += acceleration * dt;
+                transform.position += body.velocity * dt;
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // SurfaceAnchorSystem
+    // ------------------------------------------------------------------------
+    void SurfaceAnchorSystem::update(ecs::World& world, f32 /*deltaSeconds*/)
+    {
+        world.forEach<TransformComponent, PreviousTransformComponent,
+                      SurfaceAnchorComponent>(
+            [&world](ecs::Entity, TransformComponent& transform,
+                     PreviousTransformComponent& previous,
+                     SurfaceAnchorComponent& anchor) {
+                const auto* body =
+                    world.tryGetComponent<TransformComponent>(anchor.body);
+                if (body == nullptr)
+                {
+                    return; // body destroyed: anchor idles (structure floats)
+                }
+
+                // Rotate the body-fixed local position into world space.
+                //
+                // The rotation MUST come from the body's f64 spin state, not
+                // from its f32 quaternion: |localPosition| is a planet radius
+                // (6.371e6 m), and f32's seven digits quantise that lever arm
+                // to about 1.2 m. Worse, the quantisation MOVES as the planet
+                // turns — up to 0.77 m between consecutive frames — so every
+                // building, pad and mast anchored to the ground shimmered
+                // while the camera, an honest f64 world position, held still.
+                //
+                // Orientation keeps the f32 path: a 1e-7 rad error across a
+                // 20 m structure is a nanometre.
+                const auto* source =
+                    world.tryGetComponent<GravitySourceComponent>(anchor.body);
+                const glm::dquat bodyRotation =
+                    (source != nullptr) ? spinRotation(*source)
+                                        : glm::dquat(body->rotation);
+                transform.position = body->position + bodyRotation * anchor.localPosition;
+                transform.rotation =
+                    Quat(bodyRotation * glm::dquat(anchor.localRotation));
+
+                // Interpolate IN LOCKSTEP with the body: previous is derived
+                // from the body's own previous pose. Mirroring current here
+                // would make anchored structures jitter against terrain that
+                // glides between physics ticks (the planet moves ~km/frame
+                // on its orbit).
+                if (const auto* bodyPrevious =
+                        world.tryGetComponent<PreviousTransformComponent>(anchor.body))
+                {
+                    const glm::dquat previousRotation =
+                        (source != nullptr)
+                            ? spinRotation(*source, source->spinAnglePrevious)
+                            : glm::dquat(bodyPrevious->rotation);
+                    previous.position =
+                        bodyPrevious->position + previousRotation * anchor.localPosition;
+                    previous.rotation =
+                        Quat(previousRotation * glm::dquat(anchor.localRotation));
+                }
+                else
+                {
+                    previous.position = transform.position;
+                    previous.rotation = transform.rotation;
+                }
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // SurfaceInteractionSystem
+    // ------------------------------------------------------------------------
+    void SurfaceInteractionSystem::update(ecs::World& world, f32 deltaSeconds)
+    {
+        const f64 dt = static_cast<f64>(deltaSeconds);
+
+        m_surfaces.clear();
+        world.forEach<TransformComponent, GravitySourceComponent>(
+            [this, &world](ecs::Entity entity, TransformComponent& transform,
+                           GravitySourceComponent& source) {
+                if (source.bodyRadius <= 0.0)
+                {
+                    return;
+                }
+                Surface surface{};
+                surface.center = transform.position;
+                surface.velocity = source.worldVelocity;
+                surface.angularVelocity = source.angularVelocity;
+                surface.rotation = transform.rotation;
+                // The terrain is sampled in the body's rotating frame, and a
+                // f32 quaternion slides that sample point ~0.6 m across the
+                // ground as the planet turns — the resting height then
+                // wobbles with the local slope. Same f64 spin, same reason.
+                surface.rotation64 = spinRotation(source);
+                surface.radius = source.bodyRadius;
+                if (const auto* atmosphere =
+                        world.tryGetComponent<AtmosphereComponent>(entity))
+                {
+                    surface.hasAtmosphere = true;
+                    surface.atmosphere = *atmosphere;
+                }
+                if (const auto* terrain =
+                        world.tryGetComponent<planet::TerrainComponent>(entity))
+                {
+                    surface.hasTerrain = true;
+                    surface.terrain = *terrain;
+                }
+                m_surfaces.push_back(surface);
+            });
+
+        world.forEach<TransformComponent, DynamicBodyComponent>(
+            [this, dt, &world](ecs::Entity entity, TransformComponent& transform,
+                               DynamicBodyComponent& body) {
+                body.isGrounded = 0;
+
+                // How far below its ORIGIN this body reaches, at its current
+                // attitude. Without a hull the answer is zero and the origin
+                // rests on the ground — which is what buried everything up
+                // to its waist before GroundHullComponent existed.
+                const auto* hull = world.tryGetComponent<GroundHullComponent>(entity);
+
+                for (const Surface& surface : m_surfaces)
+                {
+                    const WorldVec3 radial = transform.position - surface.center;
+                    const f64 distance = glm::length(radial);
+                    if (distance <= 1.0)
+                    {
+                        continue; // degenerate (the body itself)
+                    }
+                    const WorldVec3 up = radial / distance;
+
+                    // The ground under this point: sea level + procedural
+                    // terrain elevation, sampled in the body's ROTATING
+                    // frame (mountains spin with their planet). Physics and
+                    // rendering share the exact same heightfield function.
+                    f64 groundRadius = surface.radius;
+                    if (surface.hasTerrain)
+                    {
+                        const Vec3 directionBodyFrame =
+                            Vec3(glm::inverse(surface.rotation64) * up);
+                        groundRadius += planet::terrainElevation(
+                            surface.terrain, glm::normalize(directionBodyFrame));
+                    }
+                    const f64 clearance =
+                        (hull != nullptr)
+                            ? groundClearance(*hull, transform.rotation, Vec3(up))
+                            : 0.0;
+                    // The radius the body's ORIGIN sits at when it is
+                    // resting: the ground, plus its own hull.
+                    const f64 restRadius = groundRadius + clearance;
+                    const f64 altitude = distance - restRadius;
+
+                    // Everything below is measured in the LOCAL SURFACE
+                    // frame: translation of the body PLUS its spin at this
+                    // point. The atmosphere co-rotates too (that is what
+                    // makes a landed ship stay put on a spinning planet —
+                    // and what will make eastward launches cheaper).
+                    const WorldVec3 surfaceVelocity =
+                        surface.velocity + glm::cross(surface.angularVelocity, radial);
+                    WorldVec3 relativeVelocity = body.velocity - surfaceVelocity;
+
+                    // ---- atmosphere: quadratic drag, exponential density --
+                    // (pressure altitude is measured from SEA level).
+                    const f64 seaAltitude = distance - surface.radius;
+                    if (surface.hasAtmosphere &&
+                        seaAltitude < surface.atmosphere.topAltitude)
+                    {
+                        const f64 density =
+                            surface.atmosphere.surfaceDensity *
+                            std::exp(-std::max(seaAltitude, 0.0) /
+                                     surface.atmosphere.scaleHeight);
+                        const f64 speed = glm::length(relativeVelocity);
+                        if (speed > 1.0e-6)
+                        {
+                            const f64 deceleration = 0.5 * density * speed * speed *
+                                                     body.ballisticFactor;
+                            // Never reverse the velocity within one step.
+                            const f64 dv = std::min(deceleration * dt, speed);
+                            relativeVelocity -= (relativeVelocity / speed) * dv;
+                        }
+                    }
+
+                    // ---- solid ground (terrain-aware) ---------------------
+                    if (altitude <= 0.0)
+                    {
+                        transform.position = surface.center + up * restRadius;
+
+                        const f64 radialSpeed = glm::dot(relativeVelocity, up);
+                        if (radialSpeed < 0.0)
+                        {
+                            if (-radialSpeed > m_config.crashSpeedThreshold)
+                            {
+                                SW_LOG_WARN("Physics",
+                                            "Surface impact at {:.1f} m/s — that was a "
+                                            "crash, not a landing",
+                                            -radialSpeed);
+                            }
+                            else if (-radialSpeed > 0.5)
+                            {
+                                SW_LOG_INFO("Physics", "Touchdown at {:.1f} m/s",
+                                            -radialSpeed);
+                            }
+                            relativeVelocity -= up * radialSpeed; // absorb impact
+                        }
+
+                        // Tangential friction until rest (in the body frame).
+                        const f64 decay = std::max(
+                            0.0, 1.0 - m_config.groundFrictionPerSecond * dt);
+                        relativeVelocity *= decay;
+                        body.isGrounded = 1;
+                    }
+
+                    body.velocity = surfaceVelocity + relativeVelocity;
+                }
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // RailsSystem
+    // ------------------------------------------------------------------------
+    void RailsSystem::update(ecs::World& world, f32 /*deltaSeconds*/)
+    {
+        const f64 time = m_timebase.presentSeconds();
+
+        world.forEach<TransformComponent, PreviousTransformComponent, OnRailsComponent>(
+            [time, &world](ecs::Entity, TransformComponent& transform,
+                           PreviousTransformComponent& previous, OnRailsComponent& rails) {
+                WorldVec3 relative{};
+                kepler::evaluate(rails.orbit, time, relative);
+
+                // World position = primary's CURRENT position + the relative
+                // conic. The primary was moved earlier this tick by the
+                // CelestialMotionSystem at the same simulation time, so the
+                // composition is exact.
+                WorldVec3 primaryPosition{0.0};
+                if (const auto* primaryTransform =
+                        world.tryGetComponent<TransformComponent>(rails.primary))
+                {
+                    primaryPosition = primaryTransform->position;
+                }
+
+                previous.position = transform.position; // interpolate
+                previous.rotation = transform.rotation;
+                transform.position = primaryPosition + relative;
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // SimulationBubbleSystem
+    // ------------------------------------------------------------------------
+    SimulationBubbleSystem::SimulationBubbleSystem(ecs::EntityCommandBuffer& commands,
+                                                   const sim::SimulationLane& timebase,
+                                                   const Config& config)
+        : m_commands(commands)
+        , m_timebase(timebase)
+        , m_config(config)
+    {
+        SW_ASSERT(m_config.exitRadius > m_config.enterRadius,
+                  "Bubble hysteresis requires exitRadius ({}) > enterRadius ({})",
+                  m_config.exitRadius, m_config.enterRadius);
+    }
+
+    const SimulationBubbleSystem::BodySnapshot*
+    SimulationBubbleSystem::selectPrimary(const WorldVec3& position) const
+    {
+        const BodySnapshot* best = nullptr;
+        for (const BodySnapshot& body : m_bodies)
+        {
+            const WorldVec3 delta = position - body.position;
+            if (glm::dot(delta, delta) < body.soiRadius * body.soiRadius &&
+                (best == nullptr || body.soiRadius < best->soiRadius))
+            {
+                best = &body;
+            }
+        }
+        if (best == nullptr) // outside every SOI: fall back to the heaviest
+        {
+            for (const BodySnapshot& body : m_bodies)
+            {
+                if (best == nullptr || body.mu > best->mu)
+                {
+                    best = &body;
+                }
+            }
+        }
+        return best;
+    }
+
+    const SimulationBubbleSystem::BodySnapshot*
+    SimulationBubbleSystem::findBody(ecs::Entity entity) const
+    {
+        for (const BodySnapshot& body : m_bodies)
+        {
+            if (body.entity == entity)
+            {
+                return &body;
+            }
+        }
+        return nullptr;
+    }
+
+    void SimulationBubbleSystem::update(ecs::World& world, f32 /*deltaSeconds*/)
+    {
+        const f64 time = m_timebase.presentSeconds();
+        const WorldVec3 focus = m_focus;
+
+        // Snapshot every gravity source: positions for SOI selection,
+        // world velocities for frame-relative conversions.
+        m_bodies.clear();
+        world.forEach<TransformComponent, GravitySourceComponent>(
+            [this](ecs::Entity entity, TransformComponent& transform,
+                   GravitySourceComponent& source) {
+                m_bodies.push_back({entity, transform.position, source.worldVelocity,
+                                    source.mu, source.soiRadius});
+            });
+        if (m_bodies.empty())
+        {
+            return; // no gravity source: nothing to convert against
+        }
+
+        const f64 enterSq = m_config.enterRadius * m_config.enterRadius;
+        const f64 exitSq = m_config.exitRadius * m_config.exitRadius;
+        const bool forceRails = m_forceRails;
+
+        // ---- rails -> dynamic (entering the bubble) --------------------------
+        world.forEach<TransformComponent, OnRailsComponent>(
+            [&](ecs::Entity entity, TransformComponent& transform, OnRailsComponent& rails) {
+                if (forceRails)
+                {
+                    return; // warp: nothing leaves the rails
+                }
+                const WorldVec3 delta = transform.position - focus;
+                if (glm::dot(delta, delta) >= enterSq)
+                {
+                    return;
+                }
+
+                // Exact state vectors at conversion time, composed with the
+                // primary's own state: the hand-off is continuous in both
+                // position and velocity, in the WORLD frame.
+                WorldVec3 relative{};
+                WorldVec3 relativeVelocity{};
+                kepler::evaluate(rails.orbit, time, relative, &relativeVelocity);
+
+                WorldVec3 position = relative;
+                WorldVec3 velocity = relativeVelocity;
+                if (const BodySnapshot* primary = findBody(rails.primary))
+                {
+                    position += primary->position;
+                    velocity += primary->velocity;
+                }
+
+                const f64 mass = rails.dynamicMass;
+                const f64 ballistic = rails.dynamicBallisticFactor;
+                m_commands.defer([entity, position, velocity, mass,
+                                  ballistic](ecs::World& w) {
+                    if (!w.isAlive(entity) ||
+                        !w.hasComponent<OnRailsComponent>(entity))
+                    {
+                        return;
+                    }
+                    auto& t = w.getComponent<TransformComponent>(entity);
+                    t.position = position;
+                    if (auto* prev = w.tryGetComponent<PreviousTransformComponent>(entity))
+                    {
+                        prev->position = position;
+                        prev->rotation = t.rotation;
+                    }
+                    w.removeComponent<OnRailsComponent>(entity);
+                    DynamicBodyComponent dynamicBody{};
+                    dynamicBody.velocity = velocity;
+                    dynamicBody.mass = mass;
+                    dynamicBody.ballisticFactor = ballistic;
+                    w.addComponent(entity, dynamicBody);
+                });
+            });
+
+        // ---- anchored -> dynamic (bubble focus returned, no warp) ---------------
+        world.forEach<TransformComponent, SurfaceAnchorComponent>(
+            [&](ecs::Entity entity, TransformComponent& transform,
+                SurfaceAnchorComponent& anchor) {
+                if (forceRails || anchor.autoRelease == 0)
+                {
+                    return; // hand-built structures stay anchored forever
+                }
+                const WorldVec3 delta = transform.position - focus;
+                if (glm::dot(delta, delta) >= enterSq)
+                {
+                    return;
+                }
+                // Wake up co-rotating with the ground it stood on.
+                WorldVec3 velocity{0.0};
+                if (const auto* gravity =
+                        world.tryGetComponent<GravitySourceComponent>(anchor.body))
+                {
+                    if (const auto* bodyTransform =
+                            world.tryGetComponent<TransformComponent>(anchor.body))
+                    {
+                        velocity = gravity->worldVelocity +
+                                   glm::cross(gravity->angularVelocity,
+                                              transform.position -
+                                                  bodyTransform->position);
+                    }
+                }
+                SW_LOG_INFO("Physics", "Bubble: entity {} anchor RELEASED -> dynamic",
+                            entity.index);
+                const f64 mass = anchor.dynamicMass > 0.0 ? anchor.dynamicMass : 1.0e3;
+                const f64 ballistic = anchor.dynamicBallisticFactor;
+                m_commands.defer([entity, velocity, mass, ballistic](ecs::World& w) {
+                    if (!w.isAlive(entity) ||
+                        !w.hasComponent<SurfaceAnchorComponent>(entity))
+                    {
+                        return;
+                    }
+                    w.removeComponent<SurfaceAnchorComponent>(entity);
+                    DynamicBodyComponent dynamicBody{};
+                    dynamicBody.velocity = velocity;
+                    dynamicBody.mass = mass;
+                    dynamicBody.ballisticFactor = ballistic;
+                    w.addComponent(entity, dynamicBody);
+                });
+            });
+
+        // ---- dynamic -> rails (leaving the bubble) -----------------------------
+        world.forEach<TransformComponent, DynamicBodyComponent>(
+            [&](ecs::Entity entity, TransformComponent& transform,
+                DynamicBodyComponent& body) {
+                // Gravity sources themselves are never bubble-managed.
+                if (world.hasComponent<GravitySourceComponent>(entity))
+                {
+                    return;
+                }
+                const WorldVec3 delta = transform.position - focus;
+                // Warp railifies EVERYTHING; otherwise only bubble leavers.
+                if (!forceRails && glm::dot(delta, delta) <= exitSq)
+                {
+                    return;
+                }
+
+                // Elements RELATIVE to the SOI primary. Hyperbolic arcs are
+                // allowed on rails (evaluate() handles them analytically);
+                // only near-parabolic states stay truly simulated.
+                const BodySnapshot* primary = selectPrimary(transform.position);
+                if (primary == nullptr)
+                {
+                    return;
+                }
+
+                // LANDED craft NEVER ride Kepler rails: a ground state is a
+                // degenerate ellipse that would fling them skyward on the
+                // first rail tick. They become SURFACE ANCHORS instead —
+                // frozen in the body-fixed frame, co-rotating exactly, and
+                // released back to dynamic when the bubble focus returns.
+                const auto* primaryGravity =
+                    world.tryGetComponent<GravitySourceComponent>(primary->entity);
+                const auto* primaryTransform =
+                    world.tryGetComponent<TransformComponent>(primary->entity);
+                if (primaryGravity != nullptr && primaryTransform != nullptr &&
+                    primaryGravity->bodyRadius > 0.0)
+                {
+                    const WorldVec3 relative = transform.position - primary->position;
+                    const f64 altitude =
+                        glm::length(relative) - primaryGravity->bodyRadius;
+                    const WorldVec3 surfaceVelocity =
+                        primary->velocity +
+                        glm::cross(primaryGravity->angularVelocity, relative);
+                    const f64 groundSpeed =
+                        glm::length(body.velocity - surfaceVelocity);
+                    if (altitude < 2.5e4 && groundSpeed < 5.0)
+                    {
+                        SW_LOG_INFO("Physics",
+                                    "Bubble: entity {} LANDED (alt {:.0f} m, ground "
+                                    "speed {:.2f}) -> surface anchor",
+                                    entity.index, altitude, groundSpeed);
+                        // f64 again: this INVERTS a planet-radius offset
+                        // into the body frame, so an f32 rotation would bake
+                        // a metre of error into where the base was built.
+                        const glm::dquat inverseRotation =
+                            glm::inverse(spinRotation(*primaryGravity));
+                        SurfaceAnchorComponent anchor{};
+                        anchor.body = primary->entity;
+                        anchor.localPosition =
+                            inverseRotation *
+                            (transform.position - primaryTransform->position);
+                        anchor.localRotation =
+                            Quat(inverseRotation * glm::dquat(transform.rotation));
+                        anchor.dynamicMass = body.mass;
+                        anchor.dynamicBallisticFactor = body.ballisticFactor;
+                        anchor.autoRelease = 1;
+                        m_commands.defer([entity, anchor](ecs::World& w) {
+                            if (!w.isAlive(entity) ||
+                                !w.hasComponent<DynamicBodyComponent>(entity))
+                            {
+                                return;
+                            }
+                            w.removeComponent<DynamicBodyComponent>(entity);
+                            w.addComponent(entity, anchor);
+                        });
+                        return;
+                    }
+                }
+                KeplerOrbit orbit{};
+                if (!kepler::fromStateVectors(primary->mu,
+                                              transform.position - primary->position,
+                                              body.velocity - primary->velocity, time,
+                                              orbit, /*allowHyperbolic=*/true))
+                {
+                    return; // degenerate state: keep it truly simulated
+                }
+
+                OnRailsComponent rails{};
+                rails.orbit = orbit;
+                rails.primary = primary->entity;
+                rails.dynamicMass = body.mass;
+                rails.dynamicBallisticFactor = body.ballisticFactor;
+                m_commands.defer([entity, rails](ecs::World& w) {
+                    if (!w.isAlive(entity) ||
+                        !w.hasComponent<DynamicBodyComponent>(entity))
+                    {
+                        return;
+                    }
+                    w.removeComponent<DynamicBodyComponent>(entity);
+                    w.addComponent(entity, rails);
+                });
+            });
+    }
+} // namespace sw::phys

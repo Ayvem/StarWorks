@@ -1,0 +1,158 @@
+{
+  "id": 6,
+  "type": "DockingPort",
+  "name": "DR-1 Docking Ring",
+  "dryMassKg": 320,
+  "costCredits": 2200,
+  "volumeM3": 1.0,
+  "crashToleranceMps": 8,
+  "breakingForceN": 300000.0,
+  "dragCoefficientArea": 0.7,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "tube",
+      "position": [
+        0,
+        0,
+        0.08
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.8,
+        0.32,
+        0.52
+      ],
+      "color": [
+        0.6,
+        0.62,
+        0.66
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cone",
+      "position": [
+        0,
+        0,
+        -0.28
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.62,
+        0.13,
+        0.8
+      ],
+      "color": [
+        0.42,
+        0.44,
+        0.48
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "tube",
+      "position": [
+        0,
+        0,
+        -0.37
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.66,
+        0.035,
+        0.6
+      ],
+      "color": [
+        0.3,
+        0.9,
+        0.6
+      ],
+      "emissive": 0.5,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [
+        0,
+        0,
+        0.3
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.5,
+        0.1,
+        0
+      ],
+      "color": [
+        0.35,
+        0.36,
+        0.4
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "dock",
+      "position": [
+        0,
+        0,
+        -0.4
+      ],
+      "direction": [
+        0,
+        0,
+        -1
+      ],
+      "type": "stack",
+      "size": 0.8
+    },
+    {
+      "name": "bottom",
+      "position": [
+        0,
+        0,
+        0.4
+      ],
+      "direction": [
+        0,
+        0,
+        1
+      ],
+      "type": "stack",
+      "size": 0.8
+    }
+  ]
+}

@@ -1,0 +1,224 @@
+{
+  "id": 2,
+  "type": "Engine",
+  "name": "V-400 Engine",
+  "dryMassKg": 1400,
+  "costCredits": 4200,
+  "volumeM3": 3.5,
+  "crashToleranceMps": 10,
+  "breakingForceN": 600000.0,
+  "dragCoefficientArea": 1.2,
+  "liftCoefficient": 0,
+  "thrustNewtons": 400000.0,
+  "specificImpulseS": 345,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [
+        0,
+        0,
+        -0.95
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.9,
+        0.15,
+        0
+      ],
+      "color": [
+        0.45,
+        0.46,
+        0.5
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [
+        0,
+        0,
+        -0.5
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.5,
+        0.32,
+        0
+      ],
+      "color": [
+        0.3,
+        0.3,
+        0.34
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [
+        0.42,
+        0,
+        -0.5
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.14,
+        0.1,
+        0.22
+      ],
+      "color": [
+        0.55,
+        0.35,
+        0.15
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [
+        -0.42,
+        0,
+        -0.5
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.14,
+        0.1,
+        0.22
+      ],
+      "color": [
+        0.55,
+        0.35,
+        0.15
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cone",
+      "position": [
+        0,
+        0,
+        0.35
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.32,
+        0.65,
+        0.85
+      ],
+      "color": [
+        0.2,
+        0.2,
+        0.23
+      ],
+      "emissive": 0.0,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cone",
+      "position": [
+        0,
+        0,
+        0.42
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.26,
+        0.62,
+        0.8
+      ],
+      "color": [
+        0.9,
+        0.5,
+        0.25
+      ],
+      "emissive": 0.3,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [
+        0,
+        0,
+        -0.12
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.4,
+        0.06,
+        0.33
+      ],
+      "color": [
+        0.6,
+        0.6,
+        0.65
+      ],
+      "emissive": 0.0,
+      "segments": 20,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "top",
+      "position": [
+        0,
+        0,
+        -1.1
+      ],
+      "direction": [
+        0,
+        0,
+        -1
+      ],
+      "type": "stack",
+      "size": 0.9
+    }
+  ]
+}

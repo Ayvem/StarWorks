@@ -1,0 +1,88 @@
+{
+  "id": 104,
+  "type": "Structural",
+  "name": "SL-1 Solar Field",
+  "dryMassKg": 6000.0,
+  "costCredits": 0.0,
+  "volumeM3": 12.0,
+  "crashToleranceMps": 8,
+  "breakingForceN": 300000.0,
+  "dragCoefficientArea": 2.0,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 180.0,
+  "capacities": [],
+  "building": {
+    "category": "solar",
+    "footprintM": [
+      16,
+      12
+    ],
+    "powerKw": 180.0,
+    "inventoryVolumeM3": 0.0,
+    "maxSlopeTangent": 0.12,
+    "minOreDensity": 0.0
+  },
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [
+        0,
+        0.4,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        12,
+        0.4,
+        8
+      ],
+      "color": [
+        0.28,
+        0.3,
+        0.33
+      ],
+      "emissive": 0.0,
+      "specular": 0.25,
+      "gloss": 0.3,
+      "segments": 16,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [
+        0,
+        1.6,
+        0
+      ],
+      "rotationDeg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        11.4,
+        0.15,
+        7.4
+      ],
+      "color": [
+        0.18,
+        0.28,
+        0.45
+      ],
+      "emissive": 0.0,
+      "specular": 0.5,
+      "gloss": 0.7,
+      "segments": 16,
+      "visible": true,
+      "collider": true
+    }
+  ],
+  "nodes": []
+}

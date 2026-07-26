@@ -1,0 +1,14 @@
+{
+  "id": 3,
+  "name": "Ice Harvesting",
+  "requiredCategory": "miner",
+  "inputs": [],
+  "outputs": [
+    {
+      "resource": "WaterIce",
+      "unitsPerSecond": 1.2
+    }
+  ],
+  "powerKw": 30.0,
+  "massLossFraction": 0.0
+}

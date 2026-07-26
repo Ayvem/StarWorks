@@ -1,0 +1,14 @@
+{
+  "id": 2,
+  "name": "Copper Ore Extraction",
+  "requiredCategory": "miner",
+  "inputs": [],
+  "outputs": [
+    {
+      "resource": "CopperOre",
+      "unitsPerSecond": 0.8
+    }
+  ],
+  "powerKw": 45.0,
+  "massLossFraction": 0.0
+}

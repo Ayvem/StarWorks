@@ -1,0 +1,21 @@
+# Build trees
+build/
+out/
+cmake-build-*/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Compiled artifacts
+*.spv
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+
+# Logs
+*.log
