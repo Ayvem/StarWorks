@@ -173,18 +173,53 @@ namespace sw::phys
                     // terrain elevation, sampled in the body's ROTATING
                     // frame (mountains spin with their planet). Physics and
                     // rendering share the exact same heightfield function.
-                    f64 groundRadius = surface.radius;
-                    if (surface.hasTerrain)
-                    {
-                        const Vec3 directionBodyFrame =
-                            Vec3(glm::inverse(surface.rotation64) * up);
-                        groundRadius += planet::terrainElevation(
-                            surface.terrain, glm::normalize(directionBodyFrame));
-                    }
                     const f64 clearance =
                         (hull != nullptr)
                             ? groundClearance(*hull, transform.rotation, Vec3(up))
                             : 0.0;
+
+                    f64 groundRadius = surface.radius;
+                    if (surface.hasTerrain)
+                    {
+                        const glm::dquat toBodyFrame = glm::inverse(surface.rotation64);
+                        const Vec3 centreDirection =
+                            glm::normalize(Vec3(toBodyFrame * up));
+                        groundRadius +=
+                            planet::terrainElevation(surface.terrain, centreDirection);
+
+                        // ON A SLOPE, the ground under the CENTRE is not the
+                        // ground the object touches: the uphill side of the
+                        // footprint hits first. Sampling only the centre
+                        // buries that side — a 8 m-wide rocket on a 0.3
+                        // slope sinks its uphill legs 1.2 m into the hill.
+                        //
+                        // So the footprint's horizontal extremes are sampled
+                        // too and the HIGHEST wins. Max, not average: an
+                        // object may rest above the ground, never inside it.
+                        const f64 reach = footprintReach(hull, transform.rotation,
+                                                         Vec3(up));
+                        if (reach > 1.0)
+                        {
+                            const WorldVec3 reference =
+                                (std::abs(up.y) < 0.9) ? WorldVec3{0.0, 1.0, 0.0}
+                                                       : WorldVec3{1.0, 0.0, 0.0};
+                            const WorldVec3 east =
+                                glm::normalize(glm::cross(reference, up));
+                            const WorldVec3 north = glm::cross(up, east);
+                            const f64 step = reach / std::max(surface.radius, 1.0);
+                            const WorldVec3 offsets[4] = {east * step, -east * step,
+                                                          north * step, -north * step};
+                            for (const WorldVec3& offset : offsets)
+                            {
+                                const Vec3 direction = glm::normalize(
+                                    Vec3(toBodyFrame * glm::normalize(up + offset)));
+                                groundRadius = std::max(
+                                    groundRadius,
+                                    surface.radius + planet::terrainElevation(
+                                                         surface.terrain, direction));
+                            }
+                        }
+                    }
                     // The radius the body's ORIGIN sits at when it is
                     // resting: the ground, plus its own hull.
                     const f64 restRadius = groundRadius + clearance;

@@ -52,6 +52,37 @@ namespace sw::phys
         Vec3 halfExtents{0.0f}; // model space, metres
     };
 
+    /// How far the hull reaches HORIZONTALLY from the origin — the radius
+    /// of its footprint on the ground. Ground contact samples the terrain
+    /// out at this distance as well as under the centre, because on a slope
+    /// it is the uphill edge of a footprint that touches first.
+    ///
+    /// Conservative: the corner of the box projected onto the horizontal
+    /// plane. A null hull has no footprint.
+    [[nodiscard]] inline f64 footprintReach(const GroundHullComponent* hull,
+                                            const Quat& rotation, const Vec3& up)
+    {
+        if (hull == nullptr)
+        {
+            return 0.0;
+        }
+        const Vec3 localUp = glm::inverse(rotation) * up;
+        // Total extent along each model axis, minus the part of it that
+        // points straight up or down.
+        const Vec3 extent = hull->halfExtents;
+        const f32 vertical = std::abs(localUp.x) * extent.x +
+                             std::abs(localUp.y) * extent.y +
+                             std::abs(localUp.z) * extent.z;
+        const f32 diagonal = glm::length(extent);
+        const f32 horizontal =
+            std::sqrt(std::max(0.0f, diagonal * diagonal - vertical * vertical));
+        const Vec3 centre = hull->centre;
+        const f32 centreVertical = glm::dot(centre, localUp);
+        const f32 centreHorizontal = std::sqrt(std::max(
+            0.0f, glm::dot(centre, centre) - centreVertical * centreVertical));
+        return static_cast<f64>(centreHorizontal + horizontal);
+    }
+
     /// Distance from the entity origin down to the lowest point of the
     /// hull, for a body with this rotation standing under this `up`. The
     /// resting radius is the terrain height plus this.

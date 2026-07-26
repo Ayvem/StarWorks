@@ -453,12 +453,19 @@ void planetBiome(TerrainParams terrain, int style, vec3 dir, float elevation,
     }
     else if (style == 1) // Luna: maria over cratered highlands
     {
+        // The shore between mare and highland used to be a hard `m < 0.47`
+        // step. On a fractal field that draws a crisp wandering edge, and
+        // from any distance a crisp wandering bright edge on a grey world
+        // reads as a WEATHER FRONT. Real maria have soft margins. The CPU
+        // twin (colorizeSurfaceVertex) carries the same numbers, so walking
+        // down from orbit never crosses a seam.
         float m = fbm3(dir * 3.1 + vec3(2.9, 8.1, 0.4), 4, 4242u);
-        float fine = fbm3(dir * 11.0, 3, 4343u);
-        float g = (m < 0.47 ? 0.24 : 0.42) + 0.16 * (fine - 0.5) + detail * 0.10 +
+        float maria = smoothstepf(0.435, 0.515, m);
+        float fine = fbm3(dir * 11.0, 3, 4343u) - 0.5;
+        float g = mix(0.235, 0.415, maria) + 0.10 * fine + detail * 0.08 +
                   relief * 0.10;
         // Crater walls and scarps expose brighter, fresher regolith.
-        g = mix(g, g * 1.35 + 0.05, rock);
+        g = mix(g, g * 1.18 + 0.03, rock);
         albedo = vec3(g, g, g * 1.04);
     }
     else // Mars: rust, dark basalt on the scarps, CO2 caps

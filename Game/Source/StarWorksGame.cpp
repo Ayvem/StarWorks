@@ -251,13 +251,32 @@ namespace game
         /// heightfield and by a SLOPE measured at their own sampling scale,
         /// so the swap changes SHARPNESS and nothing else — a mountain does
         /// not move, a coast does not shift, no color pops.
+        /// Colours one globe vertex.
+        ///
+        /// `frequencyLimit` is the highest noise frequency this mesh can
+        /// actually REPRESENT — roughly rings / 2pi, the Nyquist limit of the
+        /// vertex spacing. It matters more than it sounds: the palette is
+        /// full of terms sampled at frequency 11, 42 and higher, and on the
+        /// far LODs (the lowest is a 96-vertex sphere) those are not detail,
+        /// they are one random number per vertex, smeared across enormous
+        /// triangles by Gouraud. That is what made Luna look like it had
+        /// weather. Each term is faded toward its mean as it approaches the
+        /// limit, so a mesh only ever carries the frequencies it can hold.
         void colorizeSurfaceVertex(sw::Vertex& vertex, SurfaceStyle style,
                                    const sw::Vec3& dir, sw::f32 elevation,
                                    sw::f32 slope,
-                                   const sw::planet::TerrainComponent& terrain)
+                                   const sw::planet::TerrainComponent& terrain,
+                                   sw::f32 frequencyLimit)
         {
             using sw::math::smoothstepf;
-            const sw::f32 detail = fbm3(dir * 42.0f, 3, 90210u) - 0.5f;
+            // 1 where the mesh resolves this frequency comfortably, 0 where
+            // it would only alias.
+            const auto resolve = [frequencyLimit](sw::f32 frequency) {
+                return 1.0f -
+                       smoothstepf(frequencyLimit * 0.5f, frequencyLimit, frequency);
+            };
+            const sw::f32 detail =
+                (fbm3(dir * 42.0f, 3, 90210u) - 0.5f) * resolve(42.0f);
             const sw::f32 relief =
                 glm::clamp(elevation / terrain.amplitude, 0.0f, 1.0f);
             const sw::f32 latitude = std::abs(dir.y);
@@ -333,12 +352,22 @@ namespace game
             }
             case SurfaceStyle::Luna:
             {
+                // Maria over cratered highlands. The shore between them used
+                // to be a hard `m < 0.47` step, which on a fractal field
+                // draws a crisp wandering edge — from a distance that reads
+                // as a weather front, not as a basalt plain. Real maria have
+                // soft margins; so does this one now.
                 const sw::f32 m =
                     fbm3(dir * 3.1f + sw::Vec3{2.9f, 8.1f, 0.4f}, 4, 4242u);
-                const sw::f32 fine = fbm3(dir * 11.0f, 3, 4343u);
-                sw::f32 g = (m < 0.47f ? 0.24f : 0.42f) + 0.16f * (fine - 0.5f) +
-                            detail * 0.10f + relief * 0.10f;
-                g = glm::mix(g, g * 1.35f + 0.05f, rock);
+                const sw::f32 maria =
+                    smoothstepf(0.435f, 0.515f, m) * resolve(3.1f) + 0.5f *
+                                                                     (1.0f -
+                                                                      resolve(3.1f));
+                const sw::f32 fine =
+                    (fbm3(dir * 11.0f, 3, 4343u) - 0.5f) * resolve(11.0f);
+                sw::f32 g = glm::mix(0.235f, 0.415f, maria) + 0.10f * fine +
+                            detail * 0.08f + relief * 0.10f;
+                g = glm::mix(g, g * 1.18f + 0.03f, rock);
                 albedo = {g, g, g * 1.04f};
                 break;
             }
@@ -555,6 +584,16 @@ namespace game
         // anchors) reads their up-to-date positions/velocities.
         physics.addSystem(
             std::make_unique<sw::space::CelestialMotionSystem>(*m_physicsLane));
+        // ...and they TURN first, for the same reason. The spin is analytic,
+        // so it can be evaluated the instant the tick's present time is
+        // known — and everything downstream that samples the ground reads
+        // the body's rotating frame. Running it late (it used to sit after
+        // the surface systems) left ground CONTACT sampling the heightfield
+        // through a one-tick-stale attitude: 1.46e-6 rad, which on Terra is
+        // 9.3 m of ground. Flat ground did not care. On slopes steeper than
+        // 0.25 that offset is worth up to 13.6 m of elevation, which is
+        // exactly how you walk into a mountainside.
+        physics.addSystem(std::make_unique<CelestialSpinSystem>(*m_physicsLane));
         physics.addSystem(std::make_unique<SnapshotSystem>());
         // Parts -> vessel aggregates (mass falls as fuel burns).
         physics.addSystem(std::make_unique<sw::parts::VesselAssemblySystem>());
@@ -569,7 +608,6 @@ namespace game
             std::make_unique<sw::phys::SurfaceInteractionSystem>(surfaceConfig));
         physics.addSystem(std::make_unique<CapsuleMovementSystem>());
         physics.addSystem(std::make_unique<SpinSystem>());
-        physics.addSystem(std::make_unique<CelestialSpinSystem>(*m_physicsLane));
         // Atmosphere/cloud shells follow their planet (own drift spin).
         physics.addSystem(std::make_unique<CloudLayerSystem>());
         // After the celestial spin: surface bases co-rotate with their body.
@@ -679,6 +717,11 @@ namespace game
                 std::min(terrain.reliefOctaves,
                          (level == 0) ? 6 : ((level == 1) ? 5 : 4));
             const auto style = static_cast<SurfaceStyle>(surfaceStyle);
+            // Nyquist for this tessellation: rings / 2pi. Nothing finer than
+            // this may reach the palette, or the mesh turns a texture into
+            // noise (see colorizeSurfaceVertex).
+            const sw::f32 frequencyLimit =
+                static_cast<sw::f32>(kLodRings[level]) / 6.2831853f;
             for (sw::Vertex& vertex : sphere.vertices)
             {
                 const sw::Vec3 dir = glm::normalize(vertex.position);
@@ -715,7 +758,8 @@ namespace game
                     slope = glm::length(sw::Vec2{slopeA, slopeB});
                 }
 
-                colorizeSurfaceVertex(vertex, style, dir, elevation, slope, terrain);
+                colorizeSurfaceVertex(vertex, style, dir, elevation, slope, terrain,
+                                      frequencyLimit);
 
                 if (reliefNormals && elevation > 0.0f)
                 {
@@ -1978,6 +2022,10 @@ namespace game
         // points. Near the ground the cells are 31 m and the count saturates
         // at the body's full stack — which is exactly where it should.
         const sw::f64 cellMetres = 2.0 * extent / kCells;
+        // Same convention as the globe LODs: the finest noise frequency a
+        // mesh of this spacing can carry, in cycles per radian.
+        const sw::f32 patchFrequencyLimit =
+            static_cast<sw::f32>(radius / (2.0 * std::max(cellMetres, 1.0e-3)));
         sw::i32 patchOctaves = terrain.reliefOctaves;
         // Octaves are kept until their wavelength drops to a QUARTER of a cell,
         // not twice one. The looser rule saved a couple of samples and cost
@@ -2054,8 +2102,10 @@ namespace game
                     glm::clamp(glm::dot(vertex.normal, vertexDir), 0.05f, 1.0f);
                 const sw::f32 slope =
                     std::sqrt(std::max(0.0f, 1.0f - cosine * cosine)) / cosine;
+                // The patch's own Nyquist limit: metre-scale cells resolve
+                // every frequency in the palette, so nothing is faded here.
                 colorizeSurfaceVertex(vertex, style, vertexDir, elevations[index],
-                                      slope, terrain);
+                                      slope, terrain, patchFrequencyLimit);
             }
         }
         mesh.indices.reserve(kCells * kCells * 6);
@@ -3154,6 +3204,10 @@ namespace game
         {
             collectNavball();
             collectSasButtons();
+        }
+        else if (m_mapView && !m_editorMode)
+        {
+            collectMapButtons();
         }
         // (Hangar UI is not collected here: the hangar renders through its
         // own path — collectHangarItems -> collectEditorUi.)
@@ -4349,9 +4403,56 @@ namespace game
         }
     }
 
+    // The map is where you look at your fleet, so it is where you should be
+    // able to change which of it you are flying. `P` already cycled; this is
+    // the same action with a surface you can find without knowing it exists.
+    void StarWorksGame::collectMapButtons()
+    {
+        m_hudButtons.clear();
+
+        std::vector<sw::ecs::Entity> pilotable;
+        m_world.forEach<ShipComponent>([&](sw::ecs::Entity entity, ShipComponent&) {
+            pilotable.push_back(entity);
+        });
+        if (pilotable.size() < 2)
+        {
+            return; // one ship: nothing to cycle between
+        }
+        sw::usize current = 0;
+        for (sw::usize i = 0; i < pilotable.size(); ++i)
+        {
+            if (pilotable[i] == m_shipEntity)
+            {
+                current = i;
+            }
+        }
+
+        constexpr sw::f32 kHeight = 0.062f;
+        constexpr sw::f32 kWidth = 0.235f;
+        const sw::f32 x0 = -0.97f;
+        const sw::f32 y0 = 0.87f;
+        const sw::f32 x1 = x0 + kWidth;
+
+        sw::DrawItem panel{};
+        panel.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
+        panel.transform =
+            glm::translate(sw::Mat4{1.0f}, {(x0 + x1) * 0.5f, y0 + kHeight * 0.5f, 0.0f}) *
+            glm::scale(sw::Mat4{1.0f}, {kWidth * 0.5f, kHeight * 0.5f, 1.0f});
+        panel.screenSpace = true;
+        panel.tint = {0.16f, 0.22f, 0.30f, 0.65f};
+        m_drawItems.push_back(panel);
+
+        hudText("NEXT SHIP", x0 + 0.022f, y0 + 0.015f, 0.036f,
+                {0.7f, 0.8f, 0.9f, 0.95f});
+        hudText(std::format("SHIP {}/{}", current + 1, pilotable.size()), x0 + 0.022f,
+                y0 - 0.052f, 0.034f, {0.55f, 0.72f, 0.88f, 0.9f});
+
+        m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, 300u});
+    }
+
     void StarWorksGame::handleHudClicks()
     {
-        if (m_mapView || !input().wasMouseButtonPressed(sw::MouseButton::Left))
+        if (!input().wasMouseButtonPressed(sw::MouseButton::Left))
         {
             return;
         }
@@ -4369,6 +4470,15 @@ namespace game
             if (ndcX >= button.x0 && ndcX <= button.x1 && ndcY >= button.y0 &&
                 ndcY <= button.y1)
             {
+                if (button.id == 300) // map: fly the next vessel
+                {
+                    cyclePilotedVessel();
+                    return;
+                }
+                if (m_mapView)
+                {
+                    return; // the map owns only its own buttons
+                }
                 // ---- hangar actions ------------------------------------------
                 if (button.id >= 200)
                 {

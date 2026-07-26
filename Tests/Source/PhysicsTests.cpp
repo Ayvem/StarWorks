@@ -9,6 +9,7 @@
 #include <ECS/World.hpp>
 #include <Physics/Kepler.hpp>
 #include <Physics/PhysicsSystems.hpp>
+#include <Planet/Deposits.hpp> // terrainLocalSlope lives with the siting helpers
 #include <Scene/TransformComponents.hpp>
 #include <Simulation/Simulation.hpp>
 
@@ -650,4 +651,97 @@ SW_TEST(ALandedBodyRestsOnItsHullNotItsOrigin)
     // The 2 m body stands ON the ground: its origin ends up 1 m higher, so
     // its bottom — not its middle — is the thing touching.
     SW_CHECK(std::abs(standingRadius - (kRadius + 1.0)) < 0.01);
+}
+
+// A body must never end up INSIDE a hillside. Two ways it used to:
+//
+//  1. Ground contact sampled the heightfield through the body's attitude
+//     from the PREVIOUS tick — 1.46e-6 rad on Terra, which is 9.3 m of
+//     ground. Flat terrain did not care; on slopes steeper than 0.25 that
+//     offset is worth up to 13.6 m of elevation, and you walked into the
+//     mountain. (Fixed by turning the planet at the head of the tick; this
+//     test pins the other half.)
+//  2. Only the ground under the CENTRE was sampled, so the uphill edge of a
+//     wide footprint was buried.
+SW_TEST(ALandedBodyNeverSinksIntoASlope)
+{
+    ecs::World world;
+    planet::TerrainComponent terrain = planet::presetTerra();
+    constexpr f64 kRadius = 6.371e6;
+    {
+        const ecs::Entity body = world.createEntity();
+        world.addComponent(body, TransformComponent{});
+        GravitySourceComponent source{kMuTerra, kRadius};
+        source.spinAxis = WorldVec3{0.0, 1.0, 0.0};
+        world.addComponent(body, source);
+        world.addComponent(body, terrain);
+    }
+
+    // The steepest dry ground we can find: the case that used to fail.
+    Vec3 slopeDirection{0.0f, 0.0f, 1.0f};
+    f32 steepest = 0.0f;
+    for (u32 i = 0; i < 3000; ++i)
+    {
+        const f32 a = static_cast<f32>(i) * 0.0137f;
+        const f32 b = static_cast<f32>(i) * 0.0071f;
+        const Vec3 direction = glm::normalize(
+            Vec3{std::cos(a) * std::cos(b), std::sin(b), std::sin(a) * std::cos(b)});
+        if (planet::terrainElevation(terrain, direction) <= 200.0)
+        {
+            continue;
+        }
+        const f32 slope = planet::terrainLocalSlope(terrain, direction, kRadius, 12.0f);
+        if (slope > steepest)
+        {
+            steepest = slope;
+            slopeDirection = direction;
+        }
+    }
+    SW_CHECK(steepest > 0.25f); // the heightfield really makes hillsides
+
+    // An 8 m-wide, 20 m-long craft dropped onto it, standing on its tail.
+    const ecs::Entity craft = world.createEntity();
+    {
+        TransformComponent transform{};
+        transform.position =
+            WorldVec3(slopeDirection) *
+            (kRadius + planet::terrainElevation(terrain, slopeDirection) + 300.0);
+        // Model +Z is the tail: point it down.
+        transform.rotation = glm::rotation(Vec3{0.0f, 0.0f, 1.0f}, -slopeDirection);
+        world.addComponent(craft, transform);
+        world.addComponent(craft, DynamicBodyComponent{{0.0, 0.0, 0.0}, 9000.0});
+        world.addComponent(craft, GroundHullComponent{Vec3{0.0f},
+                                                      Vec3{4.0f, 4.0f, 10.0f}});
+    }
+
+    GravityIntegrationSystem gravity;
+    SurfaceInteractionSystem surface(SurfaceInteractionSystem::Config{});
+    for (int tick = 0; tick < 3000; ++tick)
+    {
+        gravity.update(world, 0.02f);
+        surface.update(world, 0.02f);
+    }
+    SW_CHECK(world.getComponent<DynamicBodyComponent>(craft).isGrounded != 0);
+
+    // NOT ONE CORNER of the footprint may be under the ground. Walk the
+    // hull's four horizontal extremes and check each against the analytic
+    // heightfield below it.
+    const auto& transform = world.getComponent<TransformComponent>(craft);
+    const WorldVec3 radial = transform.position;
+    const f64 distance = glm::length(radial);
+    const WorldVec3 up = radial / distance;
+    const WorldVec3 east =
+        glm::normalize(glm::cross(WorldVec3{0.0, 1.0, 0.0}, up));
+    const WorldVec3 north = glm::cross(up, east);
+    const f64 base =
+        distance - groundClearance(world.getComponent<GroundHullComponent>(craft),
+                                   transform.rotation, Vec3(up));
+
+    const WorldVec3 corners[4] = {east * 4.0, -east * 4.0, north * 4.0, -north * 4.0};
+    for (const WorldVec3& corner : corners)
+    {
+        const Vec3 direction = Vec3(glm::normalize(up * (kRadius) + corner));
+        const f64 ground = kRadius + planet::terrainElevation(terrain, direction);
+        SW_CHECK(base >= ground - 0.05); // 5 cm of tolerance, not 13 metres
+    }
 }

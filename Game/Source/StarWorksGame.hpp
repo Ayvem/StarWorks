@@ -64,6 +64,8 @@ namespace game
         /// range. See BeaconComponent.
         void collectBeacons(const sw::Camera& activeCamera, bool mapView);
         void collectNavball();
+        /// Map view: the button that steps through the vessels you own.
+        void collectMapButtons();
         void collectParticles(const sw::Camera& activeCamera);
         void refreshPrediction();
         /// Atmospheric heating 0..1 for a dynamic craft (0 in vacuum).
