@@ -79,6 +79,7 @@ add_library(StarWorksEngine STATIC
 
     # --- Gameplay (parts & vessels) ----------------------------------------------
     Source/Gameplay/Parts.cpp
+    Source/Gameplay/Construction.hpp
     Source/Gameplay/PartGeometry.cpp
     Source/Gameplay/PartGeometry.hpp
     Source/Gameplay/Parts.hpp

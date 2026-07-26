@@ -50,6 +50,13 @@ namespace game
         [[nodiscard]] CelestialLodComponent makeSphereLodSet(const sw::Vec4& color,
                                                              sw::i32 surfaceStyle = -1);
         void buildScene();
+        /// Puts one building on a body: the ONE path, used by the scene
+        /// builder and by the player's ground build cursor alike.
+        /// `direction` is a unit vector in the body's rotating frame.
+        sw::ecs::Entity placeBuilding(sw::u32 definitionId, sw::ecs::Entity body,
+                                      const sw::Vec3& direction, sw::f32 yawRadians,
+                                      sw::u32 recipeId, sw::ecs::Entity site,
+                                      const sw::Vec4& marker = {});
         void buildGlyphMeshes();
         void updateWarp();
         void updateShipControls();
@@ -69,6 +76,52 @@ namespace game
         void collectBuildMenu();
         /// Map view: the button that steps through the vessels you own.
         void collectMapButtons();
+        /// THE CONVEYOR NETWORK, derived from geometry.
+        ///
+        /// Belt segments are ordinary buildings — the player places them one
+        /// by one like everything else. What makes a RUN of them a working
+        /// link is that their conveyor-out and conveyor-in ports meet, and
+        /// that is a question about where things are, not about what the
+        /// player intended. This walks the ports after every build and
+        /// demolition and rebuilds every chain it finds.
+        void rebuildConveyorNetwork();
+        /// The recipe a freshly placed building starts on: the first one its
+        /// category can run. F4 will let the player choose.
+        [[nodiscard]] static sw::u32 defaultRecipeFor(
+            sw::factory::BuildingCategory category);
+        /// A body's position and rotation AS IT IS BEING DRAWN this frame —
+        /// interpolated between ticks, spin in f64. Anything placed relative
+        /// to a planet must use this and not the raw tick pose: the gap is a
+        /// physics step of orbital motion, 595 m for Terra.
+        void bodyRenderPose(sw::ecs::Entity body, sw::WorldVec3& outPosition,
+                            glm::dquat& outRotation);
+        /// One planned belt tile: where it stands and which way it faces.
+        struct BeltTile
+        {
+            sw::Vec3 direction{0.0f, 0.0f, 1.0f};
+            sw::f32 yawRadians = 0.0f;
+        };
+        /// Plans the run of belt tiles between two machines' conveyor mouths:
+        /// the ONE routine, used by the preview, by the commit and by the
+        /// scene builder's starting outpost.
+        [[nodiscard]] sw::build::Verdict planBelt(sw::ecs::Entity body,
+                                                  sw::ecs::Entity from,
+                                                  sw::ecs::Entity to,
+                                                  std::vector<BeltTile>& outTiles);
+        /// The body-frame position of one of a building's conveyor mouths.
+        [[nodiscard]] bool conveyorPortOf(sw::ecs::Entity entity, sw::parts::NodeType type,
+                                          sw::WorldVec3& outLocal);
+        /// F2: aims the ground build cursor and acts on click / R.
+        void updateBuildCursor();
+        /// The ghost, and the one line that says why it is red.
+        void collectBuildGhost(const sw::Camera& activeCamera);
+        /// Every footprint standing on `body`, for the overlap rule.
+        [[nodiscard]] std::vector<sw::build::Footprint> footprintsOn(
+            sw::ecs::Entity body);
+        /// The site a new building at `direction` should join: the nearest
+        /// hub on the same body, or null if there is none in reach.
+        [[nodiscard]] sw::ecs::Entity siteNear(sw::ecs::Entity body,
+                                               const sw::Vec3& direction);
         /// Belt decks (tiled CV-1 parts) and the crates riding them,
         /// positioned analytically from the lane clock and each link's
         /// measured throughput.
@@ -249,6 +302,45 @@ namespace game
         bool m_buildMenu = false;
         sw::u32 m_heldBuilding = 0; // 0 = empty hand
         sw::u32 m_buildMenuPage = 0;
+
+        // ---- F2: THE GROUND BUILD CURSOR ------------------------------------
+        // With a building armed, on foot, the ghost follows where you LOOK —
+        // a ray against the same heightfield the collider reads — inside a
+        // reach you have to walk to extend. Everything about whether it may
+        // stand there comes from build::validatePlacement, so the green you
+        // see and the placement that commits agree by construction.
+        struct BuildCursor
+        {
+            bool active = false;
+            sw::ecs::Entity body{};             // what you are standing on
+            sw::Vec3 direction{0.0f, 0.0f, 1.0f}; // body frame, unit
+            sw::f32 yawRadians = 0.0f;
+            sw::f64 rangeM = 0.0;
+            sw::build::Verdict verdict = sw::build::Verdict::NoGround;
+            /// The building under the cursor: what R demolishes, and what
+            /// the belt tool picks as an endpoint.
+            sw::ecs::Entity target{};
+        };
+        BuildCursor m_buildCursor;
+        sw::f32 m_buildYaw = 0.0f; // sticky between placements
+
+        // ---- the BELT TOOL --------------------------------------------------
+        // A conveyor is not placed tile by tile: you pick the machine that
+        // SHIPS and the machine that RECEIVES, and the run is laid between
+        // their mouths. That is the operation the player actually has in
+        // mind — "feed this from that" — and the segments are its result,
+        // not its input. They are still ordinary buildings afterwards, and
+        // the network is still derived from where their ports ended up, so
+        // nothing about the rest of the system had to change.
+        sw::ecs::Entity m_beltSource{}; // picked, waiting for a destination
+        std::vector<BeltTile> m_beltPreview;
+        sw::build::Verdict m_beltVerdict = sw::build::Verdict::NoGround;
+        /// Longest run the tool will lay in one go. A belt across a continent
+        /// is a thousand entities and almost certainly a misclick.
+        static constexpr sw::f64 kMaxBeltLengthM = 250.0;
+        /// Reach, in metres. Satisfactory's lesson: a factory is built by
+        /// walking around it, so the cursor stops where your arm does.
+        static constexpr sw::f64 kBuildRangeM = 30.0;
         sw::Camera m_hangarCamera;
         sw::f32 m_hangarYaw = 0.6f;
         sw::f32 m_hangarPitch = 0.25f;

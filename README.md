@@ -2,7 +2,13 @@
 
 An industrial space simulation game — mine, automate, build ships and stations, and grow a civilization that spans a star system. Powered by a bespoke C++20 / Vulkan engine written exclusively for this game.
 
-## Current state — F1: The factory is data now, and it has belts
+## Current state — F2: Ground build mode
+
+**You build a factory by walking around it.** Arm a machine in the `F` catalogue, look at the ground, click — the ghost lands where your gaze meets the real heightfield, inside a reach you have to walk to extend; the wheel spins it, `R` razes it. Whether it may stand there comes from the `.swpart` itself: on land, flat enough for its own footprint, on enough ore, with room for it.
+
+Conveyors get a **two-click tool**: pick the machine that ships, pick the one that receives, and the run is laid between their mouths — carrying goods from that frame on. The segments it lays are ordinary buildings, and what turns a row of them into a working link is that their mouths MEET: the network is derived from geometry after every build and every demolition, never stored. Take a tile out of the middle and the chain stops existing, because the ports no longer meet.
+
+## Previously — F1: The factory is data now, and it has belts
 
 **EVA is first person**, because a factory is built at arm's length. **`F` opens a building catalogue** — every `.swpart` with an industrial block, with its footprint, power and ore requirement, and one of them armed and ready for the ground placement F2 brings. And the production chain has **real conveyors**: decks with rails and legs that follow the terrain, carrying visible crates whose spacing is the link's MEASURED throughput — a starving belt visibly thins out, and nothing about the cargo is simulated, it is a closed-form function of the clock.
 

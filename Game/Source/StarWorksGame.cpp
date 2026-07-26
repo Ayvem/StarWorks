@@ -217,6 +217,43 @@ namespace game
             return site;
         }
 
+        /// Stands a building's model upright at a place on a body: its +Y
+        /// onto the local vertical, by the shortest rotation.
+        [[nodiscard]] sw::Quat standUpFor(const sw::Vec3& up)
+        {
+            const sw::Vec3 from{0.0f, 1.0f, 0.0f};
+            const sw::f32 alignment = glm::dot(from, up);
+            if (alignment > 0.99999f)
+            {
+                return sw::Quat{1.0f, 0.0f, 0.0f, 0.0f};
+            }
+            if (alignment < -0.99999f)
+            {
+                return sw::Quat{0.0f, 1.0f, 0.0f, 0.0f}; // 180 deg about X
+            }
+            const sw::Vec3 axis = glm::cross(from, up);
+            return glm::normalize(sw::Quat{1.0f + alignment, axis.x, axis.y, axis.z});
+        }
+
+        /// The yaw about the local vertical that points `modelDirection` — a
+        /// direction in the building's own frame, such as a conveyor port's
+        /// outward normal — along `wantedTangent` on the ground.
+        [[nodiscard]] sw::f32 yawToFace(const sw::Vec3& up, const sw::Vec3& modelDirection,
+                                        const sw::Vec3& wantedTangent)
+        {
+            const sw::Vec3 have = standUpFor(up) * modelDirection;
+            const sw::Vec3 haveFlat = have - up * glm::dot(have, up);
+            const sw::Vec3 wantFlat = wantedTangent - up * glm::dot(wantedTangent, up);
+            if (glm::length(haveFlat) < 1.0e-4f || glm::length(wantFlat) < 1.0e-4f)
+            {
+                return 0.0f;
+            }
+            const sw::Vec3 a = glm::normalize(haveFlat);
+            const sw::Vec3 b = glm::normalize(wantFlat);
+            return std::atan2(glm::dot(glm::cross(a, b), up),
+                              glm::clamp(glm::dot(a, b), -1.0f, 1.0f));
+        }
+
         /// Cargo colour for a resource — ore reads as rock, metal as metal.
         /// One crate on a belt is a few pixels; the colour IS the label.
         [[nodiscard]] sw::Vec3 resourceCargoColor(sw::res::Resource resource)
@@ -656,7 +693,8 @@ namespace game
         SW_LOG_INFO("Game", "Milestone 10 scene ready: {} entities", m_world.aliveCount());
         SW_LOG_INFO("Game",
                     "Controls: Tab pilot/free | G EVA (first person: mouse turns you, "
-                    "A/D strafe) | F build menu | B hangar | M map | P next ship | V "
+                    "A/D strafe) | F build menu; LCLICK build, WHEEL rotate, R demolish; "
+                    "belts: LCLICK output then input | B hangar | M map | P next ship | V "
                     "speed ORB/SRF | Shift/Ctrl throttle | ,/. warp | W/S A/D arrows Q/E "
                     "X | Space pause | Esc quit");
     }
@@ -1090,123 +1128,22 @@ namespace game
             const sw::Vec3 siteNorth = glm::cross(siteUp, siteEast);
             // Model space is Y-up; the anchor's local rotation stands the
             // building on the local vertical.
-            const sw::Quat standUp = [&] {
-                const sw::Vec3 from{0.0f, 1.0f, 0.0f};
-                const sw::f32 alignment = glm::dot(from, siteUp);
-                if (alignment > 0.99999f)
-                {
-                    return sw::Quat{1.0f, 0.0f, 0.0f, 0.0f};
-                }
-                if (alignment < -0.99999f)
-                {
-                    return sw::Quat{0.0f, 1.0f, 0.0f, 0.0f}; // 180 deg about X
-                }
-                const sw::Vec3 axis = glm::cross(from, siteUp);
-                return glm::normalize(
-                    sw::Quat{1.0f + alignment, axis.x, axis.y, axis.z});
-            }();
+            const sw::Quat standUp = standUpFor(siteUp);
 
             sw::ecs::Entity hubEntity{};
             // Spawns one building from its catalogue definition: geometry,
             // power, storage and siting rules all come from the .swpart.
-            // Yaw a building about its own local vertical so that a given
-            // MODEL direction ends up pointing a given way on the ground.
-            // This is how a machine is made to FACE its belt, and it is the
-            // same arithmetic F2's placement cursor will use when the player
-            // spins a building with the scroll wheel.
-            auto yawToFace = [&](const sw::Vec3& modelDirection,
-                                 const sw::Vec3& wantedTangent) {
-                const sw::Vec3 have = standUp * modelDirection;
-                const sw::Vec3 haveFlat = have - siteUp * glm::dot(have, siteUp);
-                const sw::Vec3 wantFlat =
-                    wantedTangent - siteUp * glm::dot(wantedTangent, siteUp);
-                if (glm::length(haveFlat) < 1.0e-4f || glm::length(wantFlat) < 1.0e-4f)
-                {
-                    return 0.0f;
-                }
-                const sw::Vec3 a = glm::normalize(haveFlat);
-                const sw::Vec3 b = glm::normalize(wantFlat);
-                return std::atan2(glm::dot(glm::cross(a, b), siteUp),
-                                  glm::clamp(glm::dot(a, b), -1.0f, 1.0f));
-            };
-
             auto spawnBuilding = [&](sw::u32 definitionId, sw::f32 eastMetres,
                                      sw::f32 northMetres, sw::u32 recipeId,
                                      const sw::Vec4& marker, sw::f32 yawRadians = 0.0f) {
-                const sw::parts::PartDefinition* definition =
-                    sw::parts::findDefinition(definitionId);
-                if (definition == nullptr || !sw::parts::isBuilding(*definition))
-                {
-                    SW_LOG_WARN("Game", "Building definition {} missing from the catalog",
-                                definitionId);
-                    return sw::ecs::Entity::null();
-                }
-                const sw::parts::BuildingSpec& spec = definition->building;
-
                 // Offsets are metres on the tangent plane, re-normalised so
-                // every building sits on the sphere (and on the heightfield
-                // the collision code reads).
+                // every building sits on the sphere — and then handed to the
+                // very same placement the player's build cursor uses.
                 const sw::Vec3 direction = glm::normalize(
                     siteUp + siteEast * (eastMetres / static_cast<sw::f32>(kTerraRadius)) +
                     siteNorth * (northMetres / static_cast<sw::f32>(kTerraRadius)));
-                const sw::f64 elevation =
-                    sw::planet::terrainElevation(terrain, direction);
-
-                const sw::ecs::Entity e = m_world.createEntity();
-                TransformComponent transform{};
-                m_world.addComponent(e, transform); // metres: parts are life-size
-                m_world.addComponent(e, PreviousTransformComponent{});
-                m_world.addComponent(e, BoundsComponent{
-                                            static_cast<sw::f32>(std::max(
-                                                spec.footprintM[0], spec.footprintM[1]))});
-                m_world.addComponent(e, MeshComponent{m_partMeshIds.at(definitionId)});
-                // Only the BEACON marks the site on the star map. Six
-                // markers a few metres apart are six overlapping dots at
-                // map scale, which is noise, not information — the site has
-                // one pointer, and it is the building whose job that is.
-                if (marker.a > 0.0f)
-                {
-                    m_world.addComponent(e, MapMarkerComponent{marker});
-                }
-                sw::phys::SurfaceAnchorComponent anchor{};
-                anchor.body = terraEntity;
-                anchor.localPosition =
-                    sw::WorldVec3(direction) * (kTerraRadius + elevation);
-                // Yaw is applied in MODEL space about +Y, which standUp maps
-                // onto the local vertical — so it is a spin on the spot, not
-                // a tilt.
-                anchor.localRotation =
-                    standUp * glm::angleAxis(yawRadians, sw::Vec3{0.0f, 1.0f, 0.0f});
-                m_world.addComponent(e, anchor);
-
-                sw::factory::BuildingComponent building{};
-                building.definitionId = definitionId;
-                building.site = hubEntity; // the hub spawns first
-                building.category = spec.category;
-                building.groundDensity = sw::planet::oreDensity(
-                    deposits, direction, sw::res::Resource::IronOre);
-                m_world.addComponent(e, building);
-
-                sw::factory::RecipeStateComponent state{};
-                state.recipeId = recipeId;
-                m_world.addComponent(e, state);
-
-                sw::factory::PowerComponent power{};
-                power.producedKw = std::max(0.0, spec.powerKw);
-                power.consumedKw = std::max(0.0, -spec.powerKw);
-                if (const auto* recipe = sw::factory::findRecipe(recipeId))
-                {
-                    power.consumedKw += recipe->powerKw;
-                }
-                m_world.addComponent(e, power);
-
-                if (spec.inventoryVolumeM3 > 0.0)
-                {
-                    sw::factory::InventoryComponent inventory{};
-                    inventory.volumeCapacityM3 = spec.inventoryVolumeM3;
-                    m_world.addComponent(e, inventory);
-                }
-                return e;
+                return placeBuilding(definitionId, terraEntity, direction, yawRadians,
+                                     recipeId, hubEntity, marker);
             };
 
             // The hub defines the site; everything else points back at it.
@@ -1241,16 +1178,16 @@ namespace game
             const sw::ecs::Entity minerEntity = spawnBuilding(
                 sw::parts::kBuildingMiner, 34.0f, 0.0f, sw::factory::kRecipeMineIronOre,
                 {},
-                yawToFace(portDirection(minerPart, sw::parts::NodeType::ConveyorOut),
+                yawToFace(siteUp, portDirection(minerPart, sw::parts::NodeType::ConveyorOut),
                           -siteNorth));
             const sw::ecs::Entity refineryEntity = spawnBuilding(
                 sw::parts::kBuildingRefinery, 34.0f, -30.0f,
                 sw::factory::kRecipeSmeltIron, {},
-                yawToFace(portDirection(refineryPart, sw::parts::NodeType::ConveyorIn),
+                yawToFace(siteUp, portDirection(refineryPart, sw::parts::NodeType::ConveyorIn),
                           siteNorth));
             const sw::ecs::Entity storageEntity = spawnBuilding(
                 sw::parts::kBuildingStorage, 0.0f, -30.0f, 0u, {},
-                yawToFace(portDirection(storagePart, sw::parts::NodeType::ConveyorIn),
+                yawToFace(siteUp, portDirection(storagePart, sw::parts::NodeType::ConveyorIn),
                           siteEast));
             spawnBuilding(sw::parts::kBuildingSolarFarm, -34.0f, -15.0f, 0u, {});
 
@@ -1270,92 +1207,30 @@ namespace game
                 m_world.addComponent(beaconEntity, beacon);
             }
 
-            // ---- the chain, and the BELTS that make it visible -----------
-            // The ItemLink is still what moves the matter. The conveyor is
-            // the same link with a shape: a path along the ground and cargo
-            // riding it at the rate the link actually achieves.
-            auto layConveyor = [&](sw::ecs::Entity from, sw::ecs::Entity to,
-                                   sw::res::Resource resource, sw::f64 rate) {
-                if (from.isNull() || to.isNull())
+            // ---- the BELTS, laid by the very tool the player uses ---------
+            // Two clicks' worth of work: pick the machine that ships, pick
+            // the one that receives, and `planBelt` produces the run. The
+            // starting outpost gets no shortcut — if the tool could not lay
+            // this belt, neither could the scene.
+            auto layBelt = [&](sw::ecs::Entity from, sw::ecs::Entity to) {
+                std::vector<BeltTile> tiles;
+                const sw::build::Verdict verdict = planBelt(terraEntity, from, to, tiles);
+                if (verdict != sw::build::Verdict::Ok)
                 {
-                    return;
+                    SW_LOG_WARN("Game", "Starting belt refused: {}",
+                                sw::build::verdictText(verdict));
                 }
-                // The link lives on the DESTINATION, as it always has.
-                m_world.addComponent(
-                    to, sw::factory::ItemLinkComponent{from, resource, rate});
-
-                const auto& fromAnchor =
-                    m_world.getComponent<sw::phys::SurfaceAnchorComponent>(from);
-                const auto& toAnchor =
-                    m_world.getComponent<sw::phys::SurfaceAnchorComponent>(to);
-
-                // A BELT RUNS PORT TO PORT, not centre to centre. The mouths
-                // are authored on the geometry as conveyor-out / conveyor-in
-                // nodes, so the deck arrives where the machine actually
-                // takes delivery — and a machine with no matching port is a
-                // chain that cannot be built, which is worth saying out loud
-                // now rather than discovering in F2.
-                auto portOffset = [&](sw::ecs::Entity entity,
-                                      sw::parts::NodeType type) -> sw::WorldVec3 {
-                    const auto& building =
-                        m_world.getComponent<sw::factory::BuildingComponent>(entity);
-                    const auto& anchor =
-                        m_world.getComponent<sw::phys::SurfaceAnchorComponent>(entity);
-                    const auto* definition =
-                        sw::parts::findDefinition(building.definitionId);
-                    if (definition == nullptr)
-                    {
-                        return anchor.localPosition;
-                    }
-                    const sw::parts::AttachNode* port =
-                        sw::parts::findConveyorNode(*definition, type);
-                    if (port == nullptr)
-                    {
-                        SW_LOG_WARN("Game", "'{}' has no {} port: belt falls back to "
-                                            "its centre",
-                                    definition->name, sw::parts::nodeTypeName(type));
-                        return anchor.localPosition;
-                    }
-                    return anchor.localPosition +
-                           sw::WorldVec3(anchor.localRotation * port->position);
-                };
-                const sw::WorldVec3 fromPort =
-                    portOffset(from, sw::parts::NodeType::ConveyorOut);
-                const sw::WorldVec3 toPort =
-                    portOffset(to, sw::parts::NodeType::ConveyorIn);
-                (void)fromAnchor;
-                (void)toAnchor;
-
-                ConveyorComponent conveyor{};
-                conveyor.body = terraEntity;
-                conveyor.link = to;
-                conveyor.cargoColor = resourceCargoColor(resource);
-                // The deck follows the GROUND, sampled from the same
-                // heightfield the collider reads (Factory/Conveyor.hpp) —
-                // the very routine F2's hand-drawn belts will use.
-                conveyor.pointCount = ConveyorComponent::kMaxPoints;
-                conveyor.lengthM = static_cast<sw::f32>(sw::factory::buildConveyorPath(
-                    terrain, kTerraRadius, fromPort, toPort, 1.05, conveyor.points,
-                    conveyor.pointCount));
-
-                // No mesh component: the deck is TILED from the CV-1 .swpart
-                // every frame (collectConveyors), so editing that file in
-                // Part Studio changes every belt in the world. The entity
-                // exists to carry the path and to be anchored, saved and
-                // interpolated like any other structure.
-                const sw::ecs::Entity e = m_world.createEntity();
-                TransformComponent transform{};
-                m_world.addComponent(e, transform);
-                m_world.addComponent(e, PreviousTransformComponent{});
-                sw::phys::SurfaceAnchorComponent anchor{};
-                anchor.body = terraEntity;
-                anchor.localPosition = conveyor.points[0];
-                m_world.addComponent(e, anchor);
-                m_world.addComponent(e, conveyor);
+                for (const BeltTile& tile : tiles)
+                {
+                    placeBuilding(sw::parts::kBuildingConveyor, terraEntity,
+                                  tile.direction, tile.yawRadians, 0u, hubEntity, {});
+                }
             };
+            layBelt(minerEntity, refineryEntity);
+            layBelt(refineryEntity, storageEntity);
 
-            layConveyor(minerEntity, refineryEntity, sw::res::Resource::IronOre, 3.0);
-            layConveyor(refineryEntity, storageEntity, sw::res::Resource::Iron, 3.0);
+            // ...and now derive what those rows of segments actually connect.
+            rebuildConveyorNetwork();
 
             if (!hubEntity.isNull())
             {
@@ -3003,6 +2878,13 @@ namespace game
             updateChaseCamera(deltaSeconds);
         }
 
+        // THE GROUND CURSOR AIMS LAST, on purpose. It casts a ray from the
+        // camera at the ground, so it needs THIS frame's camera and THIS
+        // frame's interpolated planet — not last frame's, and not the raw
+        // tick pose. Running it up with the key handling put a whole frame
+        // between where you were looking and where the ghost landed.
+        updateBuildCursor();
+
         // --- periodic statistics ------------------------------------------------
         const sw::f64 now = clock().totalSeconds();
         if (now - m_lastStatsLogSeconds > 5.0)
@@ -3417,6 +3299,76 @@ namespace game
                                     m_nodePrograde, m_nodeNormal, m_nodeRadial),
                         kX, y, kLine, nodeColor);
                 y += kLine * 1.3f;
+            }
+        }
+
+        // ---- F2: what the ground cursor is about to do -------------------
+        if (!m_mapView && !m_editorMode && m_evaMode && !m_buildMenu)
+        {
+            const auto* held = sw::parts::findDefinition(m_heldBuilding);
+            auto nameOf = [&](sw::ecs::Entity entity) -> std::string {
+                const auto* building =
+                    m_world.tryGetComponent<sw::factory::BuildingComponent>(entity);
+                const auto* definition =
+                    (building != nullptr)
+                        ? sw::parts::findDefinition(building->definitionId)
+                        : nullptr;
+                return (definition != nullptr) ? definition->name : std::string("?");
+            };
+            const bool beltMode =
+                held != nullptr &&
+                held->building.category == sw::factory::BuildingCategory::Conveyor;
+
+            if (beltMode)
+            {
+                // Two clicks, and the HUD says which one you are on.
+                if (m_beltSource.isNull())
+                {
+                    hudText("BELT  PICK AN OUTPUT", -0.36f, 0.70f, 0.038f,
+                            {0.85f, 0.92f, 1.0f, 1.0f});
+                    hudText(m_buildCursor.target.isNull()
+                                ? "LOOK AT A MACHINE"
+                                : std::format("LCLICK  FROM {}",
+                                              nameOf(m_buildCursor.target)),
+                            -0.36f, 0.75f, 0.030f, {0.55f, 0.72f, 0.88f, 0.9f});
+                }
+                else
+                {
+                    const bool ok = m_beltVerdict == sw::build::Verdict::Ok &&
+                                    !m_beltPreview.empty();
+                    hudText(std::format("BELT  FROM {}", nameOf(m_beltSource)), -0.36f,
+                            0.70f, 0.038f,
+                            ok ? sw::Vec4{0.65f, 1.0f, 0.70f, 1.0f}
+                               : sw::Vec4{1.0f, 0.62f, 0.55f, 1.0f});
+                    hudText(m_beltPreview.empty()
+                                ? "LOOK AT AN INPUT   R CANCEL"
+                                : (ok ? std::format("LCLICK  {} SEGMENTS TO {}   R CANCEL",
+                                                    m_beltPreview.size(),
+                                                    nameOf(m_buildCursor.target))
+                                      : std::string(sw::build::verdictText(m_beltVerdict))),
+                            -0.36f, 0.75f, 0.030f,
+                            ok ? sw::Vec4{0.55f, 0.72f, 0.88f, 0.9f}
+                               : sw::Vec4{1.0f, 0.55f, 0.45f, 0.95f});
+                }
+            }
+            else if (held != nullptr)
+            {
+                const bool ok = m_buildCursor.verdict == sw::build::Verdict::Ok;
+                hudText(std::format("BUILD {}  {:.0f} M", held->name,
+                                    m_buildCursor.rangeM),
+                        -0.36f, 0.70f, 0.038f,
+                        ok ? sw::Vec4{0.65f, 1.0f, 0.70f, 1.0f}
+                           : sw::Vec4{1.0f, 0.62f, 0.55f, 1.0f});
+                hudText(ok ? "LCLICK BUILD   WHEEL ROTATE   F MENU"
+                           : sw::build::verdictText(m_buildCursor.verdict),
+                        -0.36f, 0.75f, 0.030f,
+                        ok ? sw::Vec4{0.55f, 0.72f, 0.88f, 0.9f}
+                           : sw::Vec4{1.0f, 0.55f, 0.45f, 0.95f});
+            }
+            if (!beltMode && !m_buildCursor.target.isNull())
+            {
+                hudText(std::format("R  DEMOLISH {}", nameOf(m_buildCursor.target)),
+                        -0.36f, 0.80f, 0.030f, {1.0f, 0.72f, 0.35f, 0.95f});
             }
         }
 
@@ -4630,6 +4582,789 @@ namespace game
         }
     }
 
+
+    // ------------------------------------------------------------------------
+    // PLACING A BUILDING
+    //
+    // ONE function. The scene builder lays the starting outpost with it and
+    // the player's build cursor commits with it, so a machine you put down
+    // and a machine the game put down are the same object, made the same
+    // way — there is no "scripted" variant that quietly differs.
+    //
+    // `direction` is a UNIT vector in the body's rotating frame; `yaw` spins
+    // the building about its own local vertical. Everything else — the
+    // footprint, the power, the storage, the recipes it may run — is read
+    // from the .swpart.
+    // ------------------------------------------------------------------------
+    sw::ecs::Entity StarWorksGame::placeBuilding(sw::u32 definitionId,
+                                                 sw::ecs::Entity body,
+                                                 const sw::Vec3& direction,
+                                                 sw::f32 yawRadians, sw::u32 recipeId,
+                                                 sw::ecs::Entity site,
+                                                 const sw::Vec4& marker)
+    {
+        const sw::parts::PartDefinition* definition =
+            sw::parts::findDefinition(definitionId);
+        if (definition == nullptr || !sw::parts::isBuilding(*definition))
+        {
+            SW_LOG_WARN("Game", "Building definition {} missing from the catalog",
+                        definitionId);
+            return sw::ecs::Entity::null();
+        }
+        const auto* terrain = m_world.tryGetComponent<sw::planet::TerrainComponent>(body);
+        const auto* gravity =
+            m_world.tryGetComponent<sw::phys::GravitySourceComponent>(body);
+        if (terrain == nullptr || gravity == nullptr)
+        {
+            SW_LOG_WARN("Game", "Cannot build on a body with no ground");
+            return sw::ecs::Entity::null();
+        }
+        const auto* deposits = m_world.tryGetComponent<sw::planet::DepositComponent>(body);
+
+        const sw::parts::BuildingSpec& spec = definition->building;
+        const sw::Vec3 up = glm::normalize(direction);
+        const sw::f64 elevation = sw::planet::terrainElevation(*terrain, up);
+
+        // Stand the model upright: its +Y onto the local vertical, then the
+        // requested yaw about that same axis (applied in MODEL space, which
+        // is why it is a spin on the spot and not a tilt).
+        const sw::Quat standUp = standUpFor(up);
+
+        const sw::ecs::Entity e = m_world.createEntity();
+        m_world.addComponent(e, TransformComponent{}); // metres: parts are life-size
+        m_world.addComponent(e, PreviousTransformComponent{});
+        m_world.addComponent(e, BoundsComponent{static_cast<sw::f32>(
+                                    std::max(spec.footprintM[0], spec.footprintM[1]))});
+        m_world.addComponent(e, MeshComponent{m_partMeshIds.at(definitionId)});
+        if (marker.a > 0.0f)
+        {
+            m_world.addComponent(e, MapMarkerComponent{marker});
+        }
+
+        sw::phys::SurfaceAnchorComponent anchor{};
+        anchor.body = body;
+        anchor.localPosition = sw::WorldVec3(up) * (gravity->bodyRadius + elevation);
+        anchor.localRotation =
+            standUp * glm::angleAxis(yawRadians, sw::Vec3{0.0f, 1.0f, 0.0f});
+        m_world.addComponent(e, anchor);
+
+        sw::factory::BuildingComponent building{};
+        building.definitionId = definitionId;
+        building.site = site;
+        building.category = spec.category;
+        building.groundDensity =
+            (deposits != nullptr)
+                ? sw::planet::oreDensity(*deposits, up, sw::res::Resource::IronOre)
+                : 0.0f;
+        m_world.addComponent(e, building);
+
+        sw::factory::RecipeStateComponent state{};
+        state.recipeId = recipeId;
+        m_world.addComponent(e, state);
+
+        sw::factory::PowerComponent power{};
+        power.producedKw = std::max(0.0, spec.powerKw);
+        power.consumedKw = std::max(0.0, -spec.powerKw);
+        if (const auto* recipe = sw::factory::findRecipe(recipeId))
+        {
+            power.consumedKw += recipe->powerKw;
+        }
+        m_world.addComponent(e, power);
+
+        if (spec.inventoryVolumeM3 > 0.0)
+        {
+            sw::factory::InventoryComponent inventory{};
+            inventory.volumeCapacityM3 = spec.inventoryVolumeM3;
+            m_world.addComponent(e, inventory);
+        }
+        return e;
+    }
+
+
+
+
+    // ------------------------------------------------------------------------
+    // A BODY'S POSE AS IT IS BEING DRAWN
+    //
+    // Anything positioned relative to a planet has to use the pose that
+    // planet is RENDERED at, not the one it was last simulated at. The
+    // difference is a physics step of orbital motion — 595 m for Terra — and
+    // it resets every tick, so the symptom is always the same: a thing that
+    // should be nailed to the ground swings hundreds of metres and snaps
+    // back. It cost us the conveyor cargo once already; the build ghost is
+    // the second time, so it is a function now.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::bodyRenderPose(sw::ecs::Entity body, sw::WorldVec3& outPosition,
+                                       glm::dquat& outRotation)
+    {
+        outPosition = sw::WorldVec3{0.0};
+        outRotation = glm::dquat{1.0, 0.0, 0.0, 0.0};
+        const auto* transform = m_world.tryGetComponent<TransformComponent>(body);
+        if (transform == nullptr)
+        {
+            return;
+        }
+        const sw::f64 alpha = static_cast<sw::f64>(m_physicsLane->alpha());
+        outPosition = transform->position;
+        if (const auto* previous =
+                m_world.tryGetComponent<PreviousTransformComponent>(body))
+        {
+            outPosition = glm::mix(previous->position, transform->position, alpha);
+        }
+        if (const auto* gravity =
+                m_world.tryGetComponent<sw::phys::GravitySourceComponent>(body))
+        {
+            outRotation = sw::phys::spinRotationAt(*gravity, alpha);
+        }
+        else
+        {
+            outRotation = glm::dquat(transform->rotation);
+        }
+    }
+
+
+    bool StarWorksGame::conveyorPortOf(sw::ecs::Entity entity, sw::parts::NodeType type,
+                                       sw::WorldVec3& outLocal)
+    {
+        const auto* building =
+            m_world.tryGetComponent<sw::factory::BuildingComponent>(entity);
+        const auto* anchor =
+            m_world.tryGetComponent<sw::phys::SurfaceAnchorComponent>(entity);
+        if (building == nullptr || anchor == nullptr)
+        {
+            return false;
+        }
+        const auto* definition = sw::parts::findDefinition(building->definitionId);
+        if (definition == nullptr)
+        {
+            return false;
+        }
+        const sw::parts::AttachNode* port =
+            sw::parts::findConveyorNode(*definition, type);
+        if (port == nullptr)
+        {
+            return false;
+        }
+        outLocal =
+            anchor->localPosition + sw::WorldVec3(anchor->localRotation * port->position);
+        return true;
+    }
+
+    // ------------------------------------------------------------------------
+    // PLANNING A BELT
+    //
+    // The player's operation is "feed THIS from THAT", not "put a tile here,
+    // then another". So the tool takes two machines and produces the run
+    // between their mouths — and what it produces is ordinary CV-1 buildings,
+    // so afterwards there is nothing special about a belt the tool laid
+    // versus one placed by hand. The network is still derived from where the
+    // ports ended up.
+    //
+    // Same routine for the preview and the commit: a run you were shown in
+    // green cannot come out different when you click.
+    // ------------------------------------------------------------------------
+    sw::build::Verdict StarWorksGame::planBelt(sw::ecs::Entity body, sw::ecs::Entity from,
+                                               sw::ecs::Entity to,
+                                               std::vector<BeltTile>& outTiles)
+    {
+        outTiles.clear();
+        const auto* terrain = m_world.tryGetComponent<sw::planet::TerrainComponent>(body);
+        const auto* gravity =
+            m_world.tryGetComponent<sw::phys::GravitySourceComponent>(body);
+        const auto* segment = sw::parts::findDefinition(sw::parts::kBuildingConveyor);
+        if (terrain == nullptr || gravity == nullptr || segment == nullptr ||
+            from == to || from.isNull() || to.isNull())
+        {
+            return sw::build::Verdict::NoDefinition;
+        }
+
+        sw::WorldVec3 fromPort{};
+        sw::WorldVec3 toPort{};
+        if (!conveyorPortOf(from, sw::parts::NodeType::ConveyorOut, fromPort) ||
+            !conveyorPortOf(to, sw::parts::NodeType::ConveyorIn, toPort))
+        {
+            return sw::build::Verdict::NoDefinition; // one of them has no mouth
+        }
+
+        sw::WorldVec3 path[sw::factory::kMaxConveyorPoints]{};
+        sw::u32 count = sw::factory::kMaxConveyorPoints;
+        const sw::f64 length = sw::factory::buildConveyorPath(
+            *terrain, gravity->bodyRadius, fromPort, toPort, 0.0, path, count);
+        if (length > kMaxBeltLengthM)
+        {
+            return sw::build::Verdict::OutOfRange;
+        }
+
+        const sw::f64 span = static_cast<sw::f64>(m_conveyorSegmentM);
+        const sw::i32 tiles =
+            std::max(1, static_cast<sw::i32>(std::lround(length / span)));
+        const std::vector<sw::build::Footprint> occupied = footprintsOn(body);
+        static const sw::planet::DepositComponent kNoDeposits{};
+        const auto* deposits = m_world.tryGetComponent<sw::planet::DepositComponent>(body);
+
+        sw::build::Verdict worst = sw::build::Verdict::Ok;
+        for (sw::i32 i = 0; i < tiles; ++i)
+        {
+            sw::WorldVec3 local{};
+            sw::Vec3 heading{};
+            sw::factory::conveyorPointAt(
+                path, count, (static_cast<sw::f64>(i) + 0.5) * (length / tiles), local,
+                heading);
+            const sw::Vec3 up = sw::Vec3(glm::normalize(local));
+            // Model -Z is the direction of travel: aim it down the run.
+            outTiles.push_back({up, yawToFace(up, sw::Vec3{0.0f, 0.0f, -1.0f}, heading)});
+
+            const sw::build::Verdict verdict = sw::build::validatePlacement(
+                *terrain, (deposits != nullptr) ? *deposits : kNoDeposits,
+                gravity->bodyRadius, *segment, up, occupied);
+            if (verdict != sw::build::Verdict::Ok && worst == sw::build::Verdict::Ok)
+            {
+                worst = verdict; // the FIRST reason the run cannot be laid
+            }
+        }
+        return worst;
+    }
+
+    sw::u32 StarWorksGame::defaultRecipeFor(sw::factory::BuildingCategory category)
+    {
+        const std::vector<sw::u32> recipes = sw::factory::recipesForCategory(category);
+        return recipes.empty() ? 0u : recipes.front();
+    }
+
+    // ------------------------------------------------------------------------
+    // THE CONVEYOR NETWORK, DERIVED FROM GEOMETRY
+    //
+    // A belt segment is an ordinary building: the player places them one at a
+    // time, like a smelter. What turns a ROW of them into a working link is
+    // not an intention the game recorded — it is that their conveyor-out and
+    // conveyor-in ports MEET. So the network is not stored, it is derived,
+    // after every build and every demolition, from where things are.
+    //
+    // That is the same choice the deposits and the orbits already made, and
+    // it buys the same thing: there is no second copy of the truth to fall
+    // out of step. Demolish a segment in the middle of a run and the chain
+    // simply is not there next frame, because the ports no longer meet.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::rebuildConveyorNetwork()
+    {
+
+        // Everything standing, with its ports resolved into the body frame.
+        std::vector<sw::factory::PortNode> nodes;
+        std::vector<sw::ecs::Entity> bodies;
+        m_world.forEach<sw::factory::BuildingComponent,
+                        sw::phys::SurfaceAnchorComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building,
+                sw::phys::SurfaceAnchorComponent& anchor) {
+                const auto* definition = sw::parts::findDefinition(building.definitionId);
+                if (definition == nullptr)
+                {
+                    return;
+                }
+                sw::factory::PortNode node{};
+                node.entity = entity;
+                node.isBelt =
+                    building.category == sw::factory::BuildingCategory::Conveyor;
+                node.centre = anchor.localPosition;
+                if (const auto* port = sw::parts::findConveyorNode(
+                        *definition, sw::parts::NodeType::ConveyorOut))
+                {
+                    node.outPort = anchor.localPosition +
+                                   sw::WorldVec3(anchor.localRotation * port->position);
+                    node.hasOut = true;
+                }
+                if (const auto* port = sw::parts::findConveyorNode(
+                        *definition, sw::parts::NodeType::ConveyorIn))
+                {
+                    node.inPort = anchor.localPosition +
+                                  sw::WorldVec3(anchor.localRotation * port->position);
+                    node.hasIn = true;
+                }
+                nodes.push_back(node);
+                bodies.push_back(anchor.body);
+            });
+
+        // Old conveyors and their links go first: the graph below is the only
+        // author of both, so anything left over is a ghost of a demolished run.
+        std::vector<sw::ecs::Entity> stale;
+        m_world.forEach<ConveyorComponent>(
+            [&](sw::ecs::Entity entity, ConveyorComponent&) { stale.push_back(entity); });
+        for (const sw::ecs::Entity entity : stale)
+        {
+            m_world.destroyEntity(entity);
+        }
+        for (const sw::factory::PortNode& node : nodes)
+        {
+            if (m_world.hasComponent<sw::factory::ItemLinkComponent>(node.entity))
+            {
+                m_world.removeComponent<sw::factory::ItemLinkComponent>(node.entity);
+            }
+        }
+
+        for (const sw::factory::Chain& chain :
+             sw::factory::traceConveyorChains(nodes, sw::factory::kConveyorPortSnapM))
+        {
+            const sw::factory::PortNode& source = nodes[chain.source];
+            const sw::factory::PortNode& destination = nodes[chain.destination];
+            if (bodies[chain.source] != bodies[chain.destination])
+            {
+                continue; // two different worlds: not a belt, a coincidence
+            }
+
+            // The cargo path: out of the source, along every deck, into the
+            // destination.
+            std::vector<sw::WorldVec3> path;
+            path.push_back(source.outPort);
+            for (const sw::u32 belt : chain.belts)
+            {
+                path.push_back(nodes[belt].centre);
+            }
+            path.push_back(destination.inPort);
+
+            // WHAT does it carry? Whatever the source makes. Nothing to say
+            // means nothing to move.
+            sw::res::Resource resource = sw::res::Resource::Count;
+            if (const auto* state =
+                    m_world.tryGetComponent<sw::factory::RecipeStateComponent>(
+                        source.entity))
+            {
+                if (const auto* recipe = sw::factory::findRecipe(state->recipeId))
+                {
+                    resource = recipe->outputs[0].resource;
+                }
+            }
+            if (resource == sw::res::Resource::Count)
+            {
+                if (const auto* inventory =
+                        m_world.tryGetComponent<sw::factory::InventoryComponent>(
+                            source.entity))
+                {
+                    for (const sw::factory::InventorySlot& slot : inventory->slots)
+                    {
+                        if (slot.resource != sw::res::Resource::Count && slot.units > 0.0)
+                        {
+                            resource = slot.resource;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (resource == sw::res::Resource::Count ||
+                !m_world.hasComponent<sw::factory::InventoryComponent>(
+                    destination.entity))
+            {
+                continue; // nothing to carry, or nowhere to put it
+            }
+
+            // The LINK, on the destination, as it has always been.
+            m_world.addComponent(
+                destination.entity,
+                sw::factory::ItemLinkComponent{source.entity, resource, 3.0});
+
+            // ...and the cargo path, subsampled if the run is longer than the
+            // component can hold: the crates are a depiction, and sixteen
+            // waypoints depict a belt of any length perfectly well.
+            ConveyorComponent conveyor{};
+            conveyor.body = bodies[chain.source];
+            conveyor.link = destination.entity;
+            conveyor.cargoColor = resourceCargoColor(resource);
+            const sw::usize count =
+                std::min<sw::usize>(path.size(), ConveyorComponent::kMaxPoints);
+            conveyor.pointCount = static_cast<sw::u32>(count);
+            for (sw::usize i = 0; i < count; ++i)
+            {
+                const sw::usize pick =
+                    (count == 1) ? 0 : (i * (path.size() - 1)) / (count - 1);
+                conveyor.points[i] = path[pick];
+            }
+            sw::f64 length = 0.0;
+            for (sw::u32 i = 0; i + 1 < conveyor.pointCount; ++i)
+            {
+                length += glm::length(conveyor.points[i + 1] - conveyor.points[i]);
+            }
+            conveyor.lengthM = static_cast<sw::f32>(length);
+            if (conveyor.lengthM < 0.5f)
+            {
+                continue;
+            }
+
+            const sw::ecs::Entity e = m_world.createEntity();
+            m_world.addComponent(e, TransformComponent{});
+            m_world.addComponent(e, PreviousTransformComponent{});
+            sw::phys::SurfaceAnchorComponent anchor{};
+            anchor.body = bodies[chain.source];
+
+            anchor.localPosition = conveyor.points[0];
+            m_world.addComponent(e, anchor);
+            m_world.addComponent(e, conveyor);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // F2 — THE GROUND BUILD CURSOR
+    //
+    // Arm a building in the F menu, walk to where you want it, look at the
+    // ground. The ghost lands where your gaze meets the heightfield — the
+    // real one, marched, not a flat plane at sea level — inside a reach you
+    // have to walk to extend. The wheel spins it. Click builds. R razes what
+    // you are looking at.
+    //
+    // The green/red is not a second opinion: it is exactly the verdict
+    // `placeBuilding` will be handed, from exactly the .swpart fields, so
+    // the ghost cannot promise something the commit refuses.
+    // ------------------------------------------------------------------------
+    std::vector<sw::build::Footprint> StarWorksGame::footprintsOn(
+        sw::ecs::Entity body)
+    {
+        std::vector<sw::build::Footprint> footprints;
+        m_world.forEach<sw::factory::BuildingComponent,
+                        sw::phys::SurfaceAnchorComponent>(
+            [&](sw::ecs::Entity, sw::factory::BuildingComponent& building,
+                sw::phys::SurfaceAnchorComponent& anchor) {
+                if (anchor.body != body)
+                {
+                    return;
+                }
+                const auto* definition = sw::parts::findDefinition(building.definitionId);
+                if (definition == nullptr ||
+                    building.category == sw::factory::BuildingCategory::Conveyor)
+                {
+                    return; // belts do not block: see validatePlacement
+                }
+                footprints.push_back(
+                    {sw::Vec3(glm::normalize(anchor.localPosition)),
+                     sw::build::footprintRadius(definition->building)});
+            });
+        return footprints;
+    }
+
+    sw::ecs::Entity StarWorksGame::siteNear(sw::ecs::Entity body,
+                                            const sw::Vec3& direction)
+    {
+        const auto* gravity =
+            m_world.tryGetComponent<sw::phys::GravitySourceComponent>(body);
+        if (gravity == nullptr)
+        {
+            return {};
+        }
+        sw::ecs::Entity best{};
+        sw::f64 bestDistance = 400.0; // a site is a PLACE: 400 m across, no more
+        m_world.forEach<sw::factory::SiteComponent, sw::phys::SurfaceAnchorComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::SiteComponent& site,
+                sw::phys::SurfaceAnchorComponent& anchor) {
+                if (site.body != body)
+                {
+                    return;
+                }
+                const sw::f64 distance = sw::build::groundDistance(
+                    direction, sw::Vec3(glm::normalize(anchor.localPosition)),
+                    gravity->bodyRadius);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = entity;
+                }
+            });
+        return best;
+    }
+
+    void StarWorksGame::updateBuildCursor()
+    {
+        m_buildCursor = {};
+        m_beltPreview.clear();
+        m_beltVerdict = sw::build::Verdict::NoGround;
+        if (!m_evaMode || m_mapView || m_editorMode || m_buildMenu ||
+            m_capsuleEntity.isNull())
+        {
+            m_beltSource = {};
+            return;
+        }
+
+        // What are we standing on? The SOI primary, if it has ground.
+        const sw::i32 primaryIndex = controlledPrimaryIndex();
+        if (primaryIndex < 0)
+        {
+            return;
+        }
+        const sw::ecs::Entity body =
+            m_celestialIndex.body(static_cast<sw::usize>(primaryIndex)).entity;
+        const auto* terrain = m_world.tryGetComponent<sw::planet::TerrainComponent>(body);
+        const auto* gravity =
+            m_world.tryGetComponent<sw::phys::GravitySourceComponent>(body);
+        const auto* bodyTransform = m_world.tryGetComponent<TransformComponent>(body);
+        if (terrain == nullptr || gravity == nullptr || bodyTransform == nullptr)
+        {
+            return;
+        }
+        m_buildCursor.body = body;
+
+        // Into the body's ROTATING frame, through the pose the body is being
+        // DRAWN at. The camera sits in the rendered world; transforming it
+        // with the raw tick pose would start the ray up to 595 m from where
+        // the player actually is.
+        sw::WorldVec3 bodyPosition{};
+        glm::dquat bodyRotation{};
+        bodyRenderPose(body, bodyPosition, bodyRotation);
+        const glm::dquat toBody = glm::inverse(bodyRotation);
+        const sw::WorldVec3 eyeLocal = toBody * (m_camera.position() - bodyPosition);
+        const sw::WorldVec3 aimLocal = toBody * glm::dvec3(m_camera.forward());
+
+        sw::WorldVec3 hitLocal{};
+        if (!sw::build::raycastTerrain(*terrain, gravity->bodyRadius, eyeLocal, aimLocal,
+                                       kBuildRangeM, hitLocal))
+        {
+            m_buildCursor.verdict = sw::build::Verdict::NoGround;
+            return;
+        }
+        m_buildCursor.active = true;
+        m_buildCursor.direction = sw::Vec3(glm::normalize(hitLocal));
+        m_buildCursor.rangeM = glm::length(hitLocal - eyeLocal);
+        m_buildCursor.yawRadians = m_buildYaw;
+
+        // ---- what is under the cursor, for R ----------------------------
+        {
+            sw::f64 nearest = 1.0e9;
+            m_world.forEach<sw::factory::BuildingComponent,
+                            sw::phys::SurfaceAnchorComponent>(
+                [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building,
+                    sw::phys::SurfaceAnchorComponent& anchor) {
+                    if (anchor.body != body)
+                    {
+                        return;
+                    }
+                    const auto* definition =
+                        sw::parts::findDefinition(building.definitionId);
+                    if (definition == nullptr)
+                    {
+                        return;
+                    }
+                    const sw::f64 distance = sw::build::groundDistance(
+                        m_buildCursor.direction,
+                        sw::Vec3(glm::normalize(anchor.localPosition)),
+                        gravity->bodyRadius);
+                    if (distance <
+                            static_cast<sw::f64>(
+                                sw::build::footprintRadius(definition->building)) &&
+                        distance < nearest)
+                    {
+                        nearest = distance;
+                        m_buildCursor.target = entity;
+                    }
+                });
+        }
+
+        const auto* held = sw::parts::findDefinition(m_heldBuilding);
+
+        // ---- BELT MODE: pick an output, then an input --------------------
+        // A conveyor is not placed tile by tile. The player's operation is
+        // "feed this from that", so the tool takes the two machines and the
+        // run between their mouths is the RESULT. It starts moving goods the
+        // instant it lands, because the network is derived from where the
+        // ports ended up and nothing else has to be told.
+        const bool beltMode =
+            held != nullptr &&
+            held->building.category == sw::factory::BuildingCategory::Conveyor;
+        if (beltMode)
+        {
+            if (!m_world.isAlive(m_beltSource))
+            {
+                m_beltSource = {};
+            }
+            if (!m_beltSource.isNull() && !m_buildCursor.target.isNull())
+            {
+                m_beltVerdict =
+                    planBelt(body, m_beltSource, m_buildCursor.target, m_beltPreview);
+            }
+
+            if (input().wasKeyPressed(sw::KeyCode::R) && !m_beltSource.isNull())
+            {
+                m_beltSource = {}; // R cancels a pending pick
+                m_beltPreview.clear();
+                return;
+            }
+            if (input().wasMouseButtonPressed(sw::MouseButton::Left) &&
+                !m_buildCursor.target.isNull())
+            {
+                if (m_beltSource.isNull())
+                {
+                    sw::WorldVec3 unused{};
+                    if (conveyorPortOf(m_buildCursor.target,
+                                       sw::parts::NodeType::ConveyorOut, unused))
+                    {
+                        m_beltSource = m_buildCursor.target;
+                    }
+                    else
+                    {
+                        SW_LOG_INFO("Game", "That machine has no output port");
+                    }
+                }
+                else if (m_beltVerdict == sw::build::Verdict::Ok &&
+                         !m_beltPreview.empty())
+                {
+                    for (const BeltTile& tile : m_beltPreview)
+                    {
+                        placeBuilding(sw::parts::kBuildingConveyor, body, tile.direction,
+                                      tile.yawRadians, 0u,
+                                      siteNear(body, tile.direction), {});
+                    }
+                    SW_LOG_INFO("Game", "BELT laid: {} segments", m_beltPreview.size());
+                    m_beltSource = {};
+                    m_beltPreview.clear();
+                    // ...and it is carrying goods from this frame on.
+                    rebuildConveyorNetwork();
+                }
+            }
+            return;
+        }
+        m_beltSource = {};
+
+        // ---- the verdict, for the armed building -------------------------
+        if (held == nullptr)
+        {
+            m_buildCursor.verdict = sw::build::Verdict::NoDefinition;
+        }
+        else
+        {
+            static const sw::planet::DepositComponent kNoDeposits{};
+            const auto* deposits =
+                m_world.tryGetComponent<sw::planet::DepositComponent>(body);
+            m_buildCursor.verdict = sw::build::validatePlacement(
+                *terrain, (deposits != nullptr) ? *deposits : kNoDeposits,
+                gravity->bodyRadius, *held, m_buildCursor.direction,
+                footprintsOn(body));
+        }
+
+        // ---- input -------------------------------------------------------
+        // The wheel has nothing else to do on foot (first person has no zoom),
+        // so it spins the building.
+        if (const sw::f32 scroll = input().scrollDeltaY(); scroll != 0.0f)
+        {
+            m_buildYaw += scroll * 0.19634954f; // 11.25 degrees a notch
+            m_buildCursor.yawRadians = m_buildYaw;
+        }
+
+        if (input().wasKeyPressed(sw::KeyCode::R) &&
+            !m_buildCursor.target.isNull())
+        {
+            const auto& building = m_world.getComponent<sw::factory::BuildingComponent>(
+                m_buildCursor.target);
+            const auto* definition = sw::parts::findDefinition(building.definitionId);
+            SW_LOG_INFO("Game", "DEMOLISHED {}",
+                        (definition != nullptr) ? definition->name : "building");
+            m_world.destroyEntity(m_buildCursor.target);
+            m_buildCursor.target = {};
+            rebuildConveyorNetwork();
+            return;
+        }
+
+        if (held != nullptr && m_buildCursor.verdict == sw::build::Verdict::Ok &&
+            input().wasMouseButtonPressed(sw::MouseButton::Left))
+        {
+            // A HUB founds its own site; everything else joins the nearest.
+            const sw::ecs::Entity entity = placeBuilding(
+                m_heldBuilding, body, m_buildCursor.direction, m_buildYaw,
+                defaultRecipeFor(held->building.category),
+                siteNear(body, m_buildCursor.direction),
+                (held->building.category == sw::factory::BuildingCategory::Beacon)
+                    ? sw::Vec4{1.0f, 0.78f, 0.28f, 1.0f}
+                    : sw::Vec4{});
+            if (!entity.isNull())
+            {
+                if (held->building.category == sw::factory::BuildingCategory::Hub)
+                {
+                    sw::factory::SiteComponent site{};
+                    std::snprintf(site.name, sizeof(site.name), "SITE %u", entity.index);
+                    site.body = body;
+                    m_world.addComponent(entity, site);
+                    m_world.getComponent<sw::factory::BuildingComponent>(entity).site =
+                        entity;
+                }
+                if (held->building.category == sw::factory::BuildingCategory::Beacon)
+                {
+                    sw::factory::BeaconComponent beacon{};
+                    std::snprintf(beacon.label, sizeof(beacon.label), "BEACON %u",
+                                  entity.index);
+                    m_world.addComponent(entity, beacon);
+                }
+                SW_LOG_INFO("Game", "BUILT {} at {:.0f} m", held->name,
+                            m_buildCursor.rangeM);
+                rebuildConveyorNetwork();
+            }
+        }
+    }
+
+    void StarWorksGame::collectBuildGhost(const sw::Camera& activeCamera)
+    {
+        if (!m_buildCursor.active || m_heldBuilding == 0)
+        {
+            return;
+        }
+        const auto* held = sw::parts::findDefinition(m_heldBuilding);
+        const auto meshIt = m_partMeshIds.find(m_heldBuilding);
+        if (held == nullptr || meshIt == m_partMeshIds.end())
+        {
+            return;
+        }
+        const bool beltMode =
+            held->building.category == sw::factory::BuildingCategory::Conveyor;
+        if (beltMode && m_beltPreview.empty())
+        {
+            return; // nothing picked yet, or nothing to show
+        }
+        const auto* gravity =
+            m_world.tryGetComponent<sw::phys::GravitySourceComponent>(m_buildCursor.body);
+        const auto* terrain =
+            m_world.tryGetComponent<sw::planet::TerrainComponent>(m_buildCursor.body);
+        const auto* bodyTransform =
+            m_world.tryGetComponent<TransformComponent>(m_buildCursor.body);
+        if (gravity == nullptr || terrain == nullptr || bodyTransform == nullptr)
+        {
+            return;
+        }
+
+        // The RENDERED pose — the ghost has to sit on the ground the player
+        // can see, which is the interpolated one.
+        sw::WorldVec3 bodyPosition{};
+        glm::dquat spin{};
+        bodyRenderPose(m_buildCursor.body, bodyPosition, spin);
+
+        const bool ok = beltMode ? (m_beltVerdict == sw::build::Verdict::Ok)
+                                 : (m_buildCursor.verdict == sw::build::Verdict::Ok);
+        const sw::Vec4 tint = ok ? sw::Vec4{0.35f, 1.0f, 0.45f, 0.45f}
+                                 : sw::Vec4{1.0f, 0.35f, 0.30f, 0.40f};
+
+        auto pushGhost = [&](const sw::Vec3& up, sw::f32 yaw) {
+            const sw::f64 elevation = sw::planet::terrainElevation(*terrain, up);
+            const sw::WorldVec3 world =
+                bodyPosition +
+                spin * (sw::WorldVec3(up) * (gravity->bodyRadius + elevation));
+            const sw::Vec3 relative = sw::Vec3(world - activeCamera.position());
+            sw::DrawItem item{};
+            item.mesh = &m_meshes[meshIt->second];
+            item.transform =
+                glm::translate(sw::Mat4{1.0f}, relative) *
+                glm::mat4_cast(sw::Quat(spin) * standUpFor(up) *
+                               glm::angleAxis(yaw, sw::Vec3{0.0f, 1.0f, 0.0f}));
+            item.boundsCenter = relative;
+            item.boundsRadius = sw::parts::partBoundsRadius(*held) + 0.5f;
+            item.tint = tint;
+            item.transparent = true;
+            m_drawItems.push_back(item);
+        };
+
+        if (beltMode)
+        {
+            // The WHOLE RUN, previewed. What you are shown in green is what
+            // planBelt will hand to placeBuilding — the same tiles, from the
+            // same call — so a belt cannot come out different when you click.
+            for (const BeltTile& tile : m_beltPreview)
+            {
+                pushGhost(tile.direction, tile.yawRadians);
+            }
+            return;
+        }
+        pushGhost(m_buildCursor.direction, m_buildCursor.yawRadians);
+    }
+
     // ------------------------------------------------------------------------
     // CARGO ON THE BELTS
     //
@@ -4727,29 +5462,11 @@ namespace game
                     m_drawItems.push_back(item);
                 };
 
-                // ---- THE DECK: the CV-1 part, tiled ----------------------
-                // Tiles are spaced to divide the path EXACTLY and stretched
-                // along their own Z to match, so a belt never shows a gap
-                // and never overlaps itself. Author a longer CV-1 and you
-                // get fewer, longer tiles — no code changes.
-                if (m_conveyorMeshIndex != 0xFFFFFFFFu && m_conveyorSegmentM > 0.05f)
-                {
-                    const sw::i32 tiles = std::clamp(
-                        static_cast<sw::i32>(std::lround(
-                            conveyor.lengthM / m_conveyorSegmentM)),
-                        1, 64);
-                    const sw::f32 tileSpan =
-                        conveyor.lengthM / static_cast<sw::f32>(tiles);
-                    for (sw::i32 i = 0; i < tiles; ++i)
-                    {
-                        placeAlong((static_cast<sw::f64>(i) + 0.5) *
-                                       static_cast<sw::f64>(tileSpan),
-                                   0.0f, tileSpan / m_conveyorSegmentM,
-                                   m_conveyorMeshIndex, {1.0f, 1.0f, 1.0f, 1.0f},
-                                   tileSpan);
-                    }
-                }
-
+                // The DECK is not drawn here any more: since F2 a belt is a
+                // row of ordinary CV-1 building entities, and they are drawn
+                // by the same pass as every other mesh in the world. What is
+                // left for this function is the one thing no entity holds —
+                // the cargo, which is a function of time and flow.
                 // ---- and only NOW, what is riding it ---------------------
                 // The deck above is drawn UNCONDITIONALLY, because a belt is
                 // a structure: it exists whether or not goods are on it.
@@ -5806,6 +6523,7 @@ namespace game
         if (!mapView)
         {
             collectConveyors(activeCamera);
+            collectBuildGhost(activeCamera);
         }
         // Beacons overlay both views; the HUD is drawn last so its panels
         // stay on top of them.

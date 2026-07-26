@@ -13,6 +13,7 @@ add_executable(StarWorksTests
     Source/Main.cpp
     Source/PartsTests.cpp
     Source/PhysicsTests.cpp
+    Source/ConstructionTests.cpp
     Source/PrimitivesTests.cpp
     Source/SaveTests.cpp
     Source/ScreenMarkerTests.cpp

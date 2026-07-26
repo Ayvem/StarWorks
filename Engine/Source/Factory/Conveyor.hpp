@@ -23,13 +23,26 @@
 // ============================================================================
 
 #include "Core/Types.hpp"
+#include "ECS/Entity.hpp"
 #include "Planet/Terrain.hpp"
 
 #include <algorithm>
+#include <span>
+#include <vector>
 
 namespace sw::factory
 {
     inline constexpr u32 kMaxConveyorPoints = 16;
+
+    /// How close two conveyor mouths must be to count as joined, in metres.
+    ///
+    /// It has to be generous — these are placed by eye on rough ground, and a
+    /// belt that refuses to connect for want of twenty centimetres reads as
+    /// broken rather than as strict. But it MUST stay under the length of one
+    /// segment, or demolishing a tile out of the middle of a run leaves a gap
+    /// the snap bridges anyway, and the run keeps conducting through a hole
+    /// you can see straight through. 1.5 m against the shipped 2 m CV-1.
+    inline constexpr f64 kConveyorPortSnapM = 1.5;
 
     /// Lays a deck from `fromLocal` to `toLocal` (both body-frame positions,
     /// metres from the centre) across `count` points, each riding
@@ -65,6 +78,114 @@ namespace sw::factory
             length += glm::length(outPoints[i + 1] - outPoints[i]);
         }
         return length;
+    }
+
+    // ---- the network, derived from where the ports are ---------------------
+    //
+    // A belt segment is an ordinary building. What turns a ROW of them into a
+    // working link is not an intention the game recorded — it is that their
+    // conveyor-out and conveyor-in ports MEET. So the network is derived,
+    // never stored: demolish a segment in the middle of a run and the chain
+    // simply is not there next time, because the ports no longer meet.
+    //
+    // Pure graph work, in the body frame, so it can be tested without a
+    // world, a renderer or a planet.
+
+    /// One machine's conveyor mouths, resolved into the body frame.
+    struct PortNode
+    {
+        ecs::Entity entity{};
+        bool isBelt = false; // a segment, i.e. a link in a chain
+        WorldVec3 centre{0.0};
+        WorldVec3 outPort{0.0};
+        WorldVec3 inPort{0.0};
+        bool hasOut = false;
+        bool hasIn = false;
+    };
+
+    /// A complete run: a machine, some number of belts, another machine.
+    struct Chain
+    {
+        u32 source = 0;      // index into the node list
+        u32 destination = 0;
+        std::vector<u32> belts; // in travel order, may be empty
+    };
+
+    /// Every complete chain in the layout. A chain must START and END at a
+    /// non-belt machine; stubs, runs into nothing, and loops are dropped.
+    ///
+    /// `snapM` is how close two mouths must be to count as joined. It is
+    /// generous on purpose: these are placed by eye on rough ground, and a
+    /// belt that refuses to connect for want of twenty centimetres reads as
+    /// broken rather than as strict.
+    [[nodiscard]] inline std::vector<Chain> traceConveyorChains(
+        std::span<const PortNode> nodes, f64 snapM)
+    {
+        // Which IN port does this OUT port feed? The nearest one in range.
+        auto feeds = [&](u32 from) -> i32 {
+            if (!nodes[from].hasOut)
+            {
+                return -1;
+            }
+            i32 best = -1;
+            f64 bestDistance = snapM;
+            for (u32 i = 0; i < nodes.size(); ++i)
+            {
+                if (i == from || !nodes[i].hasIn)
+                {
+                    continue;
+                }
+                const f64 distance = glm::length(nodes[i].inPort - nodes[from].outPort);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = static_cast<i32>(i);
+                }
+            }
+            return best;
+        };
+
+        std::vector<Chain> chains;
+        for (u32 start = 0; start < nodes.size(); ++start)
+        {
+            if (nodes[start].isBelt || !nodes[start].hasOut)
+            {
+                continue;
+            }
+            Chain chain{};
+            chain.source = start;
+
+            i32 cursor = feeds(start);
+            // The guard is a cycle breaker: a ring of segments feeding each
+            // other is a legal thing to BUILD and must not be an infinite
+            // loop to trace.
+            u32 guard = 0;
+            bool looped = false;
+            while (cursor >= 0 && nodes[static_cast<u32>(cursor)].isBelt)
+            {
+                const u32 belt = static_cast<u32>(cursor);
+                if (std::find(chain.belts.begin(), chain.belts.end(), belt) !=
+                        chain.belts.end() ||
+                    guard++ > 4096)
+                {
+                    looped = true;
+                    break;
+                }
+                chain.belts.push_back(belt);
+                cursor = feeds(belt);
+            }
+            if (looped || cursor < 0 || nodes[static_cast<u32>(cursor)].isBelt)
+            {
+                continue; // a stub, a ring, or a run that leads nowhere
+            }
+            chain.destination = static_cast<u32>(cursor);
+            if (chain.destination == chain.source)
+            {
+                continue; // a machine feeding itself is not a chain
+            }
+            chains.push_back(std::move(chain));
+        }
+        return chains;
     }
 
     /// Position and direction at `arcLength` metres along a deck, wrapping

@@ -26,6 +26,7 @@
 #include "Factory/FactorySystems.hpp"
 #include "Factory/Recipes.hpp"
 #include "Core/Json.hpp"
+#include "Gameplay/Construction.hpp"
 #include "Gameplay/PartGeometry.hpp"
 #include "Gameplay/Parts.hpp"
 #include "Input/Input.hpp"

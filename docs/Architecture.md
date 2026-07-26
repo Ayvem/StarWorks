@@ -507,5 +507,38 @@ It is an exponential moving average now, with a four-second memory, dt-weighted 
 
 **And the DECK was behind the same gate as the cargo.** A belt is a structure — it exists whether or not goods are on it — but the whole conveyor sat after the `flow <= 0` early return, so a single dry tick took the rails with it. The deck is drawn unconditionally now; only the crates depend on the flow.
 
+### F2 — Ground build mode (done)
+**You build a factory by walking around it.** Arm a machine in the `F` catalogue, look at the ground, click. The ghost lands where your gaze meets the heightfield — the real one, marched, not a plane at sea level — inside a thirty-metre reach you have to walk to extend. The wheel spins it, `R` razes what you are looking at. Free, for now: matter cost waits for F5/F6, when there is a fabrication loop to close.
+
+**The rules come from the .swpart, and there is one copy of them.** `build::validatePlacement` answers "may this stand here" from fields the file already carried: on land (`terrainElevation` clamps at sea level, so an ocean is water, not flat ground at altitude zero), flat enough (`maxSlopeTangent`, measured across the building's OWN footprint rather than its centre pixel), on the ore (`minOreDensity`, from the same analytic field the miner will be paid on), and with room for it. Three callers need that answer — the ghost, the commit, and the scene builder — and three plausible implementations would be three different games, so it is one tested function in the engine. `placeBuilding` went the same way: the starting outpost and a machine you put down are now made by the same code, so there is no scripted variant that quietly differs.
+
+Writing the test caught a real one. `groundDistance` measured the separation of two footprints through an f32 dot product, and two buildings fourteen metres apart on a 6,371 km sphere subtend 2.2e-6 radians — a dot product of 1 - 2.4e-12, which in f32 is exactly 1.0. Every building overlapped every other one, everywhere, and the ghost would never have turned green. It goes through the chord in f64 now.
+
+**Conveyors are buildings, and the network is DERIVED.** You place CV-1 segments one at a time like anything else. What turns a row of them into a working link is not an intention the game recorded — it is that their `conveyor-out` and `conveyor-in` mouths MEET. `factory::traceConveyorChains` walks that graph after every build and demolition and rebuilds every complete run it finds: machine, some belts, machine. Demolish a tile from the middle and the chain simply is not there next frame, because the ports no longer meet. It is pure graph work over body-frame positions, so it is tested without a world: a run that connects, a run with a hole, a stub, a ring (which must terminate, not hang), two independent runs, and two machines set mouth to mouth with no belt at all.
+
+Two constants earned their comments. The port snap has to stay UNDER one segment's length, or removing a tile leaves a gap the snap bridges anyway and the run keeps conducting through a hole you can see through — 1.5 m against the shipped 2 m CV-1; at 2.5 m the hole test failed exactly as it should have. And belts are exempt from the overlap rule in both directions: a conveyor is a linear structure a metre wide, a footprint circle is the wrong shape for one, a row of 2 m segments overlaps itself by that measure, and a belt has to reach a mouth that sits inside its machine's own circle. Without the exemption you cannot lay a belt at all.
+
+The starting outpost is now built the way the player builds: 3 machines and 24 belt tiles, placed by the same call, with the two links derived from the ports rather than declared. Measured: 9 tiles from the mine to the smelter, 15 from the smelter to the silo, worst mouth gap 0.57 m against a 1.5 m snap.
+
+### F2a — the ghost that lagged the crosshair (done)
+The same bug as the conveyor cargo, for the same reason, in a new place — so this time it became a function.
+
+**The ghost was placed from the planet's TICK pose while the camera sits in the RENDERED world.** One physics step of Terra's orbit is 595.6 m, and the error resets every tick, so the ghost swung hundreds of metres away from where the player was aiming and snapped back, over and over. Worse, the aiming RAY had the same fault at its origin: the eye was transformed into the body frame through the tick pose, so the 30 m ray could start half a kilometre from where the player actually stood.
+
+`bodyRenderPose` now answers "where is this planet, as it is being drawn" — interpolated position, f64 spin at the frame's alpha — and the cursor and the ghost both go through it. An audit of the remaining `spinRotation` calls says the rest are right where they are: the physics systems want the tick pose (that is the pose they are simulating), the terrain patch's LOD centre is self-consistent with the tick craft pose it is derived from, and the launch pad is a one-off spawn.
+
+**And the cursor was aiming a whole frame early.** `updateBuildCursor` sat up with the key handling, before `m_simulation.advance` and before `updateChaseCamera` — so it cast its ray from LAST frame's camera at a planet that had not moved yet. It runs last now, after the camera, which is the only place it can run: it is a query against the rendered world, and the rendered world is not finished being decided until then.
+
+The general rule, restated because it has now cost two features: **anything positioned relative to a rendered entity must use that entity's rendered pose, and must be computed after that pose is known.**
+
+### F2b — the belt tool: pick an output, pick an input (done)
+Laying a conveyor tile by tile was the wrong verb. The player's operation is **"feed THIS from THAT"** — the segments are the RESULT of that decision, not its input.
+
+So with a CV-1 armed, the cursor becomes a two-click tool. Look at a machine and click: that is the source, and it must have a `conveyor-out` mouth or the pick is refused with a reason. Look at another and the whole run appears as a green ghost, tile by tile, with the segment count and the destination's name on the HUD. Click again and it is built — and it is **carrying goods from that frame on**, because the network is derived from where the ports ended up and there is nothing else to tell. `R` cancels a pending pick.
+
+`planBelt` is the single routine behind all three uses: the preview, the commit, and the scene builder's starting outpost. What you are shown in green is what `placeBuilding` will be handed — the same tiles, from the same call — so a belt cannot come out different when you click, and the starting outpost gets no shortcut the tool does not have. It refuses a run over 250 m (a belt across a continent is a thousand entities and almost certainly a misclick) and reports the FIRST reason any tile could not be laid, so "UNDERWATER" means one specific tile in the middle, not a vague failure.
+
+What did NOT change is the point: the tiles it lays are ordinary CV-1 buildings, indistinguishable from ones placed by hand, and `traceConveyorChains` still derives the link from geometry afterwards. The tool is a convenience over the model, not a second model.
+
 ### Milestone 32+ — candidates (remaining)
 F2 ground build mode (place buildings on the terrain), F3 production/energy grid, F4 exploitation UI, F5 factory<->rocket bridge, F6 part fabrication and conveyors. Also: impact-driven joint breakage (fields ready), real aerodynamics (wind + per-wing lift), placeholder cleanup, multiplayer groundwork.
