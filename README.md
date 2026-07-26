@@ -2,6 +2,15 @@
 
 An industrial space simulation game — mine, automate, build ships and stations, and grow a civilization that spans a star system. Powered by a bespoke C++20 / Vulkan engine written exclusively for this game.
 
+<img width="720" height="720" alt="image" src="https://github.com/user-attachments/assets/b8769305-65d8-4b8e-800f-66696fba902c" />
+<img width="1915" height="996" alt="image" src="https://github.com/user-attachments/assets/ab9ed464-d503-4915-b172-38538bee09cc" />
+<img width="1912" height="986" alt="image" src="https://github.com/user-attachments/assets/e04eaf62-2bc5-441b-aea4-9a941eabdab8" />
+<img width="1917" height="987" alt="image" src="https://github.com/user-attachments/assets/1a2f7ef2-cc68-459a-86ee-86006fd0f714" />
+<img width="1915" height="987" alt="image" src="https://github.com/user-attachments/assets/411c6ab4-092e-4daa-a664-a4ab2bd7a26c" />
+<img width="1914" height="986" alt="image" src="https://github.com/user-attachments/assets/73f442f4-453d-447d-bfa3-9539f0e5cba3" />
+<img width="1588" height="891" alt="image" src="https://github.com/user-attachments/assets/2451b716-d646-4fa3-beee-e75d8c3d7717" />
+
+
 ## Current state — F2: Ground build mode
 
 **You build a factory by walking around it.** Arm a machine in the `F` catalogue, look at the ground, click — the ghost lands where your gaze meets the real heightfield, inside a reach you have to walk to extend; the wheel spins it, `R` razes it. Whether it may stand there comes from the `.swpart` itself: on land, flat enough for its own footprint, on enough ore, with room for it.
