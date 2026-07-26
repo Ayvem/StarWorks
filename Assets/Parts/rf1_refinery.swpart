@@ -2,112 +2,61 @@
   "id": 102,
   "type": "Structural",
   "name": "RF-1 Refinery",
-  "dryMassKg": 42000.0,
-  "costCredits": 0.0,
-  "volumeM3": 12.0,
+  "dryMassKg": 42000,
+  "costCredits": 0,
+  "volumeM3": 12,
   "crashToleranceMps": 8,
-  "breakingForceN": 300000.0,
-  "dragCoefficientArea": 2.0,
+  "breakingForceN": 300000,
+  "dragCoefficientArea": 2,
   "liftCoefficient": 0,
   "thrustNewtons": 0,
   "specificImpulseS": 0,
-  "chargeRateKw": 0.0,
-  "capacities": [],
+  "chargeRateKw": 0,
   "building": {
     "category": "refinery",
-    "footprintM": [
-      18,
-      14
-    ],
-    "powerKw": -20.0,
-    "inventoryVolumeM3": 45.0,
+    "footprintM": [18, 14],
+    "powerKw": -20,
+    "inventoryVolumeM3": 45,
     "maxSlopeTangent": 0.16,
-    "minOreDensity": 0.0
+    "minOreDensity": 0
   },
+  "capacities": [],
   "shapes": [
     {
       "kind": "box",
-      "position": [
-        0,
-        2.4,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        8,
-        4.8,
-        6
-      ],
-      "color": [
-        0.55,
-        0.56,
-        0.58
-      ],
-      "emissive": 0.0,
+      "position": [0, 2.4000000953674316, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [8, 4.800000190734863, 6],
+      "color": [0.550000011920929, 0.5600000023841858, 0.5799999833106995],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 16,
       "visible": true,
       "collider": true
     },
     {
       "kind": "cylinder",
-      "position": [
-        2.6,
-        6.2,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        1.2,
-        3.0,
-        1.2
-      ],
-      "color": [
-        0.45,
-        0.3,
-        0.2
-      ],
-      "emissive": 0.0,
+      "position": [2.5999999046325684, 6.199999809265137, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.2000000476837158, 3, 1.2000000476837158],
+      "color": [0.44999998807907104, 0.30000001192092896, 0.20000000298023224],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 20,
       "visible": true,
       "collider": true
     },
     {
       "kind": "cylinder",
-      "position": [
-        -2.6,
-        5.4,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        2.0,
-        2.0,
-        2.0
-      ],
-      "color": [
-        0.28,
-        0.3,
-        0.33
-      ],
-      "emissive": 0.0,
+      "position": [-2.5999999046325684, 5.400000095367432, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2, 2, 2],
+      "color": [0.2800000011920929, 0.30000001192092896, 0.33000001311302185],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 20,
       "visible": true,
       "collider": true
