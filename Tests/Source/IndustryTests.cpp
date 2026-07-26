@@ -544,3 +544,71 @@ SW_TEST(ConveyorDecksFollowTheGroundAndCarryTheirCargoOnIt)
         kRadius + sw::planet::terrainElevation(terrain, sw::Vec3(glm::normalize(head)));
     SW_CHECK(glm::length(head) - ground > 0.5);
 }
+
+// A LINK'S REPORTED THROUGHPUT MUST BE AN AVERAGE, NOT A SNAPSHOT.
+//
+// The belts read this number to space their cargo, so it is a rendering
+// input as much as a statistic — and the instantaneous rate is useless as
+// one. A link rated well above what feeds it empties its source on the
+// first tick and finds it bare on the next: the raw rate alternates between
+// "everything" and "nothing" at the lane frequency, and everything reading
+// it flickers in step. That is exactly what made the conveyors blink.
+SW_TEST(LinkThroughputIsTheAverageItActuallyMoves)
+{
+    sw::ecs::World world;
+
+    // A mine making 0.85 units/s feeding a link RATED at 3.0 — the shipped
+    // outpost's own mismatch, and the case that oscillated.
+    const sw::ecs::Entity mine =
+        makeMachine(world, sw::factory::BuildingCategory::Miner,
+                    sw::factory::kRecipeMineIronOre, 500.0, 0.85f);
+    const sw::ecs::Entity depot =
+        makeMachine(world, sw::factory::BuildingCategory::Storage, 0u, 500.0);
+    world.addComponent(depot, sw::factory::ItemLinkComponent{
+                                  mine, sw::res::Resource::IronOre, 3.0});
+
+    sw::factory::ProductionSystem production;
+    sw::factory::TransferSystem transfer;
+
+    // Warm up past the average's memory, then watch it for a while.
+    sw::f64 lowest = 1.0e9;
+    sw::f64 highest = 0.0;
+    // The lanes are stepped at their REAL relative rates — Automation 5 Hz,
+    // Logistics 10 Hz — so one production tick is two transfer ticks. Get
+    // that ratio wrong and the "measured" rate is measured against the wrong
+    // clock, which is its own way of lying about a factory.
+    for (sw::u32 tick = 0; tick < 600; ++tick)
+    {
+        production.update(world, 0.2f); // Automation, 5 Hz
+        transfer.update(world, 0.1f);   // Logistics, 10 Hz
+        transfer.update(world, 0.1f);
+        if (tick >= 300)
+        {
+            const sw::f64 flow =
+                world.getComponent<sw::factory::ItemLinkComponent>(depot)
+                    .flowUnitsPerSecond;
+            lowest = std::min(lowest, flow);
+            highest = std::max(highest, flow);
+        }
+    }
+
+    // It settles on what the mine really produces, 0.85 units/s...
+    SW_CHECK(std::abs(highest - 0.85) < 0.05);
+    // ...and it STAYS there. A snapshot would swing between 0 and 3.0; the
+    // average must not move by more than a few percent.
+    SW_CHECK(highest - lowest < 0.05);
+    SW_CHECK(lowest > 0.5); // and never reads "stopped" on a running belt
+
+    // A link whose source dries up decays to zero rather than freezing at
+    // its last reading — an abandoned belt must eventually look abandoned.
+    world.getComponent<sw::factory::RecipeStateComponent>(mine).recipeId = 0u;
+    sw::factory::inventoryRemove(
+        world.getComponent<sw::factory::InventoryComponent>(mine),
+        sw::res::Resource::IronOre, 1.0e9);
+    for (sw::u32 tick = 0; tick < 400; ++tick)
+    {
+        transfer.update(world, 0.1f);
+    }
+    SW_CHECK(world.getComponent<sw::factory::ItemLinkComponent>(depot)
+                 .flowUnitsPerSecond < 1.0e-3);
+}

@@ -3,6 +3,7 @@
 #include "ECS/World.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace sw::factory
 {
@@ -48,32 +49,55 @@ namespace sw::factory
     void TransferSystem::update(ecs::World& world, f32 deltaSeconds)
     {
         const f64 dt = static_cast<f64>(deltaSeconds);
+        if (dt <= 0.0)
+        {
+            return;
+        }
+        // THE THROUGHPUT IS AN AVERAGE, NOT A SNAPSHOT — and that is not a
+        // cosmetic choice.
+        //
+        // A link rated 3 units/s pulling from a mine that makes 0.85 empties
+        // its source on the first tick and finds it bare on the next: the
+        // instantaneous rate alternates between "everything" and "nothing"
+        // at the lane's 10 Hz. Anything reading it — the belt's cargo
+        // spacing, F4's future graphs — flickers in step. What the player
+        // actually wants to know is what the link MOVES, which is the mean.
+        //
+        // Exponential moving average with a `tau`-second memory. It is
+        // dt-weighted, so it stays correct when the lane hands it eight
+        // hours of bulk catch-up: a step longer than the memory simply
+        // lands on the instantaneous value, which over that step IS the
+        // average.
+        constexpr f64 kFlowMemorySeconds = 4.0;
+        const f64 blend = (dt >= kFlowMemorySeconds)
+                              ? 1.0
+                              : (1.0 - std::exp(-dt / kFlowMemorySeconds));
+
         world.forEach<ItemLinkComponent, InventoryComponent>(
-            [&world, dt](ecs::Entity, ItemLinkComponent& link,
-                         InventoryComponent& destination) {
+            [&world, dt, blend](ecs::Entity, ItemLinkComponent& link,
+                                InventoryComponent& destination) {
                 auto* source = world.tryGetComponent<InventoryComponent>(link.source);
                 if (source == nullptr)
                 {
-                    return; // source gone (destroyed): link idles
+                    return; // source gone (destroyed): link idles, flow frozen
                 }
 
+                f64 moved = 0.0;
                 const f64 wanted = std::min(link.unitsPerSecond * dt,
                                             inventoryCount(*source, link.resource));
-                if (wanted <= 0.0)
+                if (wanted > 0.0)
                 {
-                    link.flowUnitsPerSecond = 0.0;
-                    return;
+                    // Accept first (volume-bound), then take exactly that much.
+                    const f64 accepted =
+                        inventoryAdd(destination, link.resource, wanted);
+                    if (accepted > 0.0)
+                    {
+                        inventoryRemove(*source, link.resource, accepted);
+                    }
+                    moved = accepted;
                 }
-                // Accept first (volume-bound), then take exactly that much.
-                const f64 accepted = inventoryAdd(destination, link.resource, wanted);
-                if (accepted > 0.0)
-                {
-                    inventoryRemove(*source, link.resource, accepted);
-                }
-                // Measured throughput, not the rating: this is what the belt
-                // is drawn moving, and what tells you at a glance whether
-                // the chain upstream is keeping up.
-                link.flowUnitsPerSecond = (dt > 0.0) ? accepted / dt : 0.0;
+                link.flowUnitsPerSecond +=
+                    (moved / dt - link.flowUnitsPerSecond) * blend;
             });
     }
     void ProductionSystem::update(ecs::World& world, f32 deltaSeconds)

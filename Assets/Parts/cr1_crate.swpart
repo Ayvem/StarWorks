@@ -1,0 +1,46 @@
+{
+  "id": 107,
+  "type": "Structural",
+  "name": "CR-1 Cargo Crate",
+  "dryMassKg": 1.0,
+  "costCredits": 0.0,
+  "volumeM3": 0.05,
+  "crashToleranceMps": 4,
+  "breakingForceN": 1000.0,
+  "dragCoefficientArea": 0.1,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0.0,
+  "prop": true,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0.20, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.26, 0.18, 0.26],
+      "color": [1.0, 1.0, 1.0],
+      "emissive": 0.0,
+      "specular": 0.18,
+      "gloss": 0.25,
+      "segments": 8,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0, 0.385, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.28, 0.025, 0.28],
+      "color": [0.72, 0.74, 0.78],
+      "emissive": 0.0,
+      "specular": 0.35,
+      "gloss": 0.45,
+      "segments": 8,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": []
+}

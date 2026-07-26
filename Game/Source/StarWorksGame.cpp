@@ -233,87 +233,6 @@ namespace game
             }
         }
 
-        /// The belt itself: a ribbon with two rails, built in the frame of
-        /// its FIRST path point (which is where its surface anchor sits), so
-        /// the mesh carries small numbers and the anchor carries the planet
-        /// radius. Legs drop to the ground under every point, because a belt
-        /// floating over a dip is the first thing the eye catches.
-        [[nodiscard]] sw::MeshData buildConveyorMesh(const sw::WorldVec3* points,
-                                                     sw::u32 count,
-                                                     const sw::WorldVec3& up0)
-        {
-            sw::MeshData mesh;
-            if (count < 2)
-            {
-                return mesh;
-            }
-            constexpr sw::f32 kHalfWidth = 0.55f;
-            constexpr sw::f32 kRail = 0.10f;
-            constexpr sw::f32 kDeckHeight = 0.06f;
-            const sw::Vec4 deckColor{0.20f, 0.22f, 0.26f, 1.0f};
-            const sw::Vec4 railColor{0.45f, 0.47f, 0.50f, 1.0f};
-            const sw::Vec4 legColor{0.30f, 0.32f, 0.36f, 1.0f};
-
-            auto quad = [&mesh](const sw::Vec3& a, const sw::Vec3& b, const sw::Vec3& c,
-                                const sw::Vec3& d, const sw::Vec4& color) {
-                const sw::Vec3 normal =
-                    glm::normalize(glm::cross(b - a, d - a) + sw::Vec3{0.0f, 1e-6f, 0.0f});
-                const sw::u32 base = static_cast<sw::u32>(mesh.vertices.size());
-                mesh.vertices.push_back({a, normal, color, {0, 0}});
-                mesh.vertices.push_back({b, normal, color, {1, 0}});
-                mesh.vertices.push_back({c, normal, color, {1, 1}});
-                mesh.vertices.push_back({d, normal, color, {0, 1}});
-                mesh.indices.insert(mesh.indices.end(),
-                                    {base, base + 1, base + 2, base, base + 2, base + 3});
-            };
-
-            for (sw::u32 i = 0; i + 1 < count; ++i)
-            {
-                const sw::Vec3 a = sw::Vec3(points[i] - points[0]);
-                const sw::Vec3 b = sw::Vec3(points[i + 1] - points[0]);
-                const sw::Vec3 up = sw::Vec3(glm::normalize(points[i] + points[i + 1]));
-                sw::Vec3 along = b - a;
-                const sw::f32 length = glm::length(along);
-                if (length < 1.0e-4f)
-                {
-                    continue;
-                }
-                along /= length;
-                const sw::Vec3 side = glm::normalize(glm::cross(along, up)) * kHalfWidth;
-                const sw::Vec3 lift = up * kDeckHeight;
-
-                // Deck (top face).
-                quad(a - side + lift, a + side + lift, b + side + lift, b - side + lift,
-                     deckColor);
-                // Two rails, standing proud of the deck.
-                for (const sw::f32 sign : {-1.0f, 1.0f})
-                {
-                    const sw::Vec3 offset = side * sign;
-                    const sw::Vec3 top = up * (kDeckHeight + kRail);
-                    quad(a + offset + lift, b + offset + lift, b + offset + top,
-                         a + offset + top, railColor);
-                }
-            }
-
-            // Legs: a short post under each point, down to the ground.
-            for (sw::u32 i = 0; i < count; ++i)
-            {
-                const sw::Vec3 p = sw::Vec3(points[i] - points[0]);
-                const sw::Vec3 up = sw::Vec3(glm::normalize(points[i]));
-                const sw::Vec3 side =
-                    glm::normalize(glm::cross(up, glm::abs(up.y) < 0.9f
-                                                      ? sw::Vec3{0.0f, 1.0f, 0.0f}
-                                                      : sw::Vec3{1.0f, 0.0f, 0.0f})) *
-                    0.10f;
-                const sw::Vec3 side2 = glm::cross(up, side);
-                const sw::Vec3 foot = p - up * 0.95f;
-                quad(foot - side, foot + side, p + side, p - side, legColor);
-                quad(foot - side2, foot + side2, p + side2, p - side2, legColor);
-            }
-            (void)up0;
-            return mesh;
-        }
-
         /// The VAB palette shows ROCKET parts. Since F1 the catalogue also
         /// holds buildings — same file format, same Part Studio, same stable
         /// id space — and those belong to the ground build mode (F2), not to
@@ -324,7 +243,7 @@ namespace game
             std::vector<const sw::parts::PartDefinition*> palette;
             for (const sw::parts::PartDefinition& definition : sw::parts::catalog())
             {
-                if (!sw::parts::isBuilding(definition))
+                if (sw::parts::isVesselPart(definition))
                 {
                     palette.push_back(&definition);
                 }
@@ -949,15 +868,39 @@ namespace game
             m_partMeshIds[definition.id] = registerMesh(
                 renderer().createMesh(sw::parts::buildPartMesh(definition)));
         }
+        // The BELT and its CARGO are ordinary parts. Their mesh slots and
+        // their metrics are read from the catalogue rather than hard-coded,
+        // so redrawing CV-1 in Part Studio — longer, wider, taller deck —
+        // changes every belt in the world without touching this file.
+        if (const auto* belt =
+                sw::parts::findDefinition(sw::parts::kBuildingConveyor))
+        {
+            m_conveyorMeshIndex = m_partMeshIds.at(belt->id);
+            constexpr sw::f32 kHuge = 1.0e9f;
+            sw::Vec3 low{kHuge, kHuge, kHuge};
+            sw::Vec3 high{-kHuge, -kHuge, -kHuge};
+            sw::parts::expandPartColliderBounds(*belt, sw::Vec3{0.0f},
+                                                sw::Quat{1.0f, 0.0f, 0.0f, 0.0f}, low,
+                                                high);
+            if (low.z <= high.z)
+            {
+                m_conveyorSegmentM = std::max(0.1f, high.z - low.z);
+                m_conveyorDeckHeightM = high.y; // cargo rides on the deck
+            }
+            SW_LOG_INFO("Game", "Conveyor part: {:.2f} m segment, deck at {:.2f} m",
+                        m_conveyorSegmentM, m_conveyorDeckHeightM);
+        }
+        if (const auto* crate =
+                sw::parts::findDefinition(sw::parts::kPropConveyorCrate))
+        {
+            m_cargoMeshIndex = m_partMeshIds.at(crate->id);
+        }
+
         const auto& partMeshIds = m_partMeshIds;
         m_capsuleMeshIndex = registerMesh(renderer().createMesh(
             sw::PrimitiveFactory::makeCapsule(0.5f, 0.5f, 12, 16,
                                               {0.9f, 0.6f, 0.2f, 1.0f})));
         m_markerMeshIndex = registerMesh(renderer().createMesh(buildMarkerMesh()));
-        // One crate, tinted per resource by the conveyor that carries it.
-        m_cargoMeshIndex = registerMesh(renderer().createMesh(
-            sw::PrimitiveFactory::makeBox({0.30f, 0.22f, 0.30f},
-                                          {1.0f, 1.0f, 1.0f, 1.0f})));
 
         // Sun position and eclipse occluders are camera-relative and set
         // every frame in onRender.
@@ -1166,9 +1109,30 @@ namespace game
             sw::ecs::Entity hubEntity{};
             // Spawns one building from its catalogue definition: geometry,
             // power, storage and siting rules all come from the .swpart.
+            // Yaw a building about its own local vertical so that a given
+            // MODEL direction ends up pointing a given way on the ground.
+            // This is how a machine is made to FACE its belt, and it is the
+            // same arithmetic F2's placement cursor will use when the player
+            // spins a building with the scroll wheel.
+            auto yawToFace = [&](const sw::Vec3& modelDirection,
+                                 const sw::Vec3& wantedTangent) {
+                const sw::Vec3 have = standUp * modelDirection;
+                const sw::Vec3 haveFlat = have - siteUp * glm::dot(have, siteUp);
+                const sw::Vec3 wantFlat =
+                    wantedTangent - siteUp * glm::dot(wantedTangent, siteUp);
+                if (glm::length(haveFlat) < 1.0e-4f || glm::length(wantFlat) < 1.0e-4f)
+                {
+                    return 0.0f;
+                }
+                const sw::Vec3 a = glm::normalize(haveFlat);
+                const sw::Vec3 b = glm::normalize(wantFlat);
+                return std::atan2(glm::dot(glm::cross(a, b), siteUp),
+                                  glm::clamp(glm::dot(a, b), -1.0f, 1.0f));
+            };
+
             auto spawnBuilding = [&](sw::u32 definitionId, sw::f32 eastMetres,
                                      sw::f32 northMetres, sw::u32 recipeId,
-                                     const sw::Vec4& marker) {
+                                     const sw::Vec4& marker, sw::f32 yawRadians = 0.0f) {
                 const sw::parts::PartDefinition* definition =
                     sw::parts::findDefinition(definitionId);
                 if (definition == nullptr || !sw::parts::isBuilding(*definition))
@@ -1208,7 +1172,11 @@ namespace game
                 anchor.body = terraEntity;
                 anchor.localPosition =
                     sw::WorldVec3(direction) * (kTerraRadius + elevation);
-                anchor.localRotation = standUp;
+                // Yaw is applied in MODEL space about +Y, which standUp maps
+                // onto the local vertical — so it is a spin on the spot, not
+                // a tilt.
+                anchor.localRotation =
+                    standUp * glm::angleAxis(yawRadians, sw::Vec3{0.0f, 1.0f, 0.0f});
                 m_world.addComponent(e, anchor);
 
                 sw::factory::BuildingComponent building{};
@@ -1253,14 +1221,37 @@ namespace game
                     hubEntity;
             }
 
-            const sw::ecs::Entity minerEntity =
-                spawnBuilding(sw::parts::kBuildingMiner, 34.0f, 0.0f,
-                              sw::factory::kRecipeMineIronOre, {});
-            const sw::ecs::Entity refineryEntity =
-                spawnBuilding(sw::parts::kBuildingRefinery, 34.0f, -30.0f,
-                              sw::factory::kRecipeSmeltIron, {});
-            const sw::ecs::Entity storageEntity =
-                spawnBuilding(sw::parts::kBuildingStorage, 0.0f, -30.0f, 0u, {});
+            // Each machine is turned so its conveyor mouth faces the belt it
+            // feeds: the miner ships south to the smelter, the smelter ships
+            // west to the silo. The port directions come from the .swpart,
+            // so re-authoring a mouth in Part Studio re-aims the machine.
+            const auto* minerPart = sw::parts::findDefinition(sw::parts::kBuildingMiner);
+            const auto* refineryPart =
+                sw::parts::findDefinition(sw::parts::kBuildingRefinery);
+            const auto* storagePart =
+                sw::parts::findDefinition(sw::parts::kBuildingStorage);
+            auto portDirection = [](const sw::parts::PartDefinition* definition,
+                                    sw::parts::NodeType type) {
+                const sw::parts::AttachNode* node =
+                    (definition != nullptr) ? sw::parts::findConveyorNode(*definition, type)
+                                            : nullptr;
+                return (node != nullptr) ? node->direction : sw::Vec3{0.0f, 0.0f, 1.0f};
+            };
+
+            const sw::ecs::Entity minerEntity = spawnBuilding(
+                sw::parts::kBuildingMiner, 34.0f, 0.0f, sw::factory::kRecipeMineIronOre,
+                {},
+                yawToFace(portDirection(minerPart, sw::parts::NodeType::ConveyorOut),
+                          -siteNorth));
+            const sw::ecs::Entity refineryEntity = spawnBuilding(
+                sw::parts::kBuildingRefinery, 34.0f, -30.0f,
+                sw::factory::kRecipeSmeltIron, {},
+                yawToFace(portDirection(refineryPart, sw::parts::NodeType::ConveyorIn),
+                          siteNorth));
+            const sw::ecs::Entity storageEntity = spawnBuilding(
+                sw::parts::kBuildingStorage, 0.0f, -30.0f, 0u, {},
+                yawToFace(portDirection(storagePart, sw::parts::NodeType::ConveyorIn),
+                          siteEast));
             spawnBuilding(sw::parts::kBuildingSolarFarm, -34.0f, -15.0f, 0u, {});
 
             // The BEACON: the site is at a surveyed spot on a 6,371 km
@@ -1298,6 +1289,43 @@ namespace game
                 const auto& toAnchor =
                     m_world.getComponent<sw::phys::SurfaceAnchorComponent>(to);
 
+                // A BELT RUNS PORT TO PORT, not centre to centre. The mouths
+                // are authored on the geometry as conveyor-out / conveyor-in
+                // nodes, so the deck arrives where the machine actually
+                // takes delivery — and a machine with no matching port is a
+                // chain that cannot be built, which is worth saying out loud
+                // now rather than discovering in F2.
+                auto portOffset = [&](sw::ecs::Entity entity,
+                                      sw::parts::NodeType type) -> sw::WorldVec3 {
+                    const auto& building =
+                        m_world.getComponent<sw::factory::BuildingComponent>(entity);
+                    const auto& anchor =
+                        m_world.getComponent<sw::phys::SurfaceAnchorComponent>(entity);
+                    const auto* definition =
+                        sw::parts::findDefinition(building.definitionId);
+                    if (definition == nullptr)
+                    {
+                        return anchor.localPosition;
+                    }
+                    const sw::parts::AttachNode* port =
+                        sw::parts::findConveyorNode(*definition, type);
+                    if (port == nullptr)
+                    {
+                        SW_LOG_WARN("Game", "'{}' has no {} port: belt falls back to "
+                                            "its centre",
+                                    definition->name, sw::parts::nodeTypeName(type));
+                        return anchor.localPosition;
+                    }
+                    return anchor.localPosition +
+                           sw::WorldVec3(anchor.localRotation * port->position);
+                };
+                const sw::WorldVec3 fromPort =
+                    portOffset(from, sw::parts::NodeType::ConveyorOut);
+                const sw::WorldVec3 toPort =
+                    portOffset(to, sw::parts::NodeType::ConveyorIn);
+                (void)fromAnchor;
+                (void)toAnchor;
+
                 ConveyorComponent conveyor{};
                 conveyor.body = terraEntity;
                 conveyor.link = to;
@@ -1307,19 +1335,18 @@ namespace game
                 // the very routine F2's hand-drawn belts will use.
                 conveyor.pointCount = ConveyorComponent::kMaxPoints;
                 conveyor.lengthM = static_cast<sw::f32>(sw::factory::buildConveyorPath(
-                    terrain, kTerraRadius, fromAnchor.localPosition,
-                    toAnchor.localPosition, 1.05, conveyor.points,
+                    terrain, kTerraRadius, fromPort, toPort, 1.05, conveyor.points,
                     conveyor.pointCount));
 
+                // No mesh component: the deck is TILED from the CV-1 .swpart
+                // every frame (collectConveyors), so editing that file in
+                // Part Studio changes every belt in the world. The entity
+                // exists to carry the path and to be anchored, saved and
+                // interpolated like any other structure.
                 const sw::ecs::Entity e = m_world.createEntity();
                 TransformComponent transform{};
                 m_world.addComponent(e, transform);
                 m_world.addComponent(e, PreviousTransformComponent{});
-                m_world.addComponent(e, BoundsComponent{conveyor.lengthM});
-                m_world.addComponent(
-                    e, MeshComponent{registerMesh(renderer().createMesh(
-                           buildConveyorMesh(conveyor.points, conveyor.pointCount,
-                                             glm::normalize(conveyor.points[0]))))});
                 sw::phys::SurfaceAnchorComponent anchor{};
                 anchor.body = terraEntity;
                 anchor.localPosition = conveyor.points[0];
@@ -4616,36 +4643,131 @@ namespace game
     // Spacing IS the flow: crates/second = flow / unitsPerCrate, so a belt
     // fed by a starving mine visibly thins out and a stopped one empties.
     // ------------------------------------------------------------------------
-    void StarWorksGame::collectConveyorCargo(const sw::Camera& activeCamera)
+    void StarWorksGame::collectConveyors(const sw::Camera& activeCamera)
     {
         const sw::WorldVec3 cameraPosition = activeCamera.position();
-        const sw::f64 now = m_physicsLane->presentSeconds();
+        // EVERY POSE ON SCREEN IS INTERPOLATED, and cargo is no exception.
+        // The first version read the belt's TICK pose while the deck under
+        // it was drawn at the interpolated one, and the two are a full
+        // physics step apart — which for a planet moving 30 km/s around its
+        // star is up to 595 metres. The crates were not floating up: they
+        // were being drawn where the belt had been (or would be) one tick
+        // away, in whatever direction Terra's orbit happened to point.
+        const sw::f32 alpha = m_physicsLane->alpha();
+        const sw::f64 alpha64 = static_cast<sw::f64>(alpha);
+        // The cargo's own phase gets the same treatment: `presentSeconds` is
+        // quantised to the tick, so using it raw makes crates advance in
+        // 5 cm hops instead of gliding.
+        const sw::f64 now = m_physicsLane->presentSeconds() +
+                            alpha64 * static_cast<sw::f64>(m_physicsLane->stepSeconds());
 
-        m_world.forEach<TransformComponent, ConveyorComponent>(
+        m_world.forEach<TransformComponent, PreviousTransformComponent,
+                        ConveyorComponent>(
             [&](sw::ecs::Entity, TransformComponent& transform,
-                ConveyorComponent& conveyor) {
+                PreviousTransformComponent& previous, ConveyorComponent& conveyor) {
                 if (conveyor.pointCount < 2 || conveyor.lengthM < 1.0f)
                 {
                     return;
                 }
+                // The belt's pose THIS FRAME — the same mix the deck mesh is
+                // drawn with, so the cargo can only ever be on the deck.
+                const sw::WorldVec3 beltPosition =
+                    glm::mix(previous.position, transform.position, alpha64);
+                const glm::dquat beltRotation{
+                    glm::slerp(previous.rotation, transform.rotation, alpha)};
+
                 // Belts are metres wide: past a few kilometres they are not
                 // even a pixel, and their cargo certainly is not.
-                const sw::f64 distance =
-                    glm::length(transform.position - cameraPosition);
+                const sw::f64 distance = glm::length(beltPosition - cameraPosition);
                 if (distance > 4000.0)
                 {
                     return;
                 }
 
+                // The path in world space, rebuilt from the belt's own pose:
+                // its anchor already carries the body's f64 rotation, so the
+                // cargo rides exactly where the deck was drawn.
+                const sw::WorldVec3 origin = conveyor.points[0];
+
+                // Model -Z is the direction of travel and +Y is up: one
+                // frame for the deck tiles and the crates alike.
+                auto placeAlong = [&](sw::f64 arcLength, sw::f32 rideHeight,
+                                      sw::f32 stretchZ, sw::u32 meshIndex,
+                                      const sw::Vec4& tint, sw::f32 boundsRadius) {
+                    sw::WorldVec3 local{};
+                    sw::Vec3 heading{};
+                    sw::factory::conveyorPointAt(conveyor.points, conveyor.pointCount,
+                                                 arcLength, local, heading);
+                    // `local` and `up` are BODY-FRAME; the ride height is
+                    // added there, before the rotation, or the part is
+                    // lifted along a world axis instead of the local one.
+                    const glm::dvec3 up = glm::normalize(local);
+                    const sw::WorldVec3 world =
+                        beltPosition +
+                        beltRotation * (local - origin + up * static_cast<sw::f64>(
+                                                                  rideHeight));
+                    const sw::Vec3 relative = sw::Vec3(world - cameraPosition);
+                    const sw::Vec3 forward =
+                        sw::Vec3(glm::normalize(beltRotation * glm::dvec3(heading)));
+                    const sw::Vec3 worldUp =
+                        sw::Vec3(glm::normalize(beltRotation * up));
+                    const sw::Vec3 right = glm::normalize(glm::cross(forward, worldUp));
+                    const sw::Vec3 realUp = glm::cross(right, forward);
+
+                    sw::DrawItem item{};
+                    item.mesh = &m_meshes[meshIndex];
+                    item.transform =
+                        glm::translate(sw::Mat4{1.0f}, relative) *
+                        glm::mat4_cast(
+                            glm::quat_cast(sw::Mat3{right, realUp, -forward})) *
+                        glm::scale(sw::Mat4{1.0f}, sw::Vec3{1.0f, 1.0f, stretchZ});
+                    item.boundsCenter = relative;
+                    item.boundsRadius = boundsRadius;
+                    item.tint = tint;
+                    m_drawItems.push_back(item);
+                };
+
+                // ---- THE DECK: the CV-1 part, tiled ----------------------
+                // Tiles are spaced to divide the path EXACTLY and stretched
+                // along their own Z to match, so a belt never shows a gap
+                // and never overlaps itself. Author a longer CV-1 and you
+                // get fewer, longer tiles — no code changes.
+                if (m_conveyorMeshIndex != 0xFFFFFFFFu && m_conveyorSegmentM > 0.05f)
+                {
+                    const sw::i32 tiles = std::clamp(
+                        static_cast<sw::i32>(std::lround(
+                            conveyor.lengthM / m_conveyorSegmentM)),
+                        1, 64);
+                    const sw::f32 tileSpan =
+                        conveyor.lengthM / static_cast<sw::f32>(tiles);
+                    for (sw::i32 i = 0; i < tiles; ++i)
+                    {
+                        placeAlong((static_cast<sw::f64>(i) + 0.5) *
+                                       static_cast<sw::f64>(tileSpan),
+                                   0.0f, tileSpan / m_conveyorSegmentM,
+                                   m_conveyorMeshIndex, {1.0f, 1.0f, 1.0f, 1.0f},
+                                   tileSpan);
+                    }
+                }
+
+                // ---- and only NOW, what is riding it ---------------------
+                // The deck above is drawn UNCONDITIONALLY, because a belt is
+                // a structure: it exists whether or not goods are on it.
+                // That was the bug — the whole conveyor sat behind the flow
+                // gate below, so every time the link's source ran dry for a
+                // tick the belt itself blinked out of the world.
+                if (m_cargoMeshIndex == 0xFFFFFFFFu)
+                {
+                    return;
+                }
                 const auto* link =
                     m_world.tryGetComponent<sw::factory::ItemLinkComponent>(
                         conveyor.link);
                 const sw::f64 flow = (link != nullptr) ? link->flowUnitsPerSecond : 0.0;
                 if (flow <= 1.0e-6)
                 {
-                    return; // nothing moving: an empty belt is the honest picture
+                    return; // stopped: an empty belt is the honest picture
                 }
-
                 const sw::f64 cratesPerSecond =
                     flow / std::max(static_cast<sw::f64>(conveyor.unitsPerCrate), 1.0e-6);
                 const sw::f64 spacing =
@@ -4654,57 +4776,28 @@ namespace game
                 {
                     return; // shoulder to shoulder: draw the deck, not confetti
                 }
-                const sw::i32 crates = std::min(
-                    32, static_cast<sw::i32>(conveyor.lengthM / spacing));
+                const sw::i32 crates =
+                    std::min(32, static_cast<sw::i32>(conveyor.lengthM / spacing));
                 if (crates <= 0)
                 {
                     return;
                 }
-
-                // The path in world space, rebuilt from the belt's own pose:
-                // its anchor already carries the body's f64 rotation, so the
-                // cargo rides exactly where the deck was drawn.
-                const glm::dquat rotation{transform.rotation};
-                const sw::WorldVec3 origin = conveyor.points[0];
                 const sw::f64 travelled =
                     std::fmod(now * static_cast<sw::f64>(conveyor.speedMps),
                               static_cast<sw::f64>(conveyor.lengthM));
 
+                // ---- THE CARGO: the CR-1 prop, tinted per resource -------
+                // It rides ON the deck, so its height is the deck's own top
+                // surface — read off the CV-1's collider box, not guessed.
                 for (sw::i32 c = 0; c < crates; ++c)
                 {
-                    const sw::f64 s = std::fmod(travelled + static_cast<sw::f64>(c) * spacing,
-                                          static_cast<sw::f64>(conveyor.lengthM));
-                    sw::WorldVec3 local{};
-                    sw::Vec3 heading{};
-                    sw::factory::conveyorPointAt(conveyor.points, conveyor.pointCount, s,
-                                                 local, heading);
-
-                    const sw::Vec3 up = sw::Vec3(glm::normalize(local));
-                    const sw::WorldVec3 world =
-                        transform.position + rotation * (local - origin) +
-                        sw::WorldVec3(up) * 0.30;
-                    const sw::Vec3 relative = sw::Vec3(world - cameraPosition);
-
-                    // Orient the crate along the belt so it reads as cargo
-                    // travelling, not as a scattering of cubes.
-                    const sw::Vec3 forward =
-                        sw::Vec3(glm::normalize(rotation * glm::dvec3(heading)));
-                    const sw::Vec3 worldUp =
-                        sw::Vec3(glm::normalize(rotation * glm::dvec3(up)));
-                    const sw::Vec3 right =
-                        glm::normalize(glm::cross(forward, worldUp));
-                    const sw::Vec3 realUp = glm::cross(right, forward);
-
-                    sw::DrawItem item{};
-                    item.mesh = &m_meshes[m_cargoMeshIndex];
-                    item.transform =
-                        glm::translate(sw::Mat4{1.0f}, relative) *
-                        glm::mat4_cast(glm::quat_cast(sw::Mat3{right, realUp, -forward}));
-                    item.boundsCenter = relative;
-                    item.boundsRadius = 0.6f;
-                    item.tint = {conveyor.cargoColor.r, conveyor.cargoColor.g,
-                                 conveyor.cargoColor.b, 1.0f};
-                    m_drawItems.push_back(item);
+                    const sw::f64 s =
+                        std::fmod(travelled + static_cast<sw::f64>(c) * spacing,
+                                  static_cast<sw::f64>(conveyor.lengthM));
+                    placeAlong(s, m_conveyorDeckHeightM, 1.0f, m_cargoMeshIndex,
+                               {conveyor.cargoColor.r, conveyor.cargoColor.g,
+                                conveyor.cargoColor.b, 1.0f},
+                               0.6f);
                 }
             });
     }
@@ -5712,7 +5805,7 @@ namespace game
 
         if (!mapView)
         {
-            collectConveyorCargo(activeCamera);
+            collectConveyors(activeCamera);
         }
         // Beacons overlay both views; the HUD is drawn last so its panels
         // stay on top of them.

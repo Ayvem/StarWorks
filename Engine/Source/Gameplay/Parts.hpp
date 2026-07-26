@@ -97,7 +97,26 @@ namespace sw::parts
     {
         Stack = 0,
         Radial,
+        /// CONVEYOR PORTS. A belt does not attach to a hull the way a fin
+        /// does — it arrives at a specific mouth, facing a specific way, and
+        /// it has a DIRECTION: goods come out of one machine and go into the
+        /// next. Making that a node type rather than a convention means the
+        /// mouths are authored in Part Studio, on the geometry, and the
+        /// build validator can say "this belt runs backwards" instead of
+        /// discovering it at runtime.
+        ConveyorIn,
+        ConveyorOut,
+        Count
     };
+
+    [[nodiscard]] std::string_view nodeTypeName(NodeType type);
+    [[nodiscard]] bool nodeTypeFromName(std::string_view name, NodeType& outType);
+
+    /// True for the two conveyor port types.
+    [[nodiscard]] inline bool isConveyorNode(NodeType type)
+    {
+        return type == NodeType::ConveyorIn || type == NodeType::ConveyorOut;
+    }
 
     /// A named attachment location on a part, in the part's local frame.
     /// Authored ON the collider surface by Part Studio — never inside.
@@ -174,6 +193,8 @@ namespace sw::parts
 
         // ---- industry (F1): present only on buildings --------------------------
         BuildingSpec building{};
+        /// Set by `"prop": true`. See isProp().
+        bool prop = false;
 
         // ---- geometry & connexions ----------------------------------------------
         std::vector<PartShape> shapes;
@@ -216,6 +237,27 @@ namespace sw::parts
     inline constexpr u32 kBuildingStorage = 103;
     inline constexpr u32 kBuildingSolarFarm = 104;
     inline constexpr u32 kBuildingBeacon = 105;
+    inline constexpr u32 kBuildingConveyor = 106; // one belt segment, tiled
+    inline constexpr u32 kPropConveyorCrate = 107; // what rides the belt
+
+    /// A PROP: authored geometry the GAME places, never the player. Conveyor
+    /// cargo is the first one — a crate is not something you pick out of a
+    /// palette, it is something a belt is carrying. It is still a .swpart,
+    /// so its look is edited in the same tool as everything else.
+    [[nodiscard]] inline bool isProp(const PartDefinition& definition)
+    {
+        return definition.prop;
+    }
+
+    /// The parts a player may stack onto a VESSEL: not buildings, not props.
+    [[nodiscard]] inline bool isVesselPart(const PartDefinition& definition)
+    {
+        return !definition.building.valid && !definition.prop;
+    }
+
+    /// The first conveyor port of a definition matching `type`, or nullptr.
+    [[nodiscard]] const AttachNode* findConveyorNode(const PartDefinition& definition,
+                                                     NodeType type);
 
     /// True when this definition describes a planetary building rather than
     /// a rocket part — the VAB palette filters on it.

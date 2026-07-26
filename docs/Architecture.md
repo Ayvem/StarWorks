@@ -475,5 +475,37 @@ Low means 3% of the body's own radius, so it means the same thing on a moon as o
 
 The navball still reads the craft's attitude, obviously — that is an instrument, and reading the vehicle is its whole job.
 
+### F1g — the cargo that flew away (done)
+The crates on the belts were being flung hundreds of metres off, and the diagnosis was the second of the two the report offered: **the wrong tick.**
+
+Every pose on screen is INTERPOLATED between the last physics tick and the next — it has to be, because the planet these belts are bolted to moves 29.78 km/s around its star. The belt deck went through that path like every other mesh. The cargo did not: it read the belt's raw TICK pose. The two are up to one full physics step apart, and one step of Terra's orbit is **595.6 m**. So the crates were drawn where the belt had been (or would be) one tick away, in whatever direction the orbit happened to point that day, snapping back to zero at every tick boundary.
+
+The cargo now reads the same `mix(previous, current, alpha)` the deck is drawn with, so it can only ever be ON the deck. Two smaller things fell out of the same read: the crates' phase used `presentSeconds()` raw, which is quantised to the tick and made them advance in 5 cm hops instead of gliding (it now carries the sub-tick residue), and the 30 cm ride height was being added to a BODY-frame position after it had already been rotated into the world — a 0.27 m error, in the wrong direction, on top of everything else.
+
+The general rule this cost us is worth stating plainly: **anything positioned relative to a rendered entity must use that entity's rendered pose, not its simulated one.** At planetary velocities the difference is not a rounding error, it is half a kilometre.
+
+### F1h — belts are parts, and machines have mouths (done)
+**Everything on a conveyor is now a `.swpart`.** The deck was procedural geometry built in C++, which meant the one thing in the factory nobody could redraw in Part Studio was the thing you look at most. Two definitions replace it:
+
+* **CV-1 Belt Segment** (id 106, category `conveyor`) — one 2 m tile of deck, rails and roller. The game reads its LENGTH and its DECK HEIGHT off its own collider box and tiles it along the path, stretching each tile so the run divides exactly — no gaps, no overlaps. Author a longer CV-1 and you get fewer, longer tiles with no code change; raise its deck and the cargo rides higher, because the crate's height is that measurement and not a constant.
+* **CR-1 Cargo Crate** (id 107) — what rides the belt, tinted per resource.
+
+The crate needed a third family. It is not a vessel part (it must not appear in the VAB) and it is not a building (you do not plant crates), so `PartDefinition` gained `prop`: authored geometry the GAME places, never the player. `isVesselPart` / `isBuilding` / `isProp` now partition the catalogue, and `PartsTests` asserts the partition is exactly that — no definition in two families, none in none.
+
+**And machines have MOUTHS.** `NodeType` gained `ConveyorIn` and `ConveyorOut`. A belt does not attach to a hull the way a fin does: it arrives at a specific place, facing a specific way, and it has a DIRECTION — goods leave through an out and arrive at an in. Making that a node type rather than a convention puts the mouths on the geometry, in the tool, where they belong: Part Studio has `+CONV IN` / `+CONV OUT` buttons, draws the two in different colours (amber in, orange out — the direction is the thing you have to get right), snaps them to the hull with the existing SNAP SURF, and its type cycler walks all four types instead of toggling two.
+
+The shipped machines declare theirs: the miner ships out, the silo and the hub only receive, the refinery does both, and the belt segment itself has one of each — a belt is a chain link. `PartsTests` checks that table, and the existing "every node sits ON the collider surface" test now covers the ports too, which is how the first placement attempt was caught sitting 2.2 m inside the miner.
+
+Belts run **port to port**, not centre to centre, and each machine is YAWED so its mouth faces the belt it feeds — `yawToFace` solves for the spin about the local vertical that points a model direction a given way on the ground, which is the same arithmetic F2's placement cursor needs when the player rotates a building. Re-author a mouth in Part Studio and the machine re-aims itself. Measured on the shipped outpost: 31.76 m and 33.68 m of deck, 16 and 17 tiles at 1.98 m, stretch 0.99, and no part of either deck below the ground it crosses.
+
+### F1i — the blinking belts (done)
+The conveyors and their cargo vanished and came back on a regular beat. One root cause, showing up twice.
+
+**`ItemLinkComponent::flowUnitsPerSecond` was a SNAPSHOT of the last tick**, and a snapshot of that link is meaningless. The belt is rated 3 units/s and the mine behind it makes 0.85: the link empties its source on one Logistics tick and finds it bare on the next, so the raw rate alternates between "everything" and "nothing" at 10 Hz. Everything reading it flickered in step — and the cargo spacing reads it, which makes this a RENDERING input, not just a statistic.
+
+It is an exponential moving average now, with a four-second memory, dt-weighted so a bulk-catch-up step longer than the memory simply lands on the instantaneous value (which over that step IS the average). Measured on the shipped chain: it settles at 0.839 units/s and does not move. `IndustryTests` runs the two lanes at their real relative rates — Automation 5 Hz, Logistics 10 Hz — and requires the reading to stay within a few percent of what the mine actually produces, plus decay to zero when the source dries up. (Getting that lane ratio wrong is its own way of lying about a factory: the first draft of the test measured against the wrong clock and "proved" 1.7.)
+
+**And the DECK was behind the same gate as the cargo.** A belt is a structure — it exists whether or not goods are on it — but the whole conveyor sat after the `flow <= 0` early return, so a single dry tick took the rails with it. The deck is drawn unconditionally now; only the crates depend on the flow.
+
 ### Milestone 32+ — candidates (remaining)
 F2 ground build mode (place buildings on the terrain), F3 production/energy grid, F4 exploitation UI, F5 factory<->rocket bridge, F6 part fabrication and conveyors. Also: impact-driven joint breakage (fields ready), real aerodynamics (wind + per-wing lift), placeholder cleanup, multiplayer groundwork.

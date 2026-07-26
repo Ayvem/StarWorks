@@ -8,6 +8,22 @@ namespace studio
 {
     namespace
     {
+        /// Three letters for the node list; the inspector spells it out.
+        [[nodiscard]] std::string_view nodeTypeShortName(sw::parts::NodeType type)
+        {
+            switch (type)
+            {
+            case sw::parts::NodeType::Stack: return "STK";
+            case sw::parts::NodeType::Radial: return "RAD";
+            case sw::parts::NodeType::ConveyorIn: return "CIN";
+            case sw::parts::NodeType::ConveyorOut: return "COU";
+            default: return "?";
+            }
+        }
+    } // namespace
+
+    namespace
+    {
         constexpr const char* kGlyphCharset =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,-+/%:";
         constexpr sw::f32 kSnapCoarse = 0.05f;  // meters
@@ -236,7 +252,19 @@ namespace studio
     {
         sw::parts::AttachNode node{};
         node.type = type;
-        if (type == sw::parts::NodeType::Stack)
+        if (sw::parts::isConveyorNode(type))
+        {
+            // A conveyor PORT: the mouth a belt docks against. Direction is
+            // the contract — an OUT ships, an IN receives — so the two start
+            // on opposite faces and the author moves them onto the geometry
+            // with SNAP SURF like any other node.
+            const bool out = type == sw::parts::NodeType::ConveyorOut;
+            node.name = out ? "out" : "in";
+            node.position = {0.0f, 0.6f, out ? -1.0f : 1.0f};
+            node.direction = {0.0f, 0.0f, out ? -1.0f : 1.0f};
+            node.size = 0.55f;
+        }
+        else if (type == sw::parts::NodeType::Stack)
         {
             node.name = std::format("stack{}", m_part.nodes.size());
             node.position = {0.0f, 0.0f, -1.0f};
@@ -703,13 +731,18 @@ namespace studio
             }
             else if (id == 230) { addNode(sw::parts::NodeType::Stack); }
             else if (id == 231) { addNode(sw::parts::NodeType::Radial); }
+            else if (id == 235) { addNode(sw::parts::NodeType::ConveyorIn); }
+            else if (id == 236) { addNode(sw::parts::NodeType::ConveyorOut); }
             else if (id == 232) { snapSelectedNodeToSurface(); markGeometryDirty(); }
             else if (id == 233 && hasNodeSelection())
             {
+                // Cycle through every type rather than toggling two: the
+                // conveyor ports are node types now, and a two-way switch
+                // could not reach them.
                 auto& node = m_part.nodes[static_cast<sw::usize>(m_selectedNode)];
-                node.type = node.type == sw::parts::NodeType::Stack
-                                ? sw::parts::NodeType::Radial
-                                : sw::parts::NodeType::Stack;
+                node.type = static_cast<sw::parts::NodeType>(
+                    (static_cast<sw::u8>(node.type) + 1) %
+                    static_cast<sw::u8>(sw::parts::NodeType::Count));
             }
             else if (id == 234 && hasNodeSelection())
             {
@@ -864,11 +897,18 @@ namespace studio
         {
             const sw::parts::AttachNode& node = m_part.nodes[i];
             const bool selected = static_cast<sw::i32>(i) == m_selectedNode;
-            const sw::Vec4 color =
-                selected ? sw::Vec4{1.0f, 1.0f, 1.0f, 2.0f}
-                         : (node.type == sw::parts::NodeType::Stack
-                                ? sw::Vec4{0.3f, 1.0f, 0.5f, 2.0f}
-                                : sw::Vec4{0.3f, 0.8f, 1.0f, 2.0f});
+            // Green stack, blue radial, amber conveyor IN, orange OUT: the
+            // port's DIRECTION is the thing you have to get right, so the
+            // two ends of a belt never share a colour.
+            sw::Vec4 color{0.3f, 0.8f, 1.0f, 2.0f};
+            switch (node.type)
+            {
+            case sw::parts::NodeType::Stack: color = {0.3f, 1.0f, 0.5f, 2.0f}; break;
+            case sw::parts::NodeType::ConveyorIn: color = {1.0f, 0.82f, 0.30f, 2.0f}; break;
+            case sw::parts::NodeType::ConveyorOut: color = {1.0f, 0.45f, 0.15f, 2.0f}; break;
+            default: break;
+            }
+            if (selected) { color = {1.0f, 1.0f, 1.0f, 2.0f}; }
             const sw::f32 radius = std::max(0.09f, node.size * 0.18f);
             push(m_markerMeshIndex, node.position,
                  glm::scale(sw::Mat4{1.0f}, sw::Vec3{radius}), color, false, radius * 2);
@@ -978,11 +1018,13 @@ namespace studio
         button(x, 0.90f, 0.10f, "DEL", 221, false);
 
         // ---- node row ----------------------------------------------------------------
-        button(-0.38f, 0.82f, 0.16f, "+STACK ND", 230, false);
-        button(-0.20f, 0.82f, 0.17f, "+RADIAL ND", 231, false);
-        button(-0.01f, 0.82f, 0.16f, "SNAP SURF", 232, false);
-        button(0.17f, 0.82f, 0.15f, "ND TYPE", 233, false);
-        button(0.34f, 0.82f, 0.14f, "ND DEL", 234, false);
+        button(-0.66f, 0.82f, 0.13f, "+STACK", 230, false);
+        button(-0.51f, 0.82f, 0.14f, "+RADIAL", 231, false);
+        button(-0.35f, 0.82f, 0.15f, "+CONV IN", 235, false);
+        button(-0.18f, 0.82f, 0.16f, "+CONV OUT", 236, false);
+        button(0.00f, 0.82f, 0.16f, "SNAP SURF", 232, false);
+        button(0.18f, 0.82f, 0.15f, "ND TYPE", 233, false);
+        button(0.35f, 0.82f, 0.14f, "ND DEL", 234, false);
 
         // ---- shape list (left column) --------------------------------------------------
         sw::f32 y = -0.76f;
@@ -1012,7 +1054,7 @@ namespace studio
                   selected ? sw::Vec4{0.45f, 0.42f, 0.15f, 0.85f}
                            : sw::Vec4{0.16f, 0.16f, 0.2f, 0.55f});
             hudText(std::format("ND {} {}", node.name,
-                                node.type == sw::parts::NodeType::Stack ? "STK" : "RAD"),
+                                nodeTypeShortName(node.type)),
                     -0.965f, y + 0.013f, 0.026f,
                     selected ? sw::Vec4{1.0f, 1.0f, 0.85f, 1.0f} : textColor);
             m_buttons.push_back({-0.98f, y, -0.70f, y + 0.052f,
@@ -1070,8 +1112,7 @@ namespace studio
             const sw::parts::AttachNode& node =
                 m_part.nodes[static_cast<sw::usize>(m_selectedNode)];
             hudText(std::format("NODE {}  {}  POS {:.2f} {:.2f} {:.2f}", node.name,
-                                node.type == sw::parts::NodeType::Stack ? "STACK"
-                                                                        : "RADIAL",
+                                sw::parts::nodeTypeName(node.type),
                                 node.position.x, node.position.y, node.position.z),
                     0.30f, -0.97f, 0.028f, textColor);
             hudText(std::format("DIR {:.0f} {:.0f} {:.0f}  SIZE {:.2f}   X/Y/Z SET DIR",

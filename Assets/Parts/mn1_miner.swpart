@@ -113,5 +113,21 @@
       "collider": true
     }
   ],
-  "nodes": []
+  "nodes": [
+    {
+      "name": "ore-out",
+      "position": [
+        7.0,
+        0.6,
+        0.0
+      ],
+      "direction": [
+        1,
+        0,
+        0
+      ],
+      "type": "conveyor-out",
+      "size": 0.55
+    }
+  ]
 }

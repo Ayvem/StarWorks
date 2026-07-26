@@ -1,0 +1,97 @@
+{
+  "id": 106,
+  "type": "Structural",
+  "name": "CV-1 Belt Segment",
+  "dryMassKg": 240.0,
+  "costCredits": 0.0,
+  "volumeM3": 1.0,
+  "crashToleranceMps": 6,
+  "breakingForceN": 40000.0,
+  "dragCoefficientArea": 0.4,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0.0,
+  "capacities": [],
+  "building": {
+    "category": "conveyor",
+    "footprintM": [
+      1.4,
+      2.0
+    ],
+    "powerKw": -0.5,
+    "inventoryVolumeM3": 0.0,
+    "maxSlopeTangent": 0.45,
+    "minOreDensity": 0.0
+  },
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0.60, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.55, 0.06, 1.0],
+      "color": [0.20, 0.22, 0.26],
+      "emissive": 0.0,
+      "specular": 0.22,
+      "gloss": 0.30,
+      "segments": 12,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0.58, 0.72, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05, 0.10, 1.0],
+      "color": [0.48, 0.50, 0.54],
+      "emissive": 0.0,
+      "specular": 0.35,
+      "gloss": 0.45,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-0.58, 0.72, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05, 0.10, 1.0],
+      "color": [0.48, 0.50, 0.54],
+      "emissive": 0.0,
+      "specular": 0.35,
+      "gloss": 0.45,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 0.27, 0],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.09, 0.27, 0.09],
+      "color": [0.32, 0.34, 0.38],
+      "emissive": 0.0,
+      "specular": 0.25,
+      "gloss": 0.30,
+      "segments": 10,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "in",
+      "position": [0, 0.60, 1.0],
+      "direction": [0, 0, 1],
+      "type": "conveyor-in",
+      "size": 0.55
+    },
+    {
+      "name": "out",
+      "position": [0, 0.60, -1.0],
+      "direction": [0, 0, -1],
+      "type": "conveyor-out",
+      "size": 0.55
+    }
+  ]
+}

@@ -45,6 +45,7 @@ namespace sw::factory
         Pad,         // landing / loading pad (F5)
         Hub,         // the site's centre: defines it, holds its books
         Beacon,      // produces nothing but VISIBILITY: a site you can find
+        Conveyor,    // a belt segment: moves goods between the above
         Count
     };
 

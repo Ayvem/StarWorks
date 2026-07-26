@@ -266,14 +266,65 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
     // The catalogue now holds two families in one id space (F1): rocket
     // parts, and BUILDINGS carrying an industrial block. Count them apart —
     // the VAB palette filters on exactly this predicate.
+    // THREE families now, and the split is what the two palettes filter on:
+    // vessel parts go in the VAB, buildings in the F build menu, and PROPS
+    // (conveyor cargo) in neither — the game places those itself.
     usize rocketParts = 0;
     usize buildings = 0;
+    usize props = 0;
     for (const parts::PartDefinition& definition : parts::catalog())
     {
-        (parts::isBuilding(definition) ? buildings : rocketParts) += 1;
+        if (parts::isProp(definition)) { props += 1; }
+        else if (parts::isBuilding(definition)) { buildings += 1; }
+        else { rocketParts += 1; }
+        // Exactly one family each: the predicates must not overlap.
+        SW_CHECK(parts::isVesselPart(definition) !=
+                 (parts::isBuilding(definition) || parts::isProp(definition)));
     }
     SW_CHECK_EQ(rocketParts, static_cast<usize>(9));
-    SW_CHECK_EQ(buildings, static_cast<usize>(6));
+    SW_CHECK_EQ(buildings, static_cast<usize>(7)); // + the CV-1 belt segment
+    SW_CHECK_EQ(props, static_cast<usize>(1));     // the CR-1 crate
+
+    // CONVEYOR PORTS. Every machine that takes part in a chain declares its
+    // mouths on its geometry, and their DIRECTION is the contract: goods
+    // leave through an out and arrive at an in.
+    struct PortExpectation
+    {
+        u32 id;
+        bool wantsIn;
+        bool wantsOut;
+    };
+    const PortExpectation expectations[] = {
+        {parts::kBuildingMiner, false, true},     // digs, ships out
+        {parts::kBuildingRefinery, true, true},   // takes ore, ships metal
+        {parts::kBuildingStorage, true, false},   // the end of a chain
+        {parts::kBuildingHub, true, false},
+        {parts::kBuildingConveyor, true, true},   // a belt is a chain link
+    };
+    for (const PortExpectation& expectation : expectations)
+    {
+        const parts::PartDefinition* definition =
+            parts::findDefinition(expectation.id);
+        SW_CHECK(definition != nullptr);
+        if (definition == nullptr) { continue; }
+        SW_CHECK_EQ(parts::findConveyorNode(*definition, parts::NodeType::ConveyorIn) !=
+                        nullptr,
+                    expectation.wantsIn);
+        SW_CHECK_EQ(parts::findConveyorNode(*definition, parts::NodeType::ConveyorOut) !=
+                        nullptr,
+                    expectation.wantsOut);
+    }
+
+    // The type name survives a round trip through the .swpart JSON — the
+    // whole point of the port being data is that Part Studio writes it.
+    for (const parts::NodeType type :
+         {parts::NodeType::Stack, parts::NodeType::Radial, parts::NodeType::ConveyorIn,
+          parts::NodeType::ConveyorOut})
+    {
+        parts::NodeType parsed = parts::NodeType::Count;
+        SW_CHECK(parts::nodeTypeFromName(parts::nodeTypeName(type), parsed));
+        SW_CHECK_EQ(parsed, type);
+    }
 
     // The BC-1 beacon: a building whose product is being found. It must be
     // tall enough to be seen from the ground and cheap enough in power to

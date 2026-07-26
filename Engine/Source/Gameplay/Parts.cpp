@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <fstream>
 #include <unordered_map>
 #include <utility>
@@ -193,6 +194,10 @@ namespace sw::parts
             "DockingPort", "Decoupler", "CargoBay", "Structural"};
         constexpr std::string_view kShapeKindNames[] = {
             "box", "cylinder", "cone", "sphere", "tube"};
+        // Node type names as they appear in .swpart JSON. Kept lower-case and
+        // hyphenated so a hand-edited file reads the way the tool writes it.
+        constexpr std::string_view kNodeTypeNames[] = {"stack", "radial", "conveyor-in",
+                                                       "conveyor-out"};
 
         [[nodiscard]] json::Value vec3ToJson(const Vec3& v)
         {
@@ -230,6 +235,38 @@ namespace sw::parts
             return false;
         }
     } // namespace
+
+    std::string_view nodeTypeName(NodeType type)
+    {
+        const usize index = static_cast<usize>(type);
+        return (index < std::size(kNodeTypeNames)) ? kNodeTypeNames[index]
+                                                   : kNodeTypeNames[0];
+    }
+
+    bool nodeTypeFromName(std::string_view name, NodeType& outType)
+    {
+        for (usize i = 0; i < std::size(kNodeTypeNames); ++i)
+        {
+            if (kNodeTypeNames[i] == name)
+            {
+                outType = static_cast<NodeType>(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const AttachNode* findConveyorNode(const PartDefinition& definition, NodeType type)
+    {
+        for (const AttachNode& node : definition.nodes)
+        {
+            if (node.type == type)
+            {
+                return &node;
+            }
+        }
+        return nullptr;
+    }
 
     std::span<const PartDefinition> catalog() { return registry(); }
 
@@ -368,6 +405,8 @@ namespace sw::parts
             }
         }
 
+        definition.prop = root.boolean("prop", false);
+
         if (const json::Value* nodes = root.find("nodes"))
         {
             for (const json::Value& entry : nodes->asArray())
@@ -379,8 +418,10 @@ namespace sw::parts
                 const f32 length = glm::length(node.direction);
                 node.direction = length > 1.0e-5f ? node.direction / length
                                                   : Vec3{0.0f, 0.0f, 1.0f};
-                node.type = entry.string("type") == "radial" ? NodeType::Radial
-                                                             : NodeType::Stack;
+                if (!nodeTypeFromName(entry.string("type"), node.type))
+                {
+                    node.type = NodeType::Stack; // unknown/absent: the old default
+                }
                 node.size = static_cast<f32>(entry.number("size", 0.6));
                 definition.nodes.push_back(std::move(node));
             }
@@ -465,6 +506,11 @@ namespace sw::parts
         }
         root.set("shapes", std::move(shapes));
 
+        if (definition.prop)
+        {
+            root.set("prop", json::Value(true));
+        }
+
         json::Value nodes = json::Value::makeArray();
         for (const AttachNode& node : definition.nodes)
         {
@@ -472,9 +518,7 @@ namespace sw::parts
             entry.set("name", json::Value(node.name));
             entry.set("position", vec3ToJson(node.position));
             entry.set("direction", vec3ToJson(node.direction));
-            entry.set("type", json::Value(node.type == NodeType::Radial
-                                              ? std::string("radial")
-                                              : std::string("stack")));
+            entry.set("type", json::Value(std::string(nodeTypeName(node.type))));
             entry.set("size", json::Value(static_cast<f64>(node.size)));
             nodes.push(std::move(entry));
         }

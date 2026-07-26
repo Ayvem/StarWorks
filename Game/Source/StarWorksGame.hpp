@@ -69,9 +69,10 @@ namespace game
         void collectBuildMenu();
         /// Map view: the button that steps through the vessels you own.
         void collectMapButtons();
-        /// Crates riding the belts, positioned analytically from the lane
-        /// clock and each link's measured throughput.
-        void collectConveyorCargo(const sw::Camera& activeCamera);
+        /// Belt decks (tiled CV-1 parts) and the crates riding them,
+        /// positioned analytically from the lane clock and each link's
+        /// measured throughput.
+        void collectConveyors(const sw::Camera& activeCamera);
         void collectParticles(const sw::Camera& activeCamera);
         void refreshPrediction();
         /// Atmospheric heating 0..1 for a dynamic craft (0 in vacuum).
@@ -115,7 +116,17 @@ namespace game
         std::array<sw::u32, 128> m_glyphMeshIndex{};
         sw::u32 m_capsuleMeshIndex = 0;
         sw::u32 m_markerMeshIndex = 0;
-        sw::u32 m_cargoMeshIndex = 0; // one conveyor crate, tinted per resource
+        /// Belt deck and cargo crate: both are ordinary .swpart definitions
+        /// (CV-1 and CR-1), so their look is edited in Part Studio like
+        /// everything else. Cached mesh slots, resolved once at startup.
+        sw::u32 m_conveyorMeshIndex = 0xFFFFFFFFu;
+        sw::u32 m_cargoMeshIndex = 0xFFFFFFFFu;
+        /// Length of one CV-1 along its own Z, read from its collider box —
+        /// the belt tiles at exactly this spacing, so a longer segment part
+        /// means fewer, longer tiles with no code change.
+        sw::f32 m_conveyorSegmentM = 2.0f;
+        /// Top of the CV-1's deck in its own frame — where cargo rides.
+        sw::f32 m_conveyorDeckHeightM = 0.66f;
 
         // Artificial horizon (bottom-center instrument).
         sw::u32 m_navRingMeshIndex = 0;
