@@ -61,6 +61,7 @@ namespace sw::factory
                                             inventoryCount(*source, link.resource));
                 if (wanted <= 0.0)
                 {
+                    link.flowUnitsPerSecond = 0.0;
                     return;
                 }
                 // Accept first (volume-bound), then take exactly that much.
@@ -69,6 +70,10 @@ namespace sw::factory
                 {
                     inventoryRemove(*source, link.resource, accepted);
                 }
+                // Measured throughput, not the rating: this is what the belt
+                // is drawn moving, and what tells you at a glance whether
+                // the chain upstream is keeping up.
+                link.flowUnitsPerSecond = (dt > 0.0) ? accepted / dt : 0.0;
             });
     }
     void ProductionSystem::update(ecs::World& world, f32 deltaSeconds)

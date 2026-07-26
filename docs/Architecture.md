@@ -452,5 +452,28 @@ The other cause was a hard `m < 0.47` step between mare and highland. On a fract
 
 **And the map can change which ship you fly.** `P` always cycled; now there is a NEXT SHIP button with a `SHIP n/N` readout in the map view, where you are already looking at your fleet. It appears only when there is more than one vessel to cycle between.
 
+### F1e — the ground you build from (done)
+Three changes, all of them shaped by what F2 is about to need: **you place buildings by walking up to a spot and putting one there.**
+
+**EVA is first person.** A factory is built at arm's length, and a third-person camera puts the thing you are aiming at behind your own shoulders. The view now sits at the suit's eyes: the body's heading IS the look direction (the mouse already turned the body since F1c), the pitch is a free look about the local right axis, and the horizon stays level because both are applied about the LOCAL vertical rather than a world axis. The suit mesh is skipped while you are inside it — the map still draws it, because there you are looking at the world rather than out of your own eyes.
+
+**`F` opens the building catalogue.** Satisfactory's lesson applied: the list of things you can put on the ground is a first-class screen, not a submenu of the vehicle editor. It reads the same `.swpart` catalogue the VAB filters buildings OUT of, shows each one's category, footprint, power balance, storage and ore requirement straight from its industrial block, and arms one. `m_heldBuilding` is the whole contract with F2 — the armed id is what ground placement will read, and what a hotbar will one day save. Nothing here moves when placement lands.
+
+**Conveyors are visible, and so is what they carry.** The belts are real geometry now: a deck with rails and legs, laid between two buildings along a path that samples the SAME heightfield the collider reads, so a belt crossing a rise climbs it instead of disappearing into it. `IndustryTests` checks that no point of a deck — including between its sample points — is ever below the ground it crosses, on the roughest dry terrain the heightfield makes.
+
+The cargo is the part worth explaining. There are no item entities and no second simulation: a crate's position is a closed-form function of the lane's present time and the link's throughput, the same discipline the orbits and the planet's spin already follow. And it is the MEASURED throughput, not the rating — `TransferSystem` now records what actually moved (`ItemLinkComponent::flowUnitsPerSecond`), so crate spacing IS the flow. A belt fed by a starving mine visibly thins out; a blocked one empties. On the shipped outpost the ore belt carries ~9 crates and the iron belt ~5, because the smelter really is producing 0.51 units for every 0.85 it receives. `Factory/Conveyor.hpp` owns both the path and the "where is a crate at arc length s" query, because F2 draws these by hand and F6 turns them into transport — a second implementation would be a belt whose items are somewhere its rails are not.
+
+### F1f — the camera stops flying the rocket (done)
+**A chase camera that inherits the vehicle's attitude turns every roll, every RCS twitch and every SAS correction into a camera move.** The world swings around you while you are trying to read it, and you cannot look at anything for longer than the autopilot leaves the nose still. That is what the ship camera had been doing since M11: its offset frame WAS the craft's rotation, blended toward a "ground frame" that was itself built from the craft's heading — so even levelled, it still tracked the nose.
+
+The craft's rotation now appears nowhere in the chase camera. The view has its own orientation and only the mouse changes it. The reference frame it orbits in is:
+
+* **away from a body — INERTIAL**, the world axes. They do not drift, they do not spin, and a camera parked in them stays parked.
+* **close to one — the local HORIZON frame**, whose "up" is the radial and whose heading is NORTH: the body's own spin axis projected onto the local horizontal, with a continuous fallback directly over a pole. North is the point — it is the one heading available that does not move with the craft, so "level" cannot quietly become "level, and also pointing where the rocket points".
+
+Low means 3% of the body's own radius, so it means the same thing on a moon as on a planet, and the two frames are slerped through `m_groundCamBlend` so crossing the threshold levels the view rather than snapping it. Verified numerically: the frame's +Y is the radial to 9e-8, its −Z is north, and a half blend is a unit quaternion sitting symmetrically 29.4 degrees from each of the two ups.
+
+The navball still reads the craft's attitude, obviously — that is an instrument, and reading the vehicle is its whole job.
+
 ### Milestone 32+ — candidates (remaining)
 F2 ground build mode (place buildings on the terrain), F3 production/energy grid, F4 exploitation UI, F5 factory<->rocket bridge, F6 part fabrication and conveyors. Also: impact-driven joint breakage (fields ready), real aerodynamics (wind + per-wing lift), placeholder cleanup, multiplayer groundwork.

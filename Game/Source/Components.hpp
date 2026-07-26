@@ -126,6 +126,32 @@ namespace game
         sw::f32 turnSpeed = 1.8f;      // rad/s per unit of mouse look
     };
 
+    /// A VISIBLE BELT between two buildings on a body's surface.
+    ///
+    /// The matter still moves through the destination's ItemLink: a conveyor
+    /// is not a second simulation, it is the same one made legible. What
+    /// this component adds is a PATH and a way to read the flow off it.
+    ///
+    /// The path is stored in the body's ROTATING frame, in metres from the
+    /// body centre — the same discipline as every surface anchor, because a
+    /// belt positioned through an f32 world rotation would shimmer next to
+    /// buildings that do not. The cargo riding it is positioned analytically
+    /// from the simulation clock and the link's MEASURED throughput, so a
+    /// starved belt visibly runs dry and a blocked one visibly backs up,
+    /// without a single item entity being simulated.
+    struct ConveyorComponent
+    {
+        static constexpr sw::u32 kMaxPoints = sw::factory::kMaxConveyorPoints;
+        sw::ecs::Entity body{};  // the celestial body it is built on
+        sw::ecs::Entity link{};  // the entity carrying the ItemLinkComponent
+        sw::u32 pointCount = 0;
+        sw::WorldVec3 points[kMaxPoints]{}; // body frame, metres
+        sw::f32 lengthM = 0.0f;
+        sw::f32 speedMps = 2.6f;   // how fast cargo rides
+        sw::f32 unitsPerCrate = 1.0f;
+        sw::Vec3 cargoColor{0.6f, 0.6f, 0.6f};
+    };
+
     /// Marks an entity with a star-map marker (see the M map view): an
     /// octahedron beacon whose scale keeps a constant on-screen size.
     struct MapMarkerComponent
@@ -133,6 +159,7 @@ namespace game
         sw::Vec4 color{1.0f};
     };
 
+    static_assert(std::is_trivially_copyable_v<ConveyorComponent>);
     static_assert(std::is_trivially_copyable_v<BoundsComponent>);
     static_assert(std::is_trivially_copyable_v<SpinComponent>);
     static_assert(std::is_trivially_copyable_v<MeshComponent>);

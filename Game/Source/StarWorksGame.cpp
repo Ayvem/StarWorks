@@ -217,6 +217,103 @@ namespace game
             return site;
         }
 
+        /// Cargo colour for a resource — ore reads as rock, metal as metal.
+        /// One crate on a belt is a few pixels; the colour IS the label.
+        [[nodiscard]] sw::Vec3 resourceCargoColor(sw::res::Resource resource)
+        {
+            switch (resource)
+            {
+            case sw::res::Resource::IronOre:   return {0.42f, 0.28f, 0.20f};
+            case sw::res::Resource::CopperOre: return {0.45f, 0.30f, 0.16f};
+            case sw::res::Resource::Iron:      return {0.62f, 0.64f, 0.68f};
+            case sw::res::Resource::Copper:    return {0.72f, 0.42f, 0.22f};
+            case sw::res::Resource::WaterIce:  return {0.70f, 0.82f, 0.90f};
+            case sw::res::Resource::Water:     return {0.25f, 0.45f, 0.62f};
+            default:                           return {0.55f, 0.58f, 0.62f};
+            }
+        }
+
+        /// The belt itself: a ribbon with two rails, built in the frame of
+        /// its FIRST path point (which is where its surface anchor sits), so
+        /// the mesh carries small numbers and the anchor carries the planet
+        /// radius. Legs drop to the ground under every point, because a belt
+        /// floating over a dip is the first thing the eye catches.
+        [[nodiscard]] sw::MeshData buildConveyorMesh(const sw::WorldVec3* points,
+                                                     sw::u32 count,
+                                                     const sw::WorldVec3& up0)
+        {
+            sw::MeshData mesh;
+            if (count < 2)
+            {
+                return mesh;
+            }
+            constexpr sw::f32 kHalfWidth = 0.55f;
+            constexpr sw::f32 kRail = 0.10f;
+            constexpr sw::f32 kDeckHeight = 0.06f;
+            const sw::Vec4 deckColor{0.20f, 0.22f, 0.26f, 1.0f};
+            const sw::Vec4 railColor{0.45f, 0.47f, 0.50f, 1.0f};
+            const sw::Vec4 legColor{0.30f, 0.32f, 0.36f, 1.0f};
+
+            auto quad = [&mesh](const sw::Vec3& a, const sw::Vec3& b, const sw::Vec3& c,
+                                const sw::Vec3& d, const sw::Vec4& color) {
+                const sw::Vec3 normal =
+                    glm::normalize(glm::cross(b - a, d - a) + sw::Vec3{0.0f, 1e-6f, 0.0f});
+                const sw::u32 base = static_cast<sw::u32>(mesh.vertices.size());
+                mesh.vertices.push_back({a, normal, color, {0, 0}});
+                mesh.vertices.push_back({b, normal, color, {1, 0}});
+                mesh.vertices.push_back({c, normal, color, {1, 1}});
+                mesh.vertices.push_back({d, normal, color, {0, 1}});
+                mesh.indices.insert(mesh.indices.end(),
+                                    {base, base + 1, base + 2, base, base + 2, base + 3});
+            };
+
+            for (sw::u32 i = 0; i + 1 < count; ++i)
+            {
+                const sw::Vec3 a = sw::Vec3(points[i] - points[0]);
+                const sw::Vec3 b = sw::Vec3(points[i + 1] - points[0]);
+                const sw::Vec3 up = sw::Vec3(glm::normalize(points[i] + points[i + 1]));
+                sw::Vec3 along = b - a;
+                const sw::f32 length = glm::length(along);
+                if (length < 1.0e-4f)
+                {
+                    continue;
+                }
+                along /= length;
+                const sw::Vec3 side = glm::normalize(glm::cross(along, up)) * kHalfWidth;
+                const sw::Vec3 lift = up * kDeckHeight;
+
+                // Deck (top face).
+                quad(a - side + lift, a + side + lift, b + side + lift, b - side + lift,
+                     deckColor);
+                // Two rails, standing proud of the deck.
+                for (const sw::f32 sign : {-1.0f, 1.0f})
+                {
+                    const sw::Vec3 offset = side * sign;
+                    const sw::Vec3 top = up * (kDeckHeight + kRail);
+                    quad(a + offset + lift, b + offset + lift, b + offset + top,
+                         a + offset + top, railColor);
+                }
+            }
+
+            // Legs: a short post under each point, down to the ground.
+            for (sw::u32 i = 0; i < count; ++i)
+            {
+                const sw::Vec3 p = sw::Vec3(points[i] - points[0]);
+                const sw::Vec3 up = sw::Vec3(glm::normalize(points[i]));
+                const sw::Vec3 side =
+                    glm::normalize(glm::cross(up, glm::abs(up.y) < 0.9f
+                                                      ? sw::Vec3{0.0f, 1.0f, 0.0f}
+                                                      : sw::Vec3{1.0f, 0.0f, 0.0f})) *
+                    0.10f;
+                const sw::Vec3 side2 = glm::cross(up, side);
+                const sw::Vec3 foot = p - up * 0.95f;
+                quad(foot - side, foot + side, p + side, p - side, legColor);
+                quad(foot - side2, foot + side2, p + side2, p - side2, legColor);
+            }
+            (void)up0;
+            return mesh;
+        }
+
         /// The VAB palette shows ROCKET parts. Since F1 the catalogue also
         /// holds buildings — same file format, same Part Studio, same stable
         /// id space — and those belong to the ground build mode (F2), not to
@@ -639,7 +736,8 @@ namespace game
 
         SW_LOG_INFO("Game", "Milestone 10 scene ready: {} entities", m_world.aliveCount());
         SW_LOG_INFO("Game",
-                    "Controls: Tab pilot/free | G EVA capsule | M map (wheel zoom) | V "
+                    "Controls: Tab pilot/free | G EVA (first person: mouse turns you, "
+                    "A/D strafe) | F build menu | B hangar | M map | P next ship | V "
                     "speed ORB/SRF | Shift/Ctrl throttle | ,/. warp | W/S A/D arrows Q/E "
                     "X | Space pause | Esc quit");
     }
@@ -856,6 +954,10 @@ namespace game
             sw::PrimitiveFactory::makeCapsule(0.5f, 0.5f, 12, 16,
                                               {0.9f, 0.6f, 0.2f, 1.0f})));
         m_markerMeshIndex = registerMesh(renderer().createMesh(buildMarkerMesh()));
+        // One crate, tinted per resource by the conveyor that carries it.
+        m_cargoMeshIndex = registerMesh(renderer().createMesh(
+            sw::PrimitiveFactory::makeBox({0.30f, 0.22f, 0.30f},
+                                          {1.0f, 1.0f, 1.0f, 1.0f})));
 
         // Sun position and eclipse occluders are camera-relative and set
         // every frame in onRender.
@@ -1177,20 +1279,56 @@ namespace game
                 m_world.addComponent(beaconEntity, beacon);
             }
 
-            // The chain: ore walks to the smelter, iron walks to the silo.
-            // Still the F0 link abstraction — F6 replaces it with conveyors.
-            if (!minerEntity.isNull() && !refineryEntity.isNull())
-            {
-                m_world.addComponent(refineryEntity,
-                                     sw::factory::ItemLinkComponent{
-                                         minerEntity, sw::res::Resource::IronOre, 3.0});
-            }
-            if (!refineryEntity.isNull() && !storageEntity.isNull())
-            {
-                m_world.addComponent(storageEntity,
-                                     sw::factory::ItemLinkComponent{
-                                         refineryEntity, sw::res::Resource::Iron, 3.0});
-            }
+            // ---- the chain, and the BELTS that make it visible -----------
+            // The ItemLink is still what moves the matter. The conveyor is
+            // the same link with a shape: a path along the ground and cargo
+            // riding it at the rate the link actually achieves.
+            auto layConveyor = [&](sw::ecs::Entity from, sw::ecs::Entity to,
+                                   sw::res::Resource resource, sw::f64 rate) {
+                if (from.isNull() || to.isNull())
+                {
+                    return;
+                }
+                // The link lives on the DESTINATION, as it always has.
+                m_world.addComponent(
+                    to, sw::factory::ItemLinkComponent{from, resource, rate});
+
+                const auto& fromAnchor =
+                    m_world.getComponent<sw::phys::SurfaceAnchorComponent>(from);
+                const auto& toAnchor =
+                    m_world.getComponent<sw::phys::SurfaceAnchorComponent>(to);
+
+                ConveyorComponent conveyor{};
+                conveyor.body = terraEntity;
+                conveyor.link = to;
+                conveyor.cargoColor = resourceCargoColor(resource);
+                // The deck follows the GROUND, sampled from the same
+                // heightfield the collider reads (Factory/Conveyor.hpp) —
+                // the very routine F2's hand-drawn belts will use.
+                conveyor.pointCount = ConveyorComponent::kMaxPoints;
+                conveyor.lengthM = static_cast<sw::f32>(sw::factory::buildConveyorPath(
+                    terrain, kTerraRadius, fromAnchor.localPosition,
+                    toAnchor.localPosition, 1.05, conveyor.points,
+                    conveyor.pointCount));
+
+                const sw::ecs::Entity e = m_world.createEntity();
+                TransformComponent transform{};
+                m_world.addComponent(e, transform);
+                m_world.addComponent(e, PreviousTransformComponent{});
+                m_world.addComponent(e, BoundsComponent{conveyor.lengthM});
+                m_world.addComponent(
+                    e, MeshComponent{registerMesh(renderer().createMesh(
+                           buildConveyorMesh(conveyor.points, conveyor.pointCount,
+                                             glm::normalize(conveyor.points[0]))))});
+                sw::phys::SurfaceAnchorComponent anchor{};
+                anchor.body = terraEntity;
+                anchor.localPosition = conveyor.points[0];
+                m_world.addComponent(e, anchor);
+                m_world.addComponent(e, conveyor);
+            };
+
+            layConveyor(minerEntity, refineryEntity, sw::res::Resource::IronOre, 3.0);
+            layConveyor(refineryEntity, storageEntity, sw::res::Resource::Iron, 3.0);
 
             if (!hubEntity.isNull())
             {
@@ -1474,6 +1612,7 @@ namespace game
         m_saveSchema.registerComponent<ShipControlsComponent>("game.ShipControls", 2);
         m_saveSchema.registerComponent<CapsuleComponent>("game.Capsule", 1);
         m_saveSchema.registerComponent<MapMarkerComponent>("game.MapMarker", 1);
+        m_saveSchema.registerComponent<ConveyorComponent>("game.Conveyor", 1);
     }
 
     void StarWorksGame::saveGame()
@@ -2422,12 +2561,23 @@ namespace game
             glm::mix(previous.position, transform.position, static_cast<sw::f64>(alpha));
         const sw::Quat rotation = glm::slerp(previous.rotation, transform.rotation, alpha);
 
-        // ---- ground lock: when the trajectory is no longer an orbit ----------
-        // (impact predicted, or resting on the surface) AND the craft is low
-        // relative to the BODY'S OWN SIZE, the camera stops tumbling with
-        // the craft and levels itself on the local horizon instead.
-        bool wantGroundLock = false;
+        // ---- THE CAMERA FRAME ------------------------------------------------
+        // The craft's own rotation does NOT appear anywhere below, and that
+        // is the whole design. A chase camera that inherits the vehicle's
+        // attitude turns every roll, every RCS twitch and every SAS
+        // correction into a camera move: the world swings around you while
+        // you are trying to read it, and you cannot look at anything for
+        // longer than the autopilot leaves the nose still. So the view has
+        // its own orientation, and only the mouse changes it.
+        //
+        // ONE automatic behaviour survives, because it is the one that is
+        // about the WORLD rather than about the vehicle: close to a body,
+        // "up" means up. The camera levels on the local horizon — and it
+        // stops there. It does not also follow where the rocket is pointing;
+        // it just stops being upside down.
         sw::Vec3 radialUp{0.0f, 1.0f, 0.0f};
+        sw::Quat horizonFrame{1.0f, 0.0f, 0.0f, 0.0f};
+        bool wantHorizonLock = false;
         const sw::i32 primaryIndex = controlledPrimaryIndex();
         if (primaryIndex >= 0)
         {
@@ -2440,46 +2590,49 @@ namespace game
             if (distance > 1.0)
             {
                 radialUp = sw::Vec3(radial / distance);
-                const sw::f64 altitude = distance - primary.bodyRadius;
-                const bool low = altitude < 0.03 * primary.bodyRadius;
+                // Low relative to the BODY'S OWN SIZE — 3% of its radius, so
+                // it means the same thing on a moon as on a planet.
+                wantHorizonLock =
+                    (distance - primary.bodyRadius) < 0.03 * primary.bodyRadius;
 
-                bool suborbital = false;
-                if (!m_prediction.empty())
+                // The frame's heading has to come from something that does
+                // not move with the craft, or "level" would still track the
+                // nose. NORTH does: the body's own spin axis, projected onto
+                // the local horizontal.
+                sw::Vec3 axis{0.0f, 1.0f, 0.0f};
+                if (const auto* source =
+                        m_world.tryGetComponent<sw::phys::GravitySourceComponent>(
+                            primary.entity);
+                    source != nullptr && glm::length(source->spinAxis) > 1.0e-12)
                 {
-                    suborbital = m_prediction[0].endReason ==
-                                 sw::space::SegmentEnd::Impact;
+                    axis = sw::Vec3(glm::normalize(source->spinAxis));
                 }
-                const auto* dynamicBody =
-                    m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(target);
-                const bool grounded =
-                    dynamicBody != nullptr && dynamicBody->isGrounded != 0;
-                wantGroundLock = low && (suborbital || grounded);
+                sw::Vec3 north = axis - radialUp * glm::dot(axis, radialUp);
+                if (glm::length(north) < 1.0e-3f)
+                {
+                    // Straight over a pole: any horizontal direction will do,
+                    // as long as it is a CONTINUOUS choice.
+                    const sw::Vec3 reference =
+                        (std::abs(radialUp.x) < 0.9f) ? sw::Vec3{1.0f, 0.0f, 0.0f}
+                                                      : sw::Vec3{0.0f, 0.0f, 1.0f};
+                    north = reference - radialUp * glm::dot(reference, radialUp);
+                }
+                north = glm::normalize(north);
+                const sw::Vec3 east = glm::normalize(glm::cross(north, radialUp));
+                horizonFrame = glm::quat_cast(sw::Mat3{east, radialUp, -north});
             }
         }
-        const sw::f32 blendTarget = wantGroundLock ? 1.0f : 0.0f;
+        const sw::f32 blendTarget = wantHorizonLock ? 1.0f : 0.0f;
         m_groundCamBlend +=
             (blendTarget - m_groundCamBlend) * std::min(1.0f, deltaSeconds * 2.0f);
         const sw::f32 blend = m_groundCamBlend;
 
-        // Offset frame: the craft's own rotation, blended toward a leveled
-        // "ground frame" (craft heading projected on the horizon plane).
-        sw::Quat offsetRotation = rotation;
-        if (blend > 0.001f)
-        {
-            const sw::Vec3 forwardShip = rotation * sw::math::kWorldForward;
-            sw::Vec3 horizontal =
-                forwardShip - radialUp * glm::dot(forwardShip, radialUp);
-            const sw::f32 horizontalLength = glm::length(horizontal);
-            if (horizontalLength > 1.0e-3f)
-            {
-                horizontal /= horizontalLength;
-                const sw::Vec3 right =
-                    glm::normalize(glm::cross(horizontal, radialUp));
-                const sw::Quat groundRotation =
-                    glm::quat_cast(sw::Mat3{right, radialUp, -horizontal});
-                offsetRotation = glm::slerp(rotation, groundRotation, blend);
-            }
-        }
+        // Away from a body the reference is INERTIAL — the world axes. It
+        // does not drift, it does not spin, and a camera parked in it stays
+        // parked. Near one it becomes the horizon frame, eased across so
+        // crossing the threshold is not a snap.
+        const sw::Quat offsetRotation =
+            glm::slerp(sw::Quat{1.0f, 0.0f, 0.0f, 0.0f}, horizonFrame, blend);
 
         // ---- user camera control: right-drag orbits, wheel zooms, C resets ----
         // ON FOOT the horizontal drag does not orbit the camera around the
@@ -2525,17 +2678,51 @@ namespace game
             glm::angleAxis(m_chaseYaw, sw::Vec3{0.0f, 1.0f, 0.0f}) *
             glm::angleAxis(m_chasePitch, sw::Vec3{1.0f, 0.0f, 0.0f});
 
-        const sw::Vec3 chaseOffset =
-            (m_evaMode ? sw::Vec3{0.0f, 2.0f, 9.0f} : sw::Vec3{0.0f, 12.0f, 42.0f}) *
-            m_chaseZoom;
+        // ---- ON FOOT: FIRST PERSON -------------------------------------
+        // A factory is built at arm's length. Watching your own back while
+        // you place a machine puts the thing you are aiming at behind your
+        // own shoulders, so EVA looks out of the suit's visor instead: the
+        // camera sits at the head, the body's heading IS the view direction
+        // (the mouse already turns it), and the pitch is a free look.
+        if (walker != nullptr)
+        {
+            // The suit is a 2 m body centred on its transform; eyes just
+            // under the top of it.
+            constexpr sw::f32 kEyeHeight = 0.72f;
+            const sw::WorldVec3 eye = position + sw::WorldVec3(radialUp * kEyeHeight);
+            m_camera.setPosition(eye);
+
+            // Heading comes from the body (rotation's -Z), pitch from the
+            // mouse. Both are applied about the LOCAL vertical / local
+            // right, so the horizon stays level on a round world.
+            const sw::Vec3 bodyForward =
+                glm::normalize(rotation * sw::math::kWorldForward);
+            sw::Vec3 flat = bodyForward - radialUp * glm::dot(bodyForward, radialUp);
+            if (glm::length(flat) < 1.0e-4f)
+            {
+                flat = rotation * sw::Vec3{1.0f, 0.0f, 0.0f};
+            }
+            flat = glm::normalize(flat);
+            const sw::Vec3 lookRight = glm::normalize(glm::cross(flat, radialUp));
+            const sw::Vec3 forward =
+                glm::normalize(glm::angleAxis(m_chasePitch, lookRight) * flat);
+            const sw::Vec3 up = glm::cross(lookRight, forward);
+            m_camera.setOrientation(glm::quat_cast(sw::Mat3{lookRight, up, -forward}));
+            return;
+        }
+
+        const sw::Vec3 chaseOffset = sw::Vec3{0.0f, 12.0f, 42.0f} * m_chaseZoom;
         const sw::WorldVec3 cameraPosition =
             position + sw::WorldVec3(offsetRotation * (userOrbit * chaseOffset));
         m_camera.setPosition(cameraPosition);
 
         const sw::Vec3 forward = glm::normalize(sw::Vec3(position - cameraPosition));
-        // Camera up: craft-up in orbit, local vertical near the ground.
-        const sw::Vec3 shipUp = rotation * sw::Vec3{0.0f, 1.0f, 0.0f};
-        const sw::Vec3 targetUp = glm::normalize(glm::mix(shipUp, radialUp, blend));
+        // Camera up comes from the REFERENCE frame, never from the craft.
+        sw::Vec3 targetUp = offsetRotation * sw::Vec3{0.0f, 1.0f, 0.0f};
+        if (std::abs(glm::dot(forward, targetUp)) > 0.999f)
+        {
+            targetUp = offsetRotation * sw::Vec3{0.0f, 0.0f, 1.0f}; // straight down
+        }
         const sw::Vec3 right = glm::normalize(glm::cross(forward, targetUp));
         const sw::Vec3 up = glm::cross(right, forward);
         m_camera.setOrientation(glm::quat_cast(sw::Mat3{right, up, -forward}));
@@ -2683,6 +2870,12 @@ namespace game
         if (input().wasKeyPressed(sw::KeyCode::P) && !m_editorMode)
         {
             cyclePilotedVessel(); // fly any built vessel
+        }
+        // F opens the BUILDING catalogue. Not in the hangar, which is the
+        // rocket editor and has its own palette.
+        if (input().wasKeyPressed(sw::KeyCode::F) && !m_editorMode)
+        {
+            m_buildMenu = !m_buildMenu;
         }
         handleHudClicks();
         if (auto* sas = m_world.tryGetComponent<SasComponent>(m_shipEntity))
@@ -3200,7 +3393,14 @@ namespace game
             }
         }
 
-        if (!m_mapView && !m_editorMode)
+        if (m_buildMenu && !m_editorMode)
+        {
+            // The catalogue takes the clickable UI over while it is open —
+            // it owns m_hudButtons, so nothing behind it can be clicked
+            // through.
+            collectBuildMenu();
+        }
+        else if (!m_mapView && !m_editorMode)
         {
             collectNavball();
             collectSasButtons();
@@ -4403,6 +4603,235 @@ namespace game
         }
     }
 
+    // ------------------------------------------------------------------------
+    // CARGO ON THE BELTS
+    //
+    // No item entities, no second simulation: the crates are a closed-form
+    // function of the lane's present time and the link's MEASURED
+    // throughput. That is the same discipline the orbits and the planet
+    // spin already follow, and it buys the same three things — it is exact
+    // under time warp, it costs nothing when nobody is looking, and it
+    // cannot drift away from the matter it depicts.
+    //
+    // Spacing IS the flow: crates/second = flow / unitsPerCrate, so a belt
+    // fed by a starving mine visibly thins out and a stopped one empties.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::collectConveyorCargo(const sw::Camera& activeCamera)
+    {
+        const sw::WorldVec3 cameraPosition = activeCamera.position();
+        const sw::f64 now = m_physicsLane->presentSeconds();
+
+        m_world.forEach<TransformComponent, ConveyorComponent>(
+            [&](sw::ecs::Entity, TransformComponent& transform,
+                ConveyorComponent& conveyor) {
+                if (conveyor.pointCount < 2 || conveyor.lengthM < 1.0f)
+                {
+                    return;
+                }
+                // Belts are metres wide: past a few kilometres they are not
+                // even a pixel, and their cargo certainly is not.
+                const sw::f64 distance =
+                    glm::length(transform.position - cameraPosition);
+                if (distance > 4000.0)
+                {
+                    return;
+                }
+
+                const auto* link =
+                    m_world.tryGetComponent<sw::factory::ItemLinkComponent>(
+                        conveyor.link);
+                const sw::f64 flow = (link != nullptr) ? link->flowUnitsPerSecond : 0.0;
+                if (flow <= 1.0e-6)
+                {
+                    return; // nothing moving: an empty belt is the honest picture
+                }
+
+                const sw::f64 cratesPerSecond =
+                    flow / std::max(static_cast<sw::f64>(conveyor.unitsPerCrate), 1.0e-6);
+                const sw::f64 spacing =
+                    static_cast<sw::f64>(conveyor.speedMps) / cratesPerSecond;
+                if (spacing < 0.35)
+                {
+                    return; // shoulder to shoulder: draw the deck, not confetti
+                }
+                const sw::i32 crates = std::min(
+                    32, static_cast<sw::i32>(conveyor.lengthM / spacing));
+                if (crates <= 0)
+                {
+                    return;
+                }
+
+                // The path in world space, rebuilt from the belt's own pose:
+                // its anchor already carries the body's f64 rotation, so the
+                // cargo rides exactly where the deck was drawn.
+                const glm::dquat rotation{transform.rotation};
+                const sw::WorldVec3 origin = conveyor.points[0];
+                const sw::f64 travelled =
+                    std::fmod(now * static_cast<sw::f64>(conveyor.speedMps),
+                              static_cast<sw::f64>(conveyor.lengthM));
+
+                for (sw::i32 c = 0; c < crates; ++c)
+                {
+                    const sw::f64 s = std::fmod(travelled + static_cast<sw::f64>(c) * spacing,
+                                          static_cast<sw::f64>(conveyor.lengthM));
+                    sw::WorldVec3 local{};
+                    sw::Vec3 heading{};
+                    sw::factory::conveyorPointAt(conveyor.points, conveyor.pointCount, s,
+                                                 local, heading);
+
+                    const sw::Vec3 up = sw::Vec3(glm::normalize(local));
+                    const sw::WorldVec3 world =
+                        transform.position + rotation * (local - origin) +
+                        sw::WorldVec3(up) * 0.30;
+                    const sw::Vec3 relative = sw::Vec3(world - cameraPosition);
+
+                    // Orient the crate along the belt so it reads as cargo
+                    // travelling, not as a scattering of cubes.
+                    const sw::Vec3 forward =
+                        sw::Vec3(glm::normalize(rotation * glm::dvec3(heading)));
+                    const sw::Vec3 worldUp =
+                        sw::Vec3(glm::normalize(rotation * glm::dvec3(up)));
+                    const sw::Vec3 right =
+                        glm::normalize(glm::cross(forward, worldUp));
+                    const sw::Vec3 realUp = glm::cross(right, forward);
+
+                    sw::DrawItem item{};
+                    item.mesh = &m_meshes[m_cargoMeshIndex];
+                    item.transform =
+                        glm::translate(sw::Mat4{1.0f}, relative) *
+                        glm::mat4_cast(glm::quat_cast(sw::Mat3{right, realUp, -forward}));
+                    item.boundsCenter = relative;
+                    item.boundsRadius = 0.6f;
+                    item.tint = {conveyor.cargoColor.r, conveyor.cargoColor.g,
+                                 conveyor.cargoColor.b, 1.0f};
+                    m_drawItems.push_back(item);
+                }
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // THE BUILD MENU (F)
+    //
+    // Satisfactory's lesson, applied: the catalogue of things you can put on
+    // the ground is a first-class screen, not a submenu of a vehicle editor.
+    // The VAB (B) assembles ROCKETS out of parts; this assembles a FACTORY
+    // out of buildings, and the two never share a palette because a refinery
+    // is not something you bolt to a fuel tank.
+    //
+    // What it does today is arm a definition — `m_heldBuilding` — and show
+    // what that building costs and needs. F2 turns that armed id into a
+    // ghost on the terrain and a placement; nothing here will have to move
+    // when it does, because the id IS the contract.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::collectBuildMenu()
+    {
+        m_hudButtons.clear();
+
+        std::vector<const sw::parts::PartDefinition*> buildings;
+        for (const sw::parts::PartDefinition& definition : sw::parts::catalog())
+        {
+            if (sw::parts::isBuilding(definition))
+            {
+                buildings.push_back(&definition);
+            }
+        }
+
+        auto panel = [&](sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
+                         const sw::Vec4& color) {
+            sw::DrawItem item{};
+            item.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
+            item.transform =
+                glm::translate(sw::Mat4{1.0f},
+                               {(x0 + x1) * 0.5f, (y0 + y1) * 0.5f, 0.0f}) *
+                glm::scale(sw::Mat4{1.0f}, {(x1 - x0) * 0.5f, (y1 - y0) * 0.5f, 1.0f});
+            item.screenSpace = true;
+            item.tint = color;
+            m_drawItems.push_back(item);
+        };
+
+        constexpr sw::f32 kLeft = -0.62f;
+        constexpr sw::f32 kRight = 0.62f;
+        constexpr sw::f32 kTop = -0.52f;
+        constexpr sw::f32 kRowHeight = 0.075f;
+        constexpr sw::f32 kRowGap = 0.012f;
+
+        const sw::f32 bottom =
+            kTop + 0.16f + static_cast<sw::f32>(buildings.size()) * (kRowHeight + kRowGap);
+        panel(kLeft, kTop, kRight, bottom + 0.16f, {0.05f, 0.08f, 0.12f, 0.88f});
+        hudText("BUILD", kLeft + 0.03f, kTop + 0.03f, 0.055f, {0.85f, 0.92f, 1.0f, 1.0f});
+        hudText("F CLOSE   CLICK TO ARM A BUILDING", kLeft + 0.30f, kTop + 0.045f, 0.028f,
+                {0.55f, 0.68f, 0.82f, 0.9f});
+
+        sw::f32 rowY = kTop + 0.11f;
+        for (sw::usize i = 0; i < buildings.size(); ++i)
+        {
+            const sw::parts::PartDefinition& definition = *buildings[i];
+            const bool armed = definition.id == m_heldBuilding;
+            panel(kLeft + 0.02f, rowY, kRight - 0.02f, rowY + kRowHeight,
+                  armed ? sw::Vec4{0.18f, 0.50f, 0.30f, 0.90f}
+                        : sw::Vec4{0.12f, 0.17f, 0.24f, 0.75f});
+            hudText(definition.name, kLeft + 0.04f, rowY + 0.019f, 0.036f,
+                    armed ? sw::Vec4{0.92f, 1.0f, 0.92f, 1.0f}
+                          : sw::Vec4{0.72f, 0.82f, 0.92f, 0.95f});
+
+            // The spec, read straight off the .swpart: what it is, how much
+            // ground it needs, and what it does to the grid.
+            const sw::parts::BuildingSpec& spec = definition.building;
+            const std::string_view category =
+                sw::factory::categoryName(spec.category);
+            std::string summary = std::format(
+                "{}  {:.0f}X{:.0f} M  {}{:.0f} KW", category, spec.footprintM[0],
+                spec.footprintM[1], spec.powerKw >= 0.0 ? "+" : "-",
+                std::abs(spec.powerKw));
+            if (spec.inventoryVolumeM3 > 0.0)
+            {
+                summary += std::format("  {:.0f} M3", spec.inventoryVolumeM3);
+            }
+            if (spec.minOreDensity > 0.0)
+            {
+                summary += std::format("  ORE {:.2f}", spec.minOreDensity);
+            }
+            for (char& c : summary)
+            {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+            hudText(summary, kRight - 0.62f, rowY + 0.024f, 0.026f,
+                    {0.55f, 0.68f, 0.82f, 0.9f});
+
+            m_hudButtons.push_back({kLeft + 0.02f, rowY, kRight - 0.02f,
+                                    rowY + kRowHeight,
+                                    400u + static_cast<sw::u32>(definition.id)});
+            rowY += kRowHeight + kRowGap;
+        }
+
+        if (buildings.empty())
+        {
+            hudText("NO BUILDINGS IN THE CATALOG", kLeft + 0.04f, rowY + 0.02f, 0.034f,
+                    {0.85f, 0.55f, 0.45f, 0.95f});
+            return;
+        }
+
+        // The armed building, and what it is waiting for.
+        rowY += 0.03f;
+        if (const auto* held = sw::parts::findDefinition(m_heldBuilding);
+            held != nullptr && sw::parts::isBuilding(*held))
+        {
+            hudText(std::format("ARMED: {}", held->name), kLeft + 0.04f, rowY, 0.034f,
+                    {0.75f, 1.0f, 0.80f, 1.0f});
+            rowY += 0.048f;
+            hudText(std::format("MAX SLOPE {:.2f}   RECIPES {}",
+                                held->building.maxSlopeTangent,
+                                sw::factory::recipesForCategory(held->building.category)
+                                    .size()),
+                    kLeft + 0.04f, rowY, 0.028f, {0.55f, 0.68f, 0.82f, 0.9f});
+        }
+        else
+        {
+            hudText("NOTHING ARMED", kLeft + 0.04f, rowY, 0.034f,
+                    {0.62f, 0.70f, 0.80f, 0.9f});
+        }
+    }
+
     // The map is where you look at your fleet, so it is where you should be
     // able to change which of it you are flying. `P` already cycled; this is
     // the same action with a surface you can find without knowing it exists.
@@ -4470,6 +4899,13 @@ namespace game
             if (ndcX >= button.x0 && ndcX <= button.x1 && ndcY >= button.y0 &&
                 ndcY <= button.y1)
             {
+                if (button.id >= 400) // build menu: arm this building
+                {
+                    const sw::u32 definitionId = button.id - 400u;
+                    m_heldBuilding =
+                        (m_heldBuilding == definitionId) ? 0u : definitionId;
+                    return;
+                }
                 if (button.id == 300) // map: fly the next vessel
                 {
                     cyclePilotedVessel();
@@ -5114,6 +5550,14 @@ namespace game
             [&](sw::ecs::Entity entity, TransformComponent& transform,
                 PreviousTransformComponent& previous, BoundsComponent& bounds,
                 MeshComponent& mesh) {
+                // You are INSIDE the suit on EVA: drawing it would fill the
+                // screen with the back of your own helmet. The map still
+                // shows it — there you are looking at the world, not out of
+                // your own eyes.
+                if (!mapView && m_evaMode && entity == m_capsuleEntity)
+                {
+                    return;
+                }
                 sw::Vec3 relative{};
                 const sw::Mat4 model = makeTransform(transform, previous, relative);
                 sw::DrawItem item{&m_meshes[mesh.meshIndex], model, relative,
@@ -5266,6 +5710,10 @@ namespace game
             collectParticles(activeCamera);
         }
 
+        if (!mapView)
+        {
+            collectConveyorCargo(activeCamera);
+        }
         // Beacons overlay both views; the HUD is drawn last so its panels
         // stay on top of them.
         collectBeacons(activeCamera, mapView);

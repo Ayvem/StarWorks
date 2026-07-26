@@ -22,6 +22,7 @@
 #include <Factory/FactoryComponents.hpp>
 #include <Factory/FactorySystems.hpp>
 #include <Factory/Recipes.hpp>
+#include <Factory/Conveyor.hpp>
 #include <Planet/Deposits.hpp>
 
 #include <cmath>
@@ -433,4 +434,113 @@ SW_TEST(OutpostChainSmeltsWhatItMinesAndLosesOnlyItsSlag)
         refineryState.consumedUnits * oreMassPerUnit *
         sw::factory::findRecipe(sw::factory::kRecipeSmeltIron)->massLossFraction;
     SW_CHECK(std::abs(held + smelted + slag - mined) < 1.0e-4);
+}
+
+// A BELT MUST NOT GO THROUGH THE GROUND, and its cargo must ride the deck
+// that was drawn. Both come from the same two functions, which is the point:
+// F2 lets the player draw belts by hand and F6 turns them into transport, and
+// a second implementation of "where does the deck go" would be a conveyor
+// whose items are somewhere its rails are not.
+SW_TEST(ConveyorDecksFollowTheGroundAndCarryTheirCargoOnIt)
+{
+    const sw::planet::TerrainComponent terrain = sw::planet::presetTerra();
+    constexpr sw::f64 kRadius = 6.371e6;
+
+    // Lay a 40 m belt across the roughest dry ground we can find — the case
+    // where a straight chord in space would cut through a rise.
+    sw::Vec3 site{0.0f, 0.0f, 1.0f};
+    sw::f32 steepest = 0.0f;
+    for (sw::u32 i = 0; i < 2000; ++i)
+    {
+        const sw::f32 a = static_cast<sw::f32>(i) * 0.0137f;
+        const sw::f32 b = static_cast<sw::f32>(i) * 0.0071f;
+        const sw::Vec3 direction = glm::normalize(
+            sw::Vec3{std::cos(a) * std::cos(b), std::sin(b), std::sin(a) * std::cos(b)});
+        if (sw::planet::terrainElevation(terrain, direction) <= 100.0)
+        {
+            continue;
+        }
+        const sw::f32 slope =
+            sw::planet::terrainLocalSlope(terrain, direction, kRadius, 20.0f);
+        if (slope > steepest)
+        {
+            steepest = slope;
+            site = direction;
+        }
+    }
+    SW_CHECK(steepest > 0.2f);
+
+    const sw::Vec3 east = glm::normalize(glm::cross(sw::Vec3{0.0f, 1.0f, 0.0f}, site));
+    auto anchorAt = [&](sw::f32 metres) {
+        const sw::Vec3 direction =
+            glm::normalize(site + east * (metres / static_cast<sw::f32>(kRadius)));
+        return sw::WorldVec3(direction) *
+               (kRadius + sw::planet::terrainElevation(terrain, direction));
+    };
+
+    constexpr sw::f64 kClearance = 1.05;
+    sw::WorldVec3 points[sw::factory::kMaxConveyorPoints]{};
+    sw::u32 count = sw::factory::kMaxConveyorPoints;
+    const sw::f64 length = sw::factory::buildConveyorPath(
+        terrain, kRadius, anchorAt(-20.0f), anchorAt(20.0f), kClearance, points, count);
+
+    SW_CHECK_EQ(count, sw::factory::kMaxConveyorPoints);
+    // A deck that CLIMBS is longer than the ground distance it spans — that
+    // is the whole point of following the terrain rather than cutting a
+    // chord through it — but only by what the slope justifies.
+    SW_CHECK(length >= 40.0);
+    SW_CHECK(length < 40.0 * (1.0 + static_cast<sw::f64>(steepest)) + 2.0);
+
+    // NOWHERE along the deck — not at the sample points, not between them —
+    // may the belt be below the ground it crosses.
+    for (sw::u32 i = 0; i + 1 < count; ++i)
+    {
+        for (sw::u32 k = 0; k <= 8; ++k)
+        {
+            const sw::WorldVec3 middle =
+                glm::mix(points[i], points[i + 1], static_cast<sw::f64>(k) / 8.0);
+            const sw::Vec3 direction = sw::Vec3(glm::normalize(middle));
+            const sw::f64 ground =
+                kRadius + sw::planet::terrainElevation(terrain, direction);
+            SW_CHECK(glm::length(middle) >= ground);
+        }
+    }
+
+    // CARGO RIDES THE DECK. Walking the arc length must stay on the
+    // polyline, advance monotonically, and wrap without a jump.
+    sw::f64 previousAlong = -1.0;
+    for (sw::u32 step = 0; step <= 200; ++step)
+    {
+        const sw::f64 arc = length * static_cast<sw::f64>(step) / 200.0;
+        sw::WorldVec3 position{};
+        sw::Vec3 heading{};
+        sw::factory::conveyorPointAt(points, count, arc, position, heading);
+
+        // On the deck: within a hair of the nearest segment.
+        sw::f64 nearest = 1.0e9;
+        for (sw::u32 i = 0; i + 1 < count; ++i)
+        {
+            const sw::WorldVec3 segment = points[i + 1] - points[i];
+            const sw::f64 lengthSquared = glm::dot(segment, segment);
+            const sw::f64 t = glm::clamp(
+                glm::dot(position - points[i], segment) / lengthSquared, 0.0, 1.0);
+            nearest = std::min(nearest, glm::length(position - (points[i] + segment * t)));
+        }
+        SW_CHECK(nearest < 1.0e-6);
+
+        // Monotone along the belt, and always pointing forward.
+        const sw::f64 along = glm::dot(position - points[0],
+                                       glm::normalize(points[count - 1] - points[0]));
+        SW_CHECK(along >= previousAlong - 1.0e-6);
+        previousAlong = along;
+        SW_CHECK(std::abs(glm::length(heading) - 1.0f) < 1.0e-4f);
+    }
+
+    // Above the ground the whole way, with the clearance it was asked for.
+    sw::WorldVec3 head{};
+    sw::Vec3 direction{};
+    sw::factory::conveyorPointAt(points, count, length * 0.5, head, direction);
+    const sw::f64 ground =
+        kRadius + sw::planet::terrainElevation(terrain, sw::Vec3(glm::normalize(head)));
+    SW_CHECK(glm::length(head) - ground > 0.5);
 }

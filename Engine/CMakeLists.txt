@@ -73,6 +73,7 @@ add_library(StarWorksEngine STATIC
     Source/Factory/FactoryComponents.hpp
     Source/Factory/FactorySystems.cpp
     Source/Factory/FactorySystems.hpp
+    Source/Factory/Conveyor.hpp
     Source/Factory/Recipes.cpp
     Source/Factory/Recipes.hpp
 

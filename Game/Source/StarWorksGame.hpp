@@ -64,8 +64,14 @@ namespace game
         /// range. See BeaconComponent.
         void collectBeacons(const sw::Camera& activeCamera, bool mapView);
         void collectNavball();
+        /// The building catalogue (F): a clickable list of every .swpart
+        /// with an industrial block, with the selected one's specs.
+        void collectBuildMenu();
         /// Map view: the button that steps through the vessels you own.
         void collectMapButtons();
+        /// Crates riding the belts, positioned analytically from the lane
+        /// clock and each link's measured throughput.
+        void collectConveyorCargo(const sw::Camera& activeCamera);
         void collectParticles(const sw::Camera& activeCamera);
         void refreshPrediction();
         /// Atmospheric heating 0..1 for a dynamic craft (0 in vacuum).
@@ -109,6 +115,7 @@ namespace game
         std::array<sw::u32, 128> m_glyphMeshIndex{};
         sw::u32 m_capsuleMeshIndex = 0;
         sw::u32 m_markerMeshIndex = 0;
+        sw::u32 m_cargoMeshIndex = 0; // one conveyor crate, tinted per resource
 
         // Artificial horizon (bottom-center instrument).
         sw::u32 m_navRingMeshIndex = 0;
@@ -221,6 +228,16 @@ namespace game
         sw::u32 m_symmetryCount = 1; // 1/2/3/4/6/8, radial placements only
         sw::i32 m_symmetryNextGroup = 0;
         bool m_showCenters = true; // CoM / thrust markers
+
+        // ---- THE BUILD MENU (F) — groundwork for F2 --------------------------
+        // A Satisfactory-style catalogue of BUILDINGS, opened on foot or from
+        // the cockpit. Picking one arms it: `m_heldBuilding` is the definition
+        // id F2's ground placement will read, and the same id is what a saved
+        // hotbar will one day store. The menu itself is only a view over the
+        // .swpart catalogue — nothing about a building is described twice.
+        bool m_buildMenu = false;
+        sw::u32 m_heldBuilding = 0; // 0 = empty hand
+        sw::u32 m_buildMenuPage = 0;
         sw::Camera m_hangarCamera;
         sw::f32 m_hangarYaw = 0.6f;
         sw::f32 m_hangarPitch = 0.25f;
@@ -257,11 +274,18 @@ namespace game
         sw::f32 m_particleSpawnDebt = 0.0f;
         sw::u32 m_particleSeed = 0x9E3779B9u;
 
-        // Chase camera: 0 = locked to the craft, 1 = locked to the ground
-        // (blended when low + suborbital, KSP "surface mode" style).
+        // Chase camera reference frame: 0 = INERTIAL (the world axes), 1 =
+        // the local HORIZON frame. Eased between the two so crossing the
+        // altitude threshold levels the view instead of snapping it.
+        //
+        // The craft's own attitude is not one of the options, on purpose: a
+        // camera that inherits it turns every roll and every SAS correction
+        // into a camera move. Levelling on the horizon is the one automatic
+        // behaviour left, because it is about the WORLD, not the vehicle.
         sw::f32 m_groundCamBlend = 0.0f;
         // User orbiting of the chase camera (right-drag; sticky, C resets)
         // and wheel zoom (distance multiplier on the base chase offset).
+        // These are the ONLY things that aim the chase camera.
         sw::f32 m_chaseYaw = 0.0f;
         sw::f32 m_chasePitch = 0.0f;
         sw::f32 m_chaseZoom = 1.0f;

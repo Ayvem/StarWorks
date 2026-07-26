@@ -63,6 +63,13 @@ namespace sw::factory
         ecs::Entity source{};
         res::Resource resource = res::Resource::IronOre;
         f64 unitsPerSecond = 1.0;
+        /// What ACTUALLY moved last tick, units per second. A link is rarely
+        /// running at its rated speed — the source starves, the destination
+        /// fills — and the difference is the single most useful number about
+        /// a factory. The conveyor renderer spaces its cargo by it, so a belt
+        /// you look at is running as fast as it looks like it is running,
+        /// and F4's UI will graph the same field.
+        f64 flowUnitsPerSecond = 0.0;
     };
 
     // ------------------------------------------------------------------------

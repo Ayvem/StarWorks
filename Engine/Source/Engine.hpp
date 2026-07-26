@@ -21,6 +21,7 @@
 #include "ECS/System.hpp"
 #include "ECS/SystemScheduler.hpp"
 #include "ECS/World.hpp"
+#include "Factory/Conveyor.hpp"
 #include "Factory/FactoryComponents.hpp"
 #include "Factory/FactorySystems.hpp"
 #include "Factory/Recipes.hpp"
