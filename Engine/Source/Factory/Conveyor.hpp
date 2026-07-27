@@ -92,10 +92,12 @@ namespace sw::factory
     // world, a renderer or a planet.
 
     /// One machine's conveyor mouths, resolved into the body frame.
-    /// Most mouths a machine may have of one kind. Four, to match
-    /// kMaxRecipeIngredients: a machine never needs more mouths than its
-    /// recipe has products.
-    inline constexpr u32 kMaxMachinePorts = 4;
+    /// Most mouths a machine may have of one kind. EIGHT, because the VAB
+    /// takes eight feeds: a vehicle is not made of one thing, and the whole
+    /// point of an assembly building is that several chains converge on it.
+    /// (It was four, to match kMaxRecipeIngredients, back when the biggest
+    /// machine was a two-product electrolyser.)
+    inline constexpr u32 kMaxMachinePorts = 8;
 
     struct PortNode
     {

@@ -155,6 +155,12 @@ namespace game
         sw::f32 speedMps = 2.6f;   // how fast cargo rides
         sw::f32 unitsPerCrate = 1.0f;
         sw::Vec3 cargoColor{0.6f, 0.6f, 0.6f};
+        /// WHICH prop rides it. Almost everything travels in a CR-1 crate,
+        /// but a rocket does not fit in one: a belt out of the VAB carries
+        /// CR-2 cradles instead, and the difference is legible from across
+        /// the base — which is the point of drawing cargo at all.
+        /// 0xFFFFFFFF means "whatever the ordinary crate is".
+        sw::u32 cargoMesh = 0xFFFFFFFFu;
     };
 
     /// A CABLE, as it is drawn: the sagging curve between two power nodes,

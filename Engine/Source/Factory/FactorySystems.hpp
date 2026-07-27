@@ -139,4 +139,40 @@ namespace sw::factory
         void update(ecs::World& world, f32 deltaSeconds) override;
     };
 
+    /// THE ASSEMBLY HALL (F5), in the Automation lane beside the executor.
+    ///
+    /// It is the same machine as everything else — inputs, power, a bin that
+    /// can fill up — with one difference that changes what a base is FOR:
+    /// its output is a VEHICLE, and what that vehicle costs was decided by
+    /// the player in the hangar rather than written in a recipe file.
+    ///
+    /// Iron and copper are poured in TOGETHER, in the bill's own ratio, so a
+    /// hall short of copper stalls at the copper's share instead of first
+    /// hoarding every gram of iron in the base. When the last kilogram is
+    /// paid, one `Resource::Vehicle` unit appears in the bin and the design's
+    /// name goes onto the site's queue: the crate and its identity leave on
+    /// the same belt, and the pad reunites them.
+    ///
+    /// The metal ledger is exact: the hall consumes the bill and not a gram
+    /// more, and the bill sums to the finished vessel's dry mass. The crate
+    /// itself is a nominal twelve tonnes on the belt, which is the one place
+    /// this trades a number for a unit that means "one rocket".
+    class AssemblySystem final : public ecs::System
+    {
+    public:
+        [[nodiscard]] std::string_view name() const override { return "AssemblySystem"; }
+
+        [[nodiscard]] ecs::SystemAccess access() const override
+        {
+            return ecs::SystemAccess{}
+                .write<AssemblyComponent>()
+                .write<InventoryComponent>()
+                .write<VehicleQueueComponent>()
+                .read<BuildingComponent>()
+                .read<PowerComponent>();
+        }
+
+        void update(ecs::World& world, f32 deltaSeconds) override;
+    };
+
 } // namespace sw::factory

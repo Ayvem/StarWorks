@@ -474,4 +474,115 @@ namespace sw::factory
             });
     }
 
+    // ------------------------------------------------------------------------
+    // THE ASSEMBLY HALL
+    // ------------------------------------------------------------------------
+    void AssemblySystem::update(ecs::World& world, f32 deltaSeconds)
+    {
+        const f64 dt = static_cast<f64>(deltaSeconds);
+        if (dt <= 0.0)
+        {
+            return;
+        }
+
+        world.forEach<AssemblyComponent, InventoryComponent>(
+            [dt, &world](ecs::Entity entity, AssemblyComponent& assembly,
+                         InventoryComponent& inventory) {
+                const f64 needed = assembly.ironNeededKg + assembly.copperNeededKg;
+                if (assembly.blueprint[0] == '\0' || needed <= 0.0)
+                {
+                    assembly.state = RecipeStateComponent::kIdle;
+                    return;
+                }
+
+                f64 satisfaction = 1.0;
+                if (const auto* power = world.tryGetComponent<PowerComponent>(entity))
+                {
+                    satisfaction = std::clamp(power->satisfaction, 0.0, 1.0);
+                }
+                if (satisfaction <= 0.0)
+                {
+                    assembly.state = RecipeStateComponent::kNoPower;
+                    return;
+                }
+
+                // ROOM FOR THE FINISHED HULL, asked before a gram of metal is
+                // worked. A hall that spent twelve tonnes of iron and then
+                // found nowhere to put the rocket would have destroyed it.
+                if (inventoryFreeUnits(inventory, res::Resource::Vehicle) < 1.0)
+                {
+                    assembly.state = RecipeStateComponent::kBlocked;
+                    return;
+                }
+
+                const f64 remainingIron =
+                    std::max(0.0, assembly.ironNeededKg - assembly.ironPaidKg);
+                const f64 remainingCopper =
+                    std::max(0.0, assembly.copperNeededKg - assembly.copperPaidKg);
+                const f64 remaining = remainingIron + remainingCopper;
+
+                bool starved = false;
+                if (remaining > 1.0e-9)
+                {
+                    // Both metals at once, in the proportion of what is LEFT
+                    // to pay. Pouring the iron first would let a hall with no
+                    // copper drain every smelter in the base and then stop
+                    // one gram short, which reads as a supply fault where
+                    // there is none.
+                    const f64 budget =
+                        std::max(0.0, assembly.buildRateKgPerSecond) * dt * satisfaction;
+                    const f64 wanted = std::min(budget, remaining);
+                    const f64 wantIron = wanted * (remainingIron / remaining);
+                    const f64 wantCopper = wanted - wantIron;
+
+                    const f64 gotIron =
+                        inventoryRemove(inventory, res::Resource::Iron, wantIron);
+                    const f64 gotCopper =
+                        inventoryRemove(inventory, res::Resource::Copper, wantCopper);
+                    assembly.ironPaidKg += gotIron;
+                    assembly.copperPaidKg += gotCopper;
+                    starved = (gotIron + 1.0e-9 < wantIron) ||
+                              (gotCopper + 1.0e-9 < wantCopper);
+                }
+
+                // ---- is it finished? -------------------------------------
+                constexpr f64 kGram = 1.0e-3;
+                if (assembly.ironPaidKg + kGram >= assembly.ironNeededKg &&
+                    assembly.copperPaidKg + kGram >= assembly.copperNeededKg)
+                {
+                    auto* queue = world.tryGetComponent<VehicleQueueComponent>(entity);
+                    if (queue != nullptr && queue->count >= kVehicleQueueSlots)
+                    {
+                        // Eight unclaimed hulls on the apron: stop, rather
+                        // than ship a rocket whose design nobody recorded.
+                        assembly.state = RecipeStateComponent::kBlocked;
+                        return;
+                    }
+                    const f64 crated =
+                        inventoryAdd(inventory, res::Resource::Vehicle, 1.0);
+                    if (crated < 1.0)
+                    {
+                        // Should not happen — the room was checked above —
+                        // but if it ever does, the metal stays on the
+                        // slipway rather than evaporating.
+                        inventoryRemove(inventory, res::Resource::Vehicle, crated);
+                        assembly.state = RecipeStateComponent::kBlocked;
+                        return;
+                    }
+                    if (queue != nullptr)
+                    {
+                        vehicleQueuePush(*queue, std::string_view(assembly.blueprint));
+                    }
+                    assembly.ironPaidKg = 0.0;
+                    assembly.copperPaidKg = 0.0;
+                    ++assembly.completed;
+                    assembly.state = RecipeStateComponent::kRunning;
+                    return;
+                }
+
+                assembly.state = starved ? RecipeStateComponent::kStarved
+                                         : RecipeStateComponent::kRunning;
+            });
+    }
+
 } // namespace sw::factory

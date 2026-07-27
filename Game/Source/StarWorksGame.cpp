@@ -331,6 +331,10 @@ namespace game
                     return {1.0f, 0.78f, 0.28f, 1.0f};
                 case sw::factory::BuildingCategory::Hub:
                     return {0.62f, 0.50f, 0.95f, 1.0f};
+                case sw::factory::BuildingCategory::Assembly:
+                    return {0.98f, 0.55f, 0.85f, 1.0f};
+                case sw::factory::BuildingCategory::Pad:
+                    return {0.40f, 0.90f, 0.92f, 1.0f};
                 default:
                     return {0.60f, 0.66f, 0.74f, 1.0f};
                 }
@@ -707,6 +711,12 @@ namespace game
         // a loader that refuses any recipe which would create matter.
         sw::factory::loadRecipeCatalog(sw::FileSystem::executableDirectory() / "Assets" /
                                        "Recipes");
+        // DATA-DRIVEN DESIGNS (F5): every .swship in Assets/Ships is a rocket
+        // somebody drew in the hangar, and every one of them is orderable at
+        // a VAB. Failing to find any is not an error — a new save has none —
+        // so the catalogue simply stays empty until the player saves one.
+        sw::parts::loadBlueprintCatalog(sw::FileSystem::executableDirectory() /
+                                        "Assets" / "Ships");
 
         buildScene();
         buildGlyphMeshes();
@@ -781,6 +791,10 @@ namespace game
         // player will ever place. The two below stay for the asteroid rig
         // and the orbital station, which are craft, not buildings.
         automation.addSystem(std::make_unique<sw::factory::ProductionSystem>());
+        // ...and the assembly hall, which is the executor's sibling: same
+        // lane, same power, same bulk catch-up, but its bill of materials
+        // comes from a design the player drew rather than from a recipe.
+        automation.addSystem(std::make_unique<sw::factory::AssemblySystem>());
         automation.addSystem(std::make_unique<sw::factory::MinerSystem>());
         automation.addSystem(std::make_unique<sw::factory::RefinerySystem>());
 
@@ -1043,6 +1057,14 @@ namespace game
                 sw::parts::findDefinition(sw::parts::kPropConveyorCrate))
         {
             m_cargoMeshIndex = m_partMeshIds.at(crate->id);
+        }
+        // ...and the CRADLE a finished rocket rides in. Same contract, a
+        // different prop: the belt out of the VAB is meant to look like a
+        // different kind of traffic, because it is.
+        if (const auto* cradle =
+                sw::parts::findDefinition(sw::parts::kPropVehicleCradle))
+        {
+            m_vehicleCargoMeshIndex = m_partMeshIds.at(cradle->id);
         }
         // The CABLE is the same story: one authored span, repeated along the
         // curve. Its length comes off its own collider, so a thicker or
@@ -1378,6 +1400,54 @@ namespace game
                 m_world.addComponent(beaconEntity, beacon);
             }
 
+            // ---- F5: THE VAB AND THE PAD ----------------------------------
+            // The far end of the yard, and the reason the near end exists.
+            // The hall faces the pad, the pad faces the hall, and the belt
+            // between them carries finished rockets — the one belt on this
+            // planet whose cargo is a vehicle.
+            //
+            // The pad stands where new vessels have always appeared (120 m
+            // east of the hub), so it is now a REAL building at the place
+            // that used to be a computed guess.
+            const auto* vabPart = sw::parts::findDefinition(sw::parts::kBuildingVab);
+            const auto* padPart =
+                sw::parts::findDefinition(sw::parts::kBuildingLaunchPad);
+            const sw::ecs::Entity vabEntity = spawnBuilding(
+                sw::parts::kBuildingVab, 75.0f, 0.0f, 0u, {},
+                yawToFace(siteUp, portDirection(vabPart, sw::parts::NodeType::ConveyorOut),
+                          siteEast));
+            const sw::ecs::Entity padEntity = spawnBuilding(
+                sw::parts::kBuildingLaunchPad, 120.0f, 0.0f, 0u,
+                {0.4f, 0.9f, 0.92f, 1.0f},
+                yawToFace(siteUp, portDirection(padPart, sw::parts::NodeType::ConveyorIn),
+                          -siteEast));
+            if (!vabEntity.isNull())
+            {
+                // Enough metal for the first hull, and an order standing.
+                // Same reasoning as the half-charged battery bank: the
+                // starting outpost demonstrates the loop once, and everything
+                // after that has to be fed by the factory.
+                auto& bin =
+                    m_world.getComponent<sw::factory::InventoryComponent>(vabEntity);
+                sw::factory::inventoryAdd(bin, sw::res::Resource::Iron, 3000.0);
+                sw::factory::inventoryAdd(bin, sw::res::Resource::Copper, 500.0);
+                if (const sw::parts::ShipBlueprint* first =
+                        sw::parts::blueprintCatalog().empty()
+                            ? nullptr
+                            : &sw::parts::blueprintCatalog().front())
+                {
+                    orderVehicle(vabEntity, *first);
+                }
+            }
+            if (!padEntity.isNull())
+            {
+                // ...and fuel on the pad, so the first rocket rolls out with
+                // something in its tanks.
+                sw::factory::inventoryAdd(
+                    m_world.getComponent<sw::factory::InventoryComponent>(padEntity),
+                    sw::res::Resource::Fuel, 16000.0);
+            }
+
             // ---- the BELTS, laid by the very tool the player uses ---------
             // Two clicks' worth of work: pick the machine that ships, pick
             // the one that receives, and `planBelt` produces the run. The
@@ -1399,6 +1469,7 @@ namespace game
             };
             layBelt(minerEntity, refineryEntity);
             layBelt(refineryEntity, storageEntity);
+            layBelt(vabEntity, padEntity);
 
             // ...and now derive what those rows of segments actually connect.
             rebuildConveyorNetwork();
@@ -1411,7 +1482,36 @@ namespace game
             // The starting base gets no exemption from the rule it teaches.
             const sw::ecs::Entity poleEntity =
                 spawnBuilding(sw::parts::kBuildingPowerPole, 10.0f, -14.0f, 0u, {});
+            // A second pole out by the pad: a span is 120 m at most, and the
+            // launch complex is further from the yard than that rule allows
+            // in one hop. Poles are how a grid crosses ground, which is the
+            // whole reason they exist.
+            const sw::ecs::Entity farPoleEntity =
+                spawnBuilding(sw::parts::kBuildingPowerPole, 97.0f, -16.0f, 0u, {});
             rebuildPowerNetwork(); // number the nodes before asking about them
+            if (!poleEntity.isNull() && !farPoleEntity.isNull())
+            {
+                layCable(terraEntity, poleEntity, farPoleEntity);
+            }
+            if (!farPoleEntity.isNull())
+            {
+                for (const sw::ecs::Entity end : {vabEntity, padEntity})
+                {
+                    if (end.isNull())
+                    {
+                        continue;
+                    }
+                    sw::WorldVec3 from{};
+                    sw::WorldVec3 to{};
+                    if (planCable(farPoleEntity, end, from, to) !=
+                        sw::factory::CableVerdict::Ok)
+                    {
+                        SW_LOG_WARN("Game", "Launch complex cable refused");
+                        continue;
+                    }
+                    layCable(terraEntity, farPoleEntity, end);
+                }
+            }
             if (!poleEntity.isNull())
             {
                 for (const sw::ecs::Entity end :
@@ -3136,6 +3236,10 @@ namespace game
         updateTerrainPatch();
 
         updateReentryEffects(deltaSeconds);
+        // A crate of rocket that has arrived becomes a rocket. Once a frame
+        // is plenty: the crate is not going anywhere, and unpacking it
+        // creates entities, which no simulation lane is allowed to do.
+        updateLaunchPads();
 
         if (m_shipMode && !m_mapView)
         {
@@ -4291,7 +4395,8 @@ namespace game
                     subtree.size());
     }
 
-    sw::ecs::Entity StarWorksGame::instantiateBlueprint(sw::ecs::Entity existingRoot)
+    sw::ecs::Entity StarWorksGame::instantiateBlueprint(sw::ecs::Entity existingRoot,
+                                                        sw::ecs::Entity pad)
     {
         sw::ecs::Entity root = existingRoot;
 
@@ -4323,23 +4428,77 @@ namespace game
 
         if (root.isNull())
         {
-            // NEW vessel: born on the LAUNCH PAD, standing on Terra's
-            // terrain next to the mining outpost, co-rotating with the
-            // planet, nose to the sky.
-            const auto& terra = m_world.getComponent<TransformComponent>(m_terraEntity);
+            // NEW vessel: born on a LAUNCH PAD, standing on the ground,
+            // co-rotating with the planet, nose to the sky.
+            //
+            // WHICH pad is the F5 question. A real LP-1 the player built has
+            // an anchor — a body and a body-frame position — and that is all
+            // this needs; everything else below is the same arithmetic it
+            // always was. With no pad (the hangar's BUILD shortcut) it falls
+            // back to the surveyed place 120 m east of the outpost hub.
+            sw::ecs::Entity bodyEntity = m_terraEntity;
+            sw::Vec3 padDir{0.0f, 1.0f, 0.0f};
+            sw::f64 groundRadius = 0.0;
+            const auto* padAnchor =
+                m_world.tryGetComponent<sw::phys::SurfaceAnchorComponent>(pad);
+            if (padAnchor != nullptr &&
+                m_world.hasComponent<TransformComponent>(padAnchor->body))
+            {
+                bodyEntity = padAnchor->body;
+                const sw::f64 radius = glm::length(padAnchor->localPosition);
+                padDir = (radius > 1.0) ? sw::Vec3(padAnchor->localPosition / radius)
+                                        : sw::Vec3{0.0f, 1.0f, 0.0f};
+                // ...and the rocket stands on the pad's DECK, not on the dirt
+                // the pad is bolted to.
+                //
+                // The deck is the top of the hull boxes that lie UNDER THE
+                // PAD'S AXIS, not the top of the whole hull: LP-1 carries a
+                // service tower 18 m tall in one corner, and taking the
+                // bounding box's ceiling stood the rocket up there in the
+                // air beside it. Reading it off the boxes means redrawing
+                // LP-1 thicker in Part Studio still moves the rocket with
+                // it, which is the property worth keeping.
+                sw::f64 deck = 0.0;
+                if (const auto* building =
+                        m_world.tryGetComponent<sw::factory::BuildingComponent>(pad))
+                {
+                    if (const auto* padDefinition =
+                            sw::parts::findDefinition(building->definitionId))
+                    {
+                        for (const sw::parts::HitBox& box :
+                             sw::parts::effectiveHull(*padDefinition))
+                        {
+                            if (std::abs(box.center.x) <= std::abs(box.halfExtents.x) &&
+                                std::abs(box.center.z) <= std::abs(box.halfExtents.z))
+                            {
+                                deck = std::max(deck, static_cast<sw::f64>(
+                                                          box.center.y +
+                                                          std::abs(box.halfExtents.y)));
+                            }
+                        }
+                    }
+                }
+                groundRadius = radius + deck;
+            }
+            else
+            {
+                // 120 m east of the site hub: the same surveyed ground, so
+                // the pad is on land and the factory is walking distance
+                // away.
+                const sw::Vec3 siteDir = terraStartSite();
+                const sw::Vec3 padEast = glm::normalize(glm::cross(
+                    (std::abs(siteDir.y) < 0.9f) ? sw::Vec3{0.0f, 1.0f, 0.0f}
+                                                 : sw::Vec3{1.0f, 0.0f, 0.0f},
+                    siteDir));
+                padDir = glm::normalize(
+                    siteDir + padEast * (120.0f / static_cast<sw::f32>(kTerraRadius)));
+                groundRadius =
+                    kTerraRadius + sw::planet::terrainElevation(presetTerra(), padDir);
+            }
+
+            const auto& terra = m_world.getComponent<TransformComponent>(bodyEntity);
             const auto& gravity =
-                m_world.getComponent<sw::phys::GravitySourceComponent>(m_terraEntity);
-            // 120 m east of the site hub: the same surveyed ground, so the
-            // pad is on land and the factory is walking distance away.
-            const sw::Vec3 siteDir = terraStartSite();
-            const sw::Vec3 padEast = glm::normalize(glm::cross(
-                (std::abs(siteDir.y) < 0.9f) ? sw::Vec3{0.0f, 1.0f, 0.0f}
-                                             : sw::Vec3{1.0f, 0.0f, 0.0f},
-                siteDir));
-            const sw::Vec3 padDir = glm::normalize(
-                siteDir + padEast * (120.0f / static_cast<sw::f32>(kTerraRadius)));
-            const sw::f64 elevation =
-                sw::planet::terrainElevation(presetTerra(), padDir);
+                m_world.getComponent<sw::phys::GravitySourceComponent>(bodyEntity);
             // A new rocket stands TAIL DOWN, so its model +Z is the axis
             // pointing at the ground: the clearance is exactly how far the
             // hull reaches along +Z. (The 11 m constant this replaces was a
@@ -4347,14 +4506,11 @@ namespace game
             const sw::f64 clearance =
                 static_cast<sw::f64>(hull.centre.z + hull.halfExtents.z);
             const sw::WorldVec3 padLocal =
-                sw::WorldVec3(padDir) * (kTerraRadius + elevation + clearance);
-            // Same rule: a planet-radius offset is rotated with the f64
-            // spin, or the pad lands a metre from where it was surveyed.
-            const auto* terraSpin =
-                m_world.tryGetComponent<sw::phys::GravitySourceComponent>(m_terraEntity);
-            const glm::dquat terraRotation =
-                (terraSpin != nullptr) ? sw::phys::spinRotation(*terraSpin)
-                                       : glm::dquat(terra.rotation);
+                sw::WorldVec3(padDir) * (groundRadius + clearance);
+            // Same rule as every surface anchor: a planet-radius offset is
+            // rotated with the f64 spin, or the rocket lands a metre from
+            // the pad it was supposed to be standing on.
+            const glm::dquat terraRotation = sw::phys::spinRotation(gravity);
             const sw::WorldVec3 position = terra.position + terraRotation * padLocal;
             const sw::WorldVec3 radial = position - terra.position;
             const sw::Vec3 up = sw::Vec3(glm::normalize(radial));
@@ -4505,6 +4661,245 @@ namespace game
             SW_LOG_INFO("Game", "HANGAR: modifications applied to loaded vessel");
         }
         exitEditor();
+    }
+
+    // ------------------------------------------------------------------------
+    // F5 — A DESIGN IS A FILE, AND A FILE IS A ROCKET
+    //
+    // The hangar's working list and the saved `.swship` record are the same
+    // data seen twice: the editor's list carries the parent/child joint the
+    // ghost snapped to, and the file carries it too. Convert both ways and a
+    // design survives a restart with its structure intact — which matters,
+    // because the joints are what a decoupler cuts and what breaks under
+    // load. A pile of parts flying in formation is not a rocket.
+    // ------------------------------------------------------------------------
+    std::vector<StarWorksGame::BlueprintPart> StarWorksGame::partsFromDesign(
+        const sw::parts::ShipBlueprint& design)
+    {
+        std::vector<BlueprintPart> parts;
+        parts.reserve(design.parts.size());
+        for (const sw::parts::BlueprintPartRecord& record : design.parts)
+        {
+            BlueprintPart part{};
+            part.definitionId = record.definitionId;
+            part.localPosition = record.localPosition;
+            part.localRotation = record.localRotation;
+            part.parentIndex = record.parentIndex;
+            part.parentPoint = record.parentPoint;
+            part.childPoint = record.childPoint;
+            part.symmetryGroup = record.symmetryGroup;
+            parts.push_back(part);
+        }
+        return parts;
+    }
+
+    sw::parts::ShipBlueprint StarWorksGame::designFromParts(std::string_view name) const
+    {
+        sw::parts::ShipBlueprint design{};
+        design.name = std::string(name);
+        design.parts.reserve(m_blueprint.size());
+        for (const BlueprintPart& part : m_blueprint)
+        {
+            sw::parts::BlueprintPartRecord record{};
+            record.definitionId = part.definitionId;
+            record.localPosition = part.localPosition;
+            record.localRotation = part.localRotation;
+            record.parentIndex = part.parentIndex;
+            record.parentPoint = part.parentPoint;
+            record.childPoint = part.childPoint;
+            record.symmetryGroup = part.symmetryGroup;
+            design.parts.push_back(record);
+        }
+        return design;
+    }
+
+    void StarWorksGame::hangarSaveShip()
+    {
+        if (m_blueprint.empty())
+        {
+            SW_LOG_WARN("Game", "HANGAR: nothing to save");
+            return;
+        }
+        // The name is the one thing the hangar has no field for yet, so it
+        // is derived: DESIGN 1, DESIGN 2... A rename UI is a text box, and a
+        // text box is a whole input mode; the file is the important half and
+        // it is on disk, editable, from this milestone on.
+        std::string name;
+        for (sw::u32 i = 1; i < 100; ++i)
+        {
+            name = std::format("DESIGN {}", i);
+            if (sw::parts::findBlueprint(name) == nullptr)
+            {
+                break;
+            }
+        }
+        const sw::parts::ShipBlueprint design = designFromParts(name);
+
+        const std::filesystem::path directory =
+            sw::FileSystem::executableDirectory() / "Assets" / "Ships";
+        std::error_code error{};
+        std::filesystem::create_directories(directory, error);
+        std::string file;
+        for (const char c : name)
+        {
+            file += (c == ' ') ? '_' : static_cast<char>(std::tolower(c));
+        }
+        const std::filesystem::path path = directory / (file + ".swship");
+        if (!sw::parts::saveBlueprintFile(design, path))
+        {
+            SW_LOG_ERROR("Game", "HANGAR: could not save '{}'", path.string());
+            return;
+        }
+        // Registered as well as written: the point of saving is that you can
+        // walk to the VAB and order it, now, without restarting the game.
+        sw::parts::registerBlueprint(design);
+        const sw::parts::BillOfMaterials bill = sw::parts::blueprintCost(design);
+        SW_LOG_INFO("Game",
+                    "HANGAR: saved '{}' ({} parts, {:.0f} kg iron, {:.0f} kg copper)",
+                    name, design.parts.size(), bill.ironKg, bill.copperKg);
+    }
+
+    void StarWorksGame::orderVehicle(sw::ecs::Entity hall,
+                                     const sw::parts::ShipBlueprint& design)
+    {
+        auto* assembly = m_world.tryGetComponent<sw::factory::AssemblyComponent>(hall);
+        if (assembly == nullptr)
+        {
+            return;
+        }
+        const sw::parts::BillOfMaterials bill = sw::parts::blueprintCost(design);
+        sw::factory::assemblyOrder(*assembly, design.name, bill.ironKg, bill.copperKg);
+        SW_LOG_INFO("Game", "VAB: ordered '{}' — {:.0f} kg iron, {:.0f} kg copper",
+                    design.name, bill.ironKg, bill.copperKg);
+    }
+
+    sw::f64 StarWorksGame::fuelVessel(sw::ecs::Entity vessel, sw::f64 availableUnits)
+    {
+        if (availableUnits <= 0.0)
+        {
+            return 0.0;
+        }
+        sw::f64 poured = 0.0;
+        m_world.forEach<sw::parts::PartComponent, sw::factory::InventoryComponent>(
+            [&](sw::ecs::Entity, sw::parts::PartComponent& part,
+                sw::factory::InventoryComponent& inventory) {
+                if (part.vessel != vessel || poured >= availableUnits)
+                {
+                    return;
+                }
+                const auto* definition = sw::parts::findDefinition(part.definitionId);
+                if (definition == nullptr ||
+                    definition->capacities[0].resource != sw::res::Resource::Fuel)
+                {
+                    return;
+                }
+                poured += sw::factory::inventoryAdd(inventory, sw::res::Resource::Fuel,
+                                                    availableUnits - poured);
+            });
+        return poured;
+    }
+
+    // ------------------------------------------------------------------------
+    // THE PAD
+    //
+    // A crate of vehicle arrives on the belt like any other good, and the
+    // pad's job is to turn it back into a thing: pop the design's name off
+    // the hall's queue — reached through the belt's own link channel, which
+    // already records which machine is at the far end — build it standing on
+    // the deck, and pour whatever fuel the pad has been stockpiling into it.
+    //
+    // It runs in the GAME, not the factory lane, because it makes entities:
+    // parts, joints, a vessel. The factory layer's contract is that it moves
+    // matter and nothing else.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::updateLaunchPads()
+    {
+        std::vector<sw::ecs::Entity> pads;
+        m_world.forEach<sw::factory::BuildingComponent, sw::factory::InventoryComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building,
+                sw::factory::InventoryComponent& inventory) {
+                if (building.category == sw::factory::BuildingCategory::Pad &&
+                    sw::factory::inventoryCount(inventory, sw::res::Resource::Vehicle) >=
+                        1.0)
+                {
+                    pads.push_back(entity);
+                }
+            });
+
+        for (const sw::ecs::Entity pad : pads)
+        {
+            // WHICH design is in the crate. The belt that brought it names
+            // its source, and the source is the hall that built it.
+            std::string name;
+            sw::ecs::Entity hall{};
+            if (const auto* link =
+                    m_world.tryGetComponent<sw::factory::ItemLinkComponent>(pad))
+            {
+                for (const sw::factory::LinkChannel& channel : link->channels)
+                {
+                    if (channel.resource != sw::res::Resource::Vehicle)
+                    {
+                        continue;
+                    }
+                    if (auto* queue =
+                            m_world.tryGetComponent<sw::factory::VehicleQueueComponent>(
+                                channel.source))
+                    {
+                        const std::string_view front =
+                            sw::factory::vehicleQueueFront(*queue);
+                        if (!front.empty())
+                        {
+                            name = std::string(front);
+                            hall = channel.source;
+                            break;
+                        }
+                    }
+                }
+            }
+            const sw::parts::ShipBlueprint* design =
+                name.empty() ? nullptr : sw::parts::findBlueprint(name);
+            if (design == nullptr || !sw::parts::blueprintIsBuildable(*design))
+            {
+                // An unidentified crate is not destroyed and not unpacked:
+                // it sits on the pad, and the panel shows it sitting there.
+                // Silently deleting a rocket would be the worse answer.
+                continue;
+            }
+
+            // ---- unpack it ------------------------------------------------
+            std::vector<BlueprintPart> saved;
+            saved.swap(m_blueprint);
+            m_blueprint = partsFromDesign(*design);
+            const sw::ecs::Entity vessel = instantiateBlueprint({}, pad);
+            m_blueprint.swap(saved);
+            if (vessel.isNull())
+            {
+                continue;
+            }
+
+            auto& inventory =
+                m_world.getComponent<sw::factory::InventoryComponent>(pad);
+            sw::factory::inventoryRemove(inventory, sw::res::Resource::Vehicle, 1.0);
+            if (auto* queue =
+                    m_world.tryGetComponent<sw::factory::VehicleQueueComponent>(hall))
+            {
+                sw::factory::vehicleQueuePop(*queue);
+            }
+
+            // ...and fuel it from the pad's own tanks. A rocket that arrives
+            // dry is a rocket you have to feed by hand; the pad's second
+            // conveyor mouth exists precisely so you do not.
+            const sw::f64 fuel =
+                sw::factory::inventoryCount(inventory, sw::res::Resource::Fuel);
+            const sw::f64 poured = fuelVessel(vessel, fuel);
+            if (poured > 0.0)
+            {
+                sw::factory::inventoryRemove(inventory, sw::res::Resource::Fuel, poured);
+            }
+            rebuildHulls();
+            SW_LOG_INFO("Game", "PAD: '{}' rolled out — {:.0f} kg of fuel aboard", name,
+                        poured);
+        }
     }
 
     void StarWorksGame::cyclePilotedVessel()
@@ -4859,12 +5254,16 @@ namespace game
             {"UNDO", 201, false},          {"NEW", 202, false},
             {"LOAD", 203, false},          {symLabel.c_str(), 205, m_symmetryCount > 1},
             {m_showCenters ? "CG:ON" : "CG:OFF", 206, m_showCenters},
-            {"BUILD", 204, true},
+            // SAVE is the F5 verb: a design on disk is a design a VAB can be
+            // told to build. BUILD stays beside it as the test shortcut it
+            // has always been — one click from a drawing to a rocket on the
+            // pad, with no factory in between.
+            {"SAVE", 207, true},           {"BUILD", 204, true},
         };
         constexpr sw::f32 kButtonWidth = 0.135f;
         constexpr sw::f32 kButtonHeight = 0.072f;
         constexpr sw::f32 kButtonGap = 0.016f;
-        sw::f32 buttonX = -0.46f;
+        sw::f32 buttonX = -0.54f;
         const sw::f32 buttonY = 0.86f;
         for (const Action& action : actions)
         {
@@ -5040,6 +5439,16 @@ namespace game
         {
             sw::factory::BatteryComponent battery{};
             m_world.addComponent(e, battery);
+        }
+
+        // ...and an assembly hall is a building that happens to hold an
+        // ORDER, plus the little queue of names that leaves with its crates.
+        // Same reasoning: the .swpart says what it looks like and what
+        // category it is; what that category implies lives here.
+        if (spec.category == sw::factory::BuildingCategory::Assembly)
+        {
+            m_world.addComponent(e, sw::factory::AssemblyComponent{});
+            m_world.addComponent(e, sw::factory::VehicleQueueComponent{});
         }
 
         if (spec.inventoryVolumeM3 > 0.0)
@@ -5783,6 +6192,16 @@ namespace game
                     }
                 }
             }
+            if (carriedCount == 0 &&
+                m_world.hasComponent<sw::factory::AssemblyComponent>(source.entity))
+            {
+                // AN ASSEMBLY HALL SHIPS ROCKETS. It has no recipe, and the
+                // silo rule below would have it export the iron it is
+                // standing on — the belt to the pad would run backwards,
+                // carrying the metal away from the machine that needs it.
+                // A hall's product is the one thing it makes.
+                carried[carriedCount++] = sw::res::Resource::Vehicle;
+            }
             if (carriedCount == 0)
             {
                 // A silo ships what it is holding.
@@ -5835,6 +6254,9 @@ namespace game
             conveyor.link = destination.entity;
             conveyor.source = source.entity;
             conveyor.cargoColor = resourceCargoColor(resource);
+            conveyor.cargoMesh = (resource == sw::res::Resource::Vehicle)
+                                     ? m_vehicleCargoMeshIndex
+                                     : m_cargoMeshIndex;
             const sw::usize count =
                 std::min<sw::usize>(path.size(), ConveyorComponent::kMaxPoints);
             conveyor.pointCount = static_cast<sw::u32>(count);
@@ -6692,7 +7114,10 @@ namespace game
                 // That was the bug — the whole conveyor sat behind the flow
                 // gate below, so every time the link's source ran dry for a
                 // tick the belt itself blinked out of the world.
-                if (m_cargoMeshIndex == 0xFFFFFFFFu)
+                const sw::u32 cargoMesh = (conveyor.cargoMesh != 0xFFFFFFFFu)
+                                              ? conveyor.cargoMesh
+                                              : m_cargoMeshIndex;
+                if (cargoMesh == 0xFFFFFFFFu)
                 {
                     return;
                 }
@@ -6735,10 +7160,10 @@ namespace game
                     const sw::f64 s =
                         std::fmod(travelled + static_cast<sw::f64>(c) * spacing,
                                   static_cast<sw::f64>(conveyor.lengthM));
-                    placeAlong(s, m_conveyorDeckHeightM, 1.0f, m_cargoMeshIndex,
+                    placeAlong(s, m_conveyorDeckHeightM, 1.0f, cargoMesh,
                                {conveyor.cargoColor.r, conveyor.cargoColor.g,
                                 conveyor.cargoColor.b, 1.0f},
-                               0.6f);
+                               (cargoMesh == m_vehicleCargoMeshIndex) ? 4.4f : 0.6f);
                 }
             });
     }
@@ -6953,6 +7378,26 @@ namespace game
         const std::vector<sw::u32> recipes =
             sw::factory::recipesForCategory(building->category);
 
+        // THE VAB'S PANEL IS THIS PANEL. An assembly hall runs no recipes;
+        // what it offers instead is the list of designs on disk, priced.
+        // Everything else — the state tab, the grid figures, the bin, the
+        // priority control — is the same machine panel it always was, which
+        // is the whole reason the VAB needed no screen of its own.
+        auto* assembly =
+            m_world.tryGetComponent<sw::factory::AssemblyComponent>(m_configTarget);
+        const bool hall = (assembly != nullptr);
+        const std::span<const sw::parts::ShipBlueprint> designs =
+            hall ? sw::parts::blueprintCatalog()
+                 : std::span<const sw::parts::ShipBlueprint>{};
+        // A panel is only a screen tall. Eight designs is already a taller
+        // list than any other panel in the game; past that the list is
+        // capped and SAYS it is capped, rather than growing off the bottom
+        // of the window where the rows cannot be clicked.
+        constexpr sw::usize kMaxDesignRows = 8;
+        const sw::usize shownDesigns = std::min(designs.size(), kMaxDesignRows);
+        const sw::usize listRows = hall ? shownDesigns : recipes.size();
+        const bool listEmpty = (listRows == 0);
+
         constexpr sw::f32 kLeft = -0.68f;
         constexpr sw::f32 kRight = 0.68f;
         constexpr sw::f32 kTop = -0.62f;
@@ -6960,7 +7405,11 @@ namespace game
         constexpr sw::f32 kRowGap = 0.008f;
         constexpr sw::f32 kPad = 0.018f;
         constexpr sw::f32 kHeaderH = 0.086f;
-        constexpr sw::f32 kStatsH = 0.168f;
+        // A hall's stats block carries one line no other machine has — what
+        // is on the slipway — so it is taller by exactly that line. Leaving
+        // it at 0.168 drew the order OUTSIDE its own background, which is
+        // the same class of fault as the RECIPE label through the STOP row.
+        const sw::f32 kStatsH = hall ? 0.208f : 0.168f;
         constexpr sw::f32 kFooterH = 0.098f;
 
         sw::f32 cursorX = -2.0f;
@@ -6977,9 +7426,9 @@ namespace game
         // under it, because a label needs its own height AND the gap.
         constexpr sw::f32 kLabelH = 0.050f;
         const sw::f32 bottom =
-            listTop + (recipes.empty()
+            listTop + (listEmpty
                            ? 0.06f
-                           : (kLabelH + static_cast<sw::f32>(recipes.size() + 1) *
+                           : (kLabelH + static_cast<sw::f32>(listRows + 1) *
                                             (kRowHeight + kRowGap))) +
             kFooterH;
         hudPanel(kLeft, kTop, kRight, bottom, hud::kPanel);
@@ -7003,9 +7452,14 @@ namespace game
 
         const char* stateText = "IDLE";
         sw::Vec4 stateColor = hud::kTextDim;
-        if (state != nullptr)
+        // A hall reports its OWN state: it is not running a recipe, it is
+        // paying for a rocket, and the two are never both true.
+        const sw::u32 shownState = hall            ? assembly->state
+                                   : (state != nullptr) ? state->state
+                                                        : 0u;
+        if (hall || state != nullptr)
         {
-            switch (state->state)
+            switch (shownState)
             {
             case sw::factory::RecipeStateComponent::kRunning:
                 stateText = "RUNNING";
@@ -7052,10 +7506,13 @@ namespace game
             hudText(std::format("THIS  MAKES {:.0f} KW  DRAWS {:.0f} KW",
                                 power->actualProducedKw, power->consumedKw),
                     kLeft + kPad + 0.014f, rowY, 0.028f, hud::kTextDim);
+            // The second column starts where the FIRST one can no longer
+            // reach: a 180 kW draw is three digits, and at 0.32 the two
+            // sentences were printed through each other.
             hudText(std::format("GRID {}  MAKES {:.0f} KW  DRAWS {:.0f} KW",
                                 power->gridId, power->gridProducedKw,
                                 power->gridConsumedKw),
-                    kLeft + 0.32f, rowY, 0.028f,
+                    kLeft + 0.62f, rowY, 0.028f,
                     (power->gridProducedKw + 1.0e-9 < power->gridConsumedKw)
                         ? hud::kWarn
                         : hud::kTextDim);
@@ -7086,12 +7543,102 @@ namespace game
                     kLeft + kPad + 0.014f, rowY, 0.028f, hud::kText);
         }
 
+        // ---- THE ORDER, at a hall --------------------------------------------
+        // The one line that is not on any other machine's panel: what is on
+        // the slipway and how much of its metal has arrived. It goes where
+        // the recipe's throughput would be, because it is the same question.
+        if (hall)
+        {
+            rowY += 0.032f;
+            if (assembly->blueprint[0] == '\0')
+            {
+                hudText("NO ORDER   PICK A DESIGN BELOW", kLeft + kPad + 0.014f, rowY,
+                        0.028f, hud::kTextDim);
+            }
+            else
+            {
+                const sw::f64 progress = sw::factory::assemblyProgress(*assembly);
+                hudText(std::format("BUILDING {}   {:.0f}%   IRON {:.0f}/{:.0f}   "
+                                    "COPPER {:.0f}/{:.0f}   DONE {}",
+                                    hud::caps(std::string(assembly->blueprint)),
+                                    progress * 100.0, assembly->ironPaidKg,
+                                    assembly->ironNeededKg, assembly->copperPaidKg,
+                                    assembly->copperNeededKg, assembly->completed),
+                        kLeft + kPad + 0.014f, rowY, 0.028f, hud::kText);
+            }
+        }
+
         // ---- THE JOB LIST ----------------------------------------------------
         rowY = listTop;
-        if (recipes.empty())
+        if (listEmpty)
         {
-            hudText("THIS BUILDING RUNS NO RECIPES", kLeft + kPad + 0.014f, rowY + 0.030f,
-                    0.032f, hud::kTextDim);
+            hudText(hall ? "NO DESIGNS SAVED   BUILD ONE IN THE HANGAR (B)"
+                         : "THIS BUILDING RUNS NO RECIPES",
+                    kLeft + kPad + 0.014f, rowY + 0.030f, 0.032f, hud::kTextDim);
+        }
+        else if (hall)
+        {
+            hudText(shownDesigns < designs.size()
+                        ? std::format("DESIGN   SHOWING {} OF {}", shownDesigns,
+                                      designs.size())
+                        : std::string("DESIGN"),
+                    kLeft + kPad + 0.004f, rowY + 0.006f, 0.026f, hud::kTextDim);
+            rowY += kLabelH;
+
+            const std::string_view current{assembly->blueprint};
+
+            // CLEAR, first, for the same reason STOP is: a hall with no order
+            // draws its idle load and nothing else, and on a battery night
+            // that is a choice worth having.
+            {
+                const bool selected = current.empty();
+                const bool hot = hovering(rowY, kRight - kPad);
+                hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
+                        selected ? hud::kRowStop
+                                 : (hot ? hud::kRowHover : hud::kRow));
+                hudText("CLEAR ORDER", kLeft + kPad + 0.018f, rowY + 0.018f, 0.036f,
+                        selected ? hud::kTitle : hud::kText);
+                hudText("SCRAPS WHAT IS ON THE SLIPWAY", kLeft + 0.34f, rowY + 0.022f,
+                        0.026f, hud::kTextDim);
+                m_hudButtons.push_back(
+                    {kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight, 899u});
+                rowY += kRowHeight + kRowGap;
+            }
+
+            for (sw::usize i = 0; i < shownDesigns; ++i)
+            {
+                const sw::parts::ShipBlueprint& design = designs[i];
+                const sw::parts::BillOfMaterials bill =
+                    sw::parts::blueprintCost(design);
+                const bool buildable = sw::parts::blueprintIsBuildable(design);
+                const bool selected = (current == design.name);
+                const bool hot = hovering(rowY, kRight - kPad);
+                hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
+                        selected ? (hot ? hud::kRowOnHover : hud::kRowOn)
+                                 : (hot ? hud::kRowHover
+                                        : ((i % 2 == 0) ? hud::kRow : hud::kRowAlt)));
+                hudText(hud::caps(design.name), kLeft + kPad + 0.018f, rowY + 0.018f,
+                        0.036f, selected ? hud::kTitle : hud::kText);
+                // The columns are placed for the WORST case, not the shipped
+                // one: a 23-character name (the field's whole width) and a
+                // five-figure bill both have to fit without touching, and a
+                // right-hand column has to end inside the panel.
+                hudText(std::format("{} PARTS   {:.0f} KG IRON   {:.0f} KG COPPER",
+                                    design.parts.size(), bill.ironKg, bill.copperKg),
+                        kLeft + 0.52f, rowY + 0.024f, 0.026f,
+                        selected ? hud::kText : hud::kTextDim);
+                hudText(buildable ? std::format("{:.1f} T", bill.totalKg() / 1000.0)
+                                  : "NO PARTS",
+                        kRight - 0.13f, rowY + 0.024f, 0.028f,
+                        buildable ? hud::kTextDim : hud::kBad);
+                if (buildable)
+                {
+                    m_hudButtons.push_back({kLeft + kPad, rowY, kRight - kPad,
+                                            rowY + kRowHeight,
+                                            900u + static_cast<sw::u32>(i)});
+                }
+                rowY += kRowHeight + kRowGap;
+            }
         }
         else
         {
@@ -7300,6 +7847,30 @@ namespace game
                 // ---- the machine panel (E) ----------------------------------
                 // Checked FIRST: its ids sit above the build menu's, and it
                 // is the panel actually on screen when they are live.
+                // The VAB's rows sit ABOVE the recipe ids, and are therefore
+                // tested first: a recipe id is an arbitrary small number and
+                // 610+id would happily swallow 900.
+                if (button.id >= 900 && !m_configTarget.isNull())
+                {
+                    const std::span<const sw::parts::ShipBlueprint> designs =
+                        sw::parts::blueprintCatalog();
+                    const sw::usize index = button.id - 900u;
+                    if (index < designs.size())
+                    {
+                        orderVehicle(m_configTarget, designs[index]);
+                    }
+                    return;
+                }
+                if (button.id == 899 && !m_configTarget.isNull())
+                {
+                    if (auto* assembly =
+                            m_world.tryGetComponent<sw::factory::AssemblyComponent>(
+                                m_configTarget))
+                    {
+                        sw::factory::assemblyOrder(*assembly, {}, 0.0, 0.0);
+                    }
+                    return;
+                }
                 if (button.id >= 610 && !m_configTarget.isNull())
                 {
                     applyRecipeChoice(m_configTarget, button.id - 610u);
@@ -7366,6 +7937,7 @@ namespace game
                         }
                     }
                     else if (button.id == 206) { m_showCenters = !m_showCenters; }
+                    else if (button.id == 207) { hangarSaveShip(); }
                     return;
                 }
                 if (button.id >= 100) // palette: take the part IN HAND

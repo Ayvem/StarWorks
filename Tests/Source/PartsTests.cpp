@@ -282,8 +282,10 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
                  (parts::isBuilding(definition) || parts::isProp(definition)));
     }
     SW_CHECK_EQ(rocketParts, static_cast<usize>(9));
-    SW_CHECK_EQ(buildings, static_cast<usize>(10)); // + CV-1, BT-1, PL-1, CW-1
-    SW_CHECK_EQ(props, static_cast<usize>(2));     // CR-1 crate, EV-1 suit
+    // + CV-1, BT-1, PL-1, CW-1, and F5's VB-1 hall and LP-1 pad
+    SW_CHECK_EQ(buildings, static_cast<usize>(12));
+    // CR-1 crate, EV-1 suit, CR-2 vehicle cradle
+    SW_CHECK_EQ(props, static_cast<usize>(3));
 
     // CONVEYOR PORTS. Every machine that takes part in a chain declares its
     // mouths on its geometry, and their DIRECTION is the contract: goods

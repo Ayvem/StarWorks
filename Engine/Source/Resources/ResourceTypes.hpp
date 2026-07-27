@@ -30,6 +30,17 @@ namespace sw::res
         Oxygen,
         Fuel,           // dense rocket propellant (1 u = 1 kg)
         ElectricCharge, // 1 u = 1 kJ; near-massless, near-volumeless
+        /// A FINISHED VEHICLE, crated. One unit is one rocket, and it is
+        /// deliberately enormous: a belt carrying vehicles carries almost
+        /// nothing else, which is what a rocket on a conveyor should feel
+        /// like.
+        ///
+        /// Its mass and volume are NOMINAL — one number for every design,
+        /// because a unit is a fixed design quantity and a rocket is not.
+        /// The conservation that matters is on the METAL: an assembly hall
+        /// consumes exactly the bill of materials, and that bill sums to the
+        /// finished vessel's dry mass to the last gram (BlueprintTests).
+        Vehicle,
 
         Count
     };

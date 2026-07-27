@@ -28,6 +28,7 @@
 #include "Factory/PowerNetwork.hpp"
 #include "Factory/Recipes.hpp"
 #include "Core/Json.hpp"
+#include "Gameplay/Blueprint.hpp"
 #include "Gameplay/Construction.hpp"
 #include "Gameplay/PartGeometry.hpp"
 #include "Gameplay/Parts.hpp"

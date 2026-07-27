@@ -24,6 +24,9 @@ namespace sw::res
             // 1 kJ: effectively massless; volume tuned so a battery's
             // inventory volume IS its charge capacity (0.12 m^3 = 800 kJ).
             {"ElectricCharge", 1.0e-9, 1.5e-4},
+            // 1 unit = 1 rocket. The mass is a nominal 12 t airframe; the
+            // volume is what makes a vehicle belt a vehicle belt.
+            {"Vehicle", 12000.0, 60.0},
         }};
     } // namespace
 

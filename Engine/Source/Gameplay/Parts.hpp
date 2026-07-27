@@ -280,6 +280,9 @@ namespace sw::parts
     inline constexpr u32 kBuildingPowerPole = 109;   // the only place a grid branches
     inline constexpr u32 kBuildingCable = 110;       // one span of wire
     inline constexpr u32 kPropEvaSuit = 111;         // the player, on foot
+    inline constexpr u32 kBuildingVab = 112;         // where rockets are made
+    inline constexpr u32 kBuildingLaunchPad = 113;   // ...and where they stand
+    inline constexpr u32 kPropVehicleCradle = 114;   // a rocket, riding a belt
 
     /// A PROP: authored geometry the GAME places, never the player. Conveyor
     /// cargo is the first one — a crate is not something you pick out of a

@@ -170,4 +170,82 @@ namespace sw::factory
         }
         return total;
     }
+
+    // ---- the assembly hall --------------------------------------------------
+
+    namespace
+    {
+        void copyName(char* destination, usize capacity, std::string_view name)
+        {
+            const usize count = std::min(name.size(), capacity - 1);
+            for (usize i = 0; i < count; ++i)
+            {
+                destination[i] = name[i];
+            }
+            for (usize i = count; i < capacity; ++i)
+            {
+                destination[i] = '\0';
+            }
+        }
+    } // namespace
+
+    f64 assemblyProgress(const AssemblyComponent& assembly)
+    {
+        const f64 needed = assembly.ironNeededKg + assembly.copperNeededKg;
+        if (needed <= 0.0)
+        {
+            return 0.0;
+        }
+        return std::clamp((assembly.ironPaidKg + assembly.copperPaidKg) / needed, 0.0,
+                          1.0);
+    }
+
+    void assemblyOrder(AssemblyComponent& assembly, std::string_view name, f64 ironKg,
+                       f64 copperKg)
+    {
+        copyName(assembly.blueprint, AssemblyComponent::kNameChars, name);
+        assembly.ironNeededKg = std::max(0.0, ironKg);
+        assembly.copperNeededKg = std::max(0.0, copperKg);
+        // Changing the order throws away what is on the slipway. That is the
+        // honest cost of changing your mind: metal already worked into a
+        // different airframe does not come back.
+        assembly.ironPaidKg = 0.0;
+        assembly.copperPaidKg = 0.0;
+        assembly.state = RecipeStateComponent::kIdle;
+    }
+
+    bool vehicleQueuePush(VehicleQueueComponent& queue, std::string_view name)
+    {
+        if (queue.count >= kVehicleQueueSlots)
+        {
+            return false;
+        }
+        copyName(queue.names[queue.count], AssemblyComponent::kNameChars, name);
+        ++queue.count;
+        return true;
+    }
+
+    std::string_view vehicleQueueFront(const VehicleQueueComponent& queue)
+    {
+        if (queue.count == 0)
+        {
+            return {};
+        }
+        return std::string_view(queue.names[0]);
+    }
+
+    void vehicleQueuePop(VehicleQueueComponent& queue)
+    {
+        if (queue.count == 0)
+        {
+            return;
+        }
+        for (u32 i = 1; i < queue.count; ++i)
+        {
+            copyName(queue.names[i - 1], AssemblyComponent::kNameChars,
+                     std::string_view(queue.names[i]));
+        }
+        --queue.count;
+        copyName(queue.names[queue.count], AssemblyComponent::kNameChars, {});
+    }
 } // namespace sw::factory

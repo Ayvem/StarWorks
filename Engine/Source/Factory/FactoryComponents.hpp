@@ -24,6 +24,7 @@
 #include "Factory/Recipes.hpp"
 #include "Resources/ResourceTypes.hpp"
 
+#include <string_view>
 #include <type_traits>
 
 namespace sw::factory
@@ -73,7 +74,9 @@ namespace sw::factory
         f64 flowUnitsPerSecond = 0.0;
     };
 
-    inline constexpr u32 kMaxLinkChannels = 4;
+    /// Eight, to match kMaxMachinePorts: a machine with eight mouths must
+    /// be able to be fed by eight belts.
+    inline constexpr u32 kMaxLinkChannels = 8;
 
     /// The feeds into ONE machine.
     ///
@@ -235,6 +238,84 @@ namespace sw::factory
         f64 nearRangeM = 500.0;
     };
 
+    /// THE VAB, as the simulation sees it (F5).
+    ///
+    /// An assembly hall is not a recipe machine, and trying to make it one
+    /// was the wrong shape: a recipe is a fixed list of goods per second,
+    /// while a rocket's bill of materials depends on the DESIGN the player
+    /// composed this morning. So the hall holds an order — a name and the
+    /// metal that order costs — and the executor for it is the simplest
+    /// thing in the factory: pour iron and copper in at a rate until the
+    /// bill is paid, then a vehicle exists.
+    ///
+    /// The bill is stored in KILOGRAMS and not looked up, deliberately. The
+    /// factory layer knows nothing about parts, hangars or blueprints; the
+    /// game layer costs the design once, when the player picks it, and hands
+    /// the number down. One unit of Iron is one kilogram of iron, so the
+    /// arithmetic below never has to convert anything.
+    struct AssemblyComponent
+    {
+        static constexpr u32 kNameChars = 24;
+        /// The ordered design. Empty means nothing is on the slipway.
+        char blueprint[kNameChars]{};
+        /// What that design costs, from parts::blueprintCost.
+        f64 ironNeededKg = 0.0;
+        f64 copperNeededKg = 0.0;
+        /// ...and what has actually gone into it so far. This is the only
+        /// state that matters: pause the hall, change nothing, come back in
+        /// a fortnight and the half-built rocket is still half built.
+        f64 ironPaidKg = 0.0;
+        f64 copperPaidKg = 0.0;
+        /// How fast metal can be worked, kilograms per second, at full
+        /// power. A twelve-tonne airframe at 40 kg/s is five minutes of
+        /// factory time — long enough to be a supply problem, short enough
+        /// to watch.
+        f64 buildRateKgPerSecond = 40.0;
+        /// Lifetime vehicles finished here.
+        u32 completed = 0;
+        /// Same vocabulary as RecipeStateComponent, so one panel reads both.
+        u32 state = RecipeStateComponent::kIdle;
+    };
+
+    /// How much of the order is done, 0..1. Progress on the METAL, which is
+    /// the honest measure: a rocket that is missing its copper is not
+    /// ninety-five per cent finished just because the iron all arrived.
+    [[nodiscard]] f64 assemblyProgress(const AssemblyComponent& assembly);
+
+    /// Sets the order and clears the slipway. Passing an empty name idles
+    /// the hall.
+    void assemblyOrder(AssemblyComponent& assembly, std::string_view name, f64 ironKg,
+                       f64 copperKg);
+
+    /// WHAT ARRIVED. A `Resource::Vehicle` unit is one rocket, but a unit
+    /// carries no identity — a belt cannot tell the pad whether the crate
+    /// that just landed on it holds a lander or a heavy lifter.
+    ///
+    /// So the names travel alongside, in a queue on the HALL that built
+    /// them: it pushes a name when it finishes a hull, and the pad pops one
+    /// when it unpacks a crate — reaching the right queue through the belt's
+    /// own link channel, which already names the machine at the far end.
+    ///
+    /// It works because a belt is first-in first-out and because the crates
+    /// on one belt all came from one hall. Route vehicles through a silo and
+    /// the identity is lost, which is the honest consequence of a unit not
+    /// being a thing: build the pad's feed straight off the VAB.
+    inline constexpr u32 kVehicleQueueSlots = 8;
+
+    struct VehicleQueueComponent
+    {
+        char names[kVehicleQueueSlots][AssemblyComponent::kNameChars]{};
+        u32 count = 0;
+    };
+
+    /// Appends a name. Returns false when the queue is full — the hall then
+    /// stays BLOCKED rather than shipping a rocket nobody can identify.
+    bool vehicleQueuePush(VehicleQueueComponent& queue, std::string_view name);
+    /// The oldest name, or empty when there is none.
+    [[nodiscard]] std::string_view vehicleQueueFront(const VehicleQueueComponent& queue);
+    /// Drops the oldest name.
+    void vehicleQueuePop(VehicleQueueComponent& queue);
+
     /// The hub entity: a site's identity and its aggregate books.
     struct SiteComponent
     {
@@ -256,6 +337,8 @@ namespace sw::factory
     static_assert(std::is_trivially_copyable_v<BatteryComponent>);
     static_assert(std::is_trivially_copyable_v<PowerLinkComponent>);
     static_assert(std::is_trivially_copyable_v<SiteComponent>);
+    static_assert(std::is_trivially_copyable_v<AssemblyComponent>);
+    static_assert(std::is_trivially_copyable_v<VehicleQueueComponent>);
     static_assert(std::is_trivially_copyable_v<BeaconComponent>);
     static_assert(std::is_trivially_copyable_v<MinerComponent>);
     static_assert(std::is_trivially_copyable_v<RefineryComponent>);

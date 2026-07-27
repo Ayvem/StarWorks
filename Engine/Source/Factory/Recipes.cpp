@@ -17,7 +17,8 @@ namespace sw::factory
         constexpr std::array<std::string_view, static_cast<usize>(BuildingCategory::Count)>
             kCategoryNames = {"miner",      "refinery", "storage", "solar",
                               "fabricator", "pad",      "hub",     "beacon",
-                              "conveyor",   "battery",  "pole",    "cable"};
+                              "conveyor",   "battery",  "pole",    "cable",
+                              "assembly"};
 
         Ingredient make(res::Resource resource, f64 unitsPerSecond)
         {

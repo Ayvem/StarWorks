@@ -49,6 +49,7 @@ namespace sw::factory
         Battery,     // stores ElectricCharge: what a 14-day night is fought with
         Pole,        // a power pole: the only thing a grid may branch at
         Cable,       // one span of wire between two power nodes
+        Assembly,    // the VAB: blueprints and metal in, rockets out
         Count
     };
 

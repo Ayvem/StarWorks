@@ -190,6 +190,7 @@ namespace game
         /// everything else. Cached mesh slots, resolved once at startup.
         sw::u32 m_conveyorMeshIndex = 0xFFFFFFFFu;
         sw::u32 m_cargoMeshIndex = 0xFFFFFFFFu;
+        sw::u32 m_vehicleCargoMeshIndex = 0xFFFFFFFFu;
         /// Length of one CV-1 along its own Z, read from its collider box —
         /// the belt tiles at exactly this spacing, so a longer segment part
         /// means fewer, longer tiles with no code change.
@@ -323,7 +324,13 @@ namespace game
         void commitGhost();    // place the held part (and symmetry clones)
         void grabPartAt(sw::usize index); // lift a subtree into the hand
         [[nodiscard]] sw::f64 partWetMassKg(sw::u32 definitionId) const;
-        [[nodiscard]] sw::ecs::Entity instantiateBlueprint(sw::ecs::Entity existingRoot);
+        /// Turns `m_blueprint` into live entities. `pad`, when it is a real
+        /// launch pad, is where the vessel is born — standing on that pad's
+        /// deck, co-rotating with the planet under it. A null pad keeps the
+        /// old surveyed place next to the outpost, which is what the
+        /// hangar's BUILD test shortcut still uses.
+        [[nodiscard]] sw::ecs::Entity instantiateBlueprint(sw::ecs::Entity existingRoot,
+                                                           sw::ecs::Entity pad = {});
         void cyclePilotedVessel();
         bool m_editorMode = false;
         bool m_pausedBeforeEditor = false;
@@ -440,6 +447,33 @@ namespace game
         void collectConfigMenu();
         void toggleConfigMenu();
         void applyRecipeChoice(sw::ecs::Entity entity, sw::u32 recipeId);
+
+        // ---- F5: THE VAB AND THE PAD ----------------------------------------
+        // The loop the whole factory has been building towards: a design is
+        // saved in the hangar, ORDERED at an assembly hall, paid for in iron
+        // and copper carried there on belts, crated, shipped to a pad, and
+        // stood up on it as a real vessel with real fuel in its tanks.
+        //
+        // The engine owns the parts of that a test can hold still — the bill
+        // of materials, the .swship file, the metal arithmetic. What lives
+        // here is the part that needs the world: turning a saved design back
+        // into entities, standing on a particular pad, on a spinning planet.
+        /// Orders `design` at `hall`, costed from the catalogue.
+        void orderVehicle(sw::ecs::Entity hall, const sw::parts::ShipBlueprint& design);
+        /// The pads' own tick: unpack an arrived crate into a vessel.
+        void updateLaunchPads();
+        /// A saved design as the hangar's working list. The joints come with
+        /// it, so a vessel built from a file is jointed as it was drawn.
+        [[nodiscard]] static std::vector<BlueprintPart> partsFromDesign(
+            const sw::parts::ShipBlueprint& design);
+        [[nodiscard]] sw::parts::ShipBlueprint designFromParts(
+            std::string_view name) const;
+        /// Writes the current design to Assets/Ships and registers it, so it
+        /// is orderable at a VAB without a restart.
+        void hangarSaveShip();
+        /// Pours up to `availableUnits` of fuel into a vessel's tanks;
+        /// returns what actually went in.
+        sw::f64 fuelVessel(sw::ecs::Entity vessel, sw::f64 availableUnits);
 
         sw::Camera m_hangarCamera;
         sw::f32 m_hangarYaw = 0.6f;

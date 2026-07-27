@@ -1,0 +1,32 @@
+{
+  "name": "STARLING",
+  "parts": [
+    {
+      "definitionId": 9,
+      "position": [0, 0, 0],
+      "rotation": [1, 0, 0, 0],
+      "parent": -1,
+      "parentPoint": 0,
+      "childPoint": 0,
+      "symmetryGroup": -1
+    },
+    {
+      "definitionId": 1,
+      "position": [0, 0, 3.4000000953674316],
+      "rotation": [1, 0, 0, 0],
+      "parent": 0,
+      "parentPoint": 1,
+      "childPoint": 0,
+      "symmetryGroup": -1
+    },
+    {
+      "definitionId": 2,
+      "position": [0, 0, 6.599999904632568],
+      "rotation": [1, 0, 0, 0],
+      "parent": 1,
+      "parentPoint": 1,
+      "childPoint": 0,
+      "symmetryGroup": -1
+    }
+  ]
+}
