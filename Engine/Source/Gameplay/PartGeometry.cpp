@@ -527,9 +527,74 @@ namespace sw::parts
         return mesh;
     }
 
-    void expandPartColliderBounds(const PartDefinition& definition, const Vec3& position,
-                                  const Quat& rotation, Vec3& outMin, Vec3& outMax)
+    bool hasHitbox(const PartDefinition& definition)
     {
+        return !definition.hitboxes.empty();
+    }
+
+    std::vector<HitBox> hitboxesFromColliders(const PartDefinition& definition)
+    {
+        bool anyCollider = false;
+        for (const PartShape& shape : definition.shapes)
+        {
+            anyCollider = anyCollider || shape.collider;
+        }
+
+        std::vector<HitBox> boxes;
+        for (const PartShape& shape : definition.shapes)
+        {
+            if (anyCollider ? !shape.collider : !shape.visible)
+            {
+                continue;
+            }
+            // The shape's own oriented box, projected onto the PART's axes:
+            // an AABB around a rotated primitive, which is what a hitbox is.
+            const Vec3 halfExtents = shapeBoxHalfExtents(shape);
+            const Mat3 axes = Mat3(shapeRotation(shape));
+            const Vec3 extent{
+                std::abs(axes[0][0]) * halfExtents.x + std::abs(axes[1][0]) * halfExtents.y +
+                    std::abs(axes[2][0]) * halfExtents.z,
+                std::abs(axes[0][1]) * halfExtents.x + std::abs(axes[1][1]) * halfExtents.y +
+                    std::abs(axes[2][1]) * halfExtents.z,
+                std::abs(axes[0][2]) * halfExtents.x + std::abs(axes[1][2]) * halfExtents.y +
+                    std::abs(axes[2][2]) * halfExtents.z};
+            boxes.push_back({shape.position, extent});
+        }
+        return boxes;
+    }
+
+    std::vector<HitBox> effectiveHull(const PartDefinition& definition)
+    {
+        return definition.hitboxes.empty() ? hitboxesFromColliders(definition)
+                                           : definition.hitboxes;
+    }
+
+    void expandPartHullBounds(const PartDefinition& definition, const Vec3& position,
+                              const Quat& rotation, Vec3& outMin, Vec3& outMax)
+    {
+        // THE AUTHORED HULL WINS. A part that declares hitboxes is telling
+        // you what it bumps into; only a part that declares none is asking
+        // to have it guessed from what it looks like.
+        if (!definition.hitboxes.empty())
+        {
+            const Mat3 axes = Mat3(rotation);
+            for (const HitBox& box : definition.hitboxes)
+            {
+                const Vec3 h = glm::abs(box.halfExtents);
+                const Vec3 extent{
+                    std::abs(axes[0][0]) * h.x + std::abs(axes[1][0]) * h.y +
+                        std::abs(axes[2][0]) * h.z,
+                    std::abs(axes[0][1]) * h.x + std::abs(axes[1][1]) * h.y +
+                        std::abs(axes[2][1]) * h.z,
+                    std::abs(axes[0][2]) * h.x + std::abs(axes[1][2]) * h.y +
+                        std::abs(axes[2][2]) * h.z};
+                const Vec3 centre = position + rotation * box.center;
+                outMin = glm::min(outMin, centre - extent);
+                outMax = glm::max(outMax, centre + extent);
+            }
+            return;
+        }
+
         bool anyCollider = false;
         for (const PartShape& shape : definition.shapes)
         {
@@ -568,6 +633,15 @@ namespace sw::parts
             const Vec3 halfExtents = shapeBoxHalfExtents(shape);
             radius = std::max(radius,
                               glm::length(shape.position) + glm::length(halfExtents));
+        }
+        // A hull may legitimately stick out past the geometry — a hitbox
+        // around a landing gear's sweep, say — and a culling sphere that did
+        // not contain it would pop the part out of view while it was still
+        // being stood on.
+        for (const HitBox& box : definition.hitboxes)
+        {
+            radius = std::max(radius, glm::length(box.center) +
+                                          glm::length(glm::abs(box.halfExtents)));
         }
         return radius;
     }
@@ -643,6 +717,21 @@ namespace sw::parts
         const auto collectBoxes = [margin](const PartDefinition& definition,
                                            const Vec3& position, const Quat& rotation,
                                            std::vector<ObbData>& out) {
+            // The authored hull first, same rule as the bounds: a part that
+            // says what it bumps into is not second-guessed.
+            if (!definition.hitboxes.empty())
+            {
+                for (const HitBox& hit : definition.hitboxes)
+                {
+                    ObbData box{};
+                    box.center = position + rotation * hit.center;
+                    box.halfExtents =
+                        glm::max(glm::abs(hit.halfExtents) - Vec3{margin}, Vec3{0.01f});
+                    box.axes = glm::mat3_cast(rotation);
+                    out.push_back(box);
+                }
+                return;
+            }
             bool anyCollider = false;
             for (const PartShape& shape : definition.shapes)
             {

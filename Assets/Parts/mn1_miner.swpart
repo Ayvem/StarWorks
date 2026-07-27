@@ -2,113 +2,101 @@
   "id": 101,
   "type": "Structural",
   "name": "MN-1 Surface Miner",
-  "dryMassKg": 26000.0,
-  "costCredits": 0.0,
-  "volumeM3": 12.0,
+  "dryMassKg": 26000,
+  "costCredits": 0,
+  "volumeM3": 12,
   "crashToleranceMps": 8,
-  "breakingForceN": 300000.0,
-  "dragCoefficientArea": 2.0,
+  "breakingForceN": 300000,
+  "dragCoefficientArea": 2,
   "liftCoefficient": 0,
   "thrustNewtons": 0,
   "specificImpulseS": 0,
-  "chargeRateKw": 0.0,
-  "capacities": [],
+  "chargeRateKw": 0,
   "building": {
     "category": "miner",
-    "footprintM": [
-      16,
-      12
-    ],
-    "powerKw": -8.0,
-    "inventoryVolumeM3": 30.0,
+    "footprintM": [16, 12],
+    "powerKw": -8,
+    "inventoryVolumeM3": 30,
     "maxSlopeTangent": 0.22,
     "minOreDensity": 0.15
   },
+  "capacities": [],
   "shapes": [
     {
       "kind": "box",
-      "position": [
-        0,
-        1.6,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        7,
-        3.2,
-        5
-      ],
-      "color": [
-        0.45,
-        0.3,
-        0.2
-      ],
-      "emissive": 0.0,
+      "position": [0, 1.600000023841858, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [7, 3.200000047683716, 5],
+      "color": [0.44999998807907104, 0.30000001192092896, 0.20000000298023224],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 16,
       "visible": true,
       "collider": true
     },
     {
       "kind": "cylinder",
-      "position": [
-        0,
-        4.0,
-        2.4
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        1.4,
-        2.6,
-        1.4
-      ],
-      "color": [
-        0.28,
-        0.3,
-        0.33
-      ],
-      "emissive": 0.0,
+      "position": [0, 4, 2.4000000953674316],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.399999976158142, 2.5999999046325684, 1.399999976158142],
+      "color": [0.2800000011920929, 0.30000001192092896, 0.33000001311302185],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 20,
       "visible": true,
       "collider": true
     },
     {
       "kind": "box",
-      "position": [
-        4.2,
-        1.0,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        1.6,
-        2.0,
-        4.0
-      ],
-      "color": [
-        0.55,
-        0.56,
-        0.58
-      ],
-      "emissive": 0.0,
+      "position": [4.199999809265137, 1, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.600000023841858, 2, 4],
+      "color": [0.550000011920929, 0.5600000023841858, 0.5799999833106995],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 16,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [6.650000095367432, 1.149999976158142, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.6049999594688416, 0.09999999403953552, 0.7099999785423279],
+      "color": [0.699999988079071, 0.7200000286102295, 0.7599999904632568],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 24,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [6.75, 0.6000000238418579, -0.6000000238418579],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.5, 0.5, 0.09999999403953552],
+      "color": [0.699999988079071, 0.7200000286102295, 0.7599999904632568],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 24,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [6.75, 0.6000000238418579, 0.6000000238418579],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.5, 0.5, 0.09999999403953552],
+      "color": [0.699999988079071, 0.7200000286102295, 0.7599999904632568],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 24,
       "visible": true,
       "collider": true
     }
@@ -116,18 +104,23 @@
   "nodes": [
     {
       "name": "ore-out",
-      "position": [
-        7.0,
-        0.6,
-        0.0
-      ],
-      "direction": [
-        1,
-        0,
-        0
-      ],
+      "position": [7, 0.6000000238418579, 0],
+      "direction": [1, 0, 0],
       "type": "conveyor-out",
-      "size": 0.55
+      "size": 0.550000011920929
+    },
+    {
+      "name": "power",
+      "position": [-3, 4.800000190734863, 3],
+      "direction": [0, 1, 0],
+      "type": "power",
+      "size": 0.5
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 1.600000023841858, 0],
+      "halfExtents": [7, 3.1999998092651367, 5]
     }
   ]
 }

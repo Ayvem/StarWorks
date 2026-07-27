@@ -222,20 +222,20 @@ SW_TEST(ConveyorChainsAreTracedFromPortsThatMeet)
         node.entity = {index, 0};
         node.isBelt = true;
         node.centre = WorldVec3{x, 0.0, 0.0};
-        node.inPort = WorldVec3{x - 1.0, 0.0, 0.0};
-        node.outPort = WorldVec3{x + 1.0, 0.0, 0.0};
-        node.hasIn = true;
-        node.hasOut = true;
+        node.inPorts[0] = WorldVec3{x - 1.0, 0.0, 0.0};
+        node.outPorts[0] = WorldVec3{x + 1.0, 0.0, 0.0};
+        node.inCount = 1;
+        node.outCount = 1;
         return node;
     };
     auto machine = [](f64 x, u32 index, bool hasIn, bool hasOut) {
         factory::PortNode node{};
         node.entity = {index, 0};
         node.centre = WorldVec3{x, 0.0, 0.0};
-        node.inPort = WorldVec3{x, 0.0, 0.0};
-        node.outPort = WorldVec3{x, 0.0, 0.0};
-        node.hasIn = hasIn;
-        node.hasOut = hasOut;
+        node.inPorts[0] = WorldVec3{x, 0.0, 0.0};
+        node.outPorts[0] = WorldVec3{x, 0.0, 0.0};
+        node.inCount = hasIn ? 1u : 0u;
+        node.outCount = hasOut ? 1u : 0u;
         return node;
     };
 
@@ -281,7 +281,7 @@ SW_TEST(ConveyorChainsAreTracedFromPortsThatMeet)
         // must terminate, and it must not produce a chain.
         std::vector<factory::PortNode> nodes = {machine(0.0, 10, false, true), belt(1.0, 11),
                                                 belt(3.0, 12), belt(5.0, 13)};
-        nodes[3].outPort = nodes[1].inPort; // last belt loops back to the first
+        nodes[3].outPorts[0] = nodes[1].inPorts[0]; // last belt loops back to the first
         const std::vector<factory::Chain> chains = factory::traceConveyorChains(nodes, factory::kConveyorPortSnapM);
         SW_CHECK_EQ(chains.size(), static_cast<usize>(0));
     }

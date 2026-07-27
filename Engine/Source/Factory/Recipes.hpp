@@ -46,6 +46,9 @@ namespace sw::factory
         Hub,         // the site's centre: defines it, holds its books
         Beacon,      // produces nothing but VISIBILITY: a site you can find
         Conveyor,    // a belt segment: moves goods between the above
+        Battery,     // stores ElectricCharge: what a 14-day night is fought with
+        Pole,        // a power pole: the only thing a grid may branch at
+        Cable,       // one span of wire between two power nodes
         Count
     };
 

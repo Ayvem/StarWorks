@@ -270,6 +270,100 @@ namespace game
             }
         }
 
+        // ====================== THE HUD PALETTE ==========================
+        //
+        // Every panel in the game reads from this one block. That is the
+        // whole point: the build menu and the machine panel were each
+        // choosing their own near-black on near-black, and the result was
+        // two screens you could not read and could not compare.
+        //
+        // The rules the numbers encode:
+        //   * A PANEL is nearly opaque. A translucent list over a planet is
+        //     a list you are reading through a landscape.
+        //   * A ROW is clearly lighter than the panel it sits on, and every
+        //     other row is lighter still — zebra striping does more for a
+        //     scanned list than any amount of border drawing.
+        //   * SELECTION is a hue change, not a brightness change, because
+        //     brightness is already carrying the zebra.
+        //   * TEXT is near-white for the thing itself and a desaturated blue
+        //     for its details — never the panel colour with the alpha turned
+        //     down, which is how the old menus became unreadable.
+        namespace hud
+        {
+            constexpr sw::Vec4 kPanel{0.03f, 0.05f, 0.08f, 0.96f};
+            constexpr sw::Vec4 kEdge{0.28f, 0.48f, 0.68f, 0.95f};
+            constexpr sw::Vec4 kHeader{0.09f, 0.15f, 0.23f, 0.98f};
+            constexpr sw::Vec4 kRow{0.12f, 0.17f, 0.24f, 0.98f};
+            constexpr sw::Vec4 kRowAlt{0.18f, 0.25f, 0.34f, 0.98f};
+            constexpr sw::Vec4 kRowHover{0.24f, 0.35f, 0.48f, 1.0f};
+            constexpr sw::Vec4 kRowOn{0.10f, 0.45f, 0.28f, 1.0f};
+            constexpr sw::Vec4 kRowOnHover{0.16f, 0.60f, 0.37f, 1.0f};
+            constexpr sw::Vec4 kRowStop{0.44f, 0.15f, 0.15f, 1.0f};
+            constexpr sw::Vec4 kTitle{0.97f, 0.99f, 1.0f, 1.0f};
+            constexpr sw::Vec4 kText{0.91f, 0.95f, 1.0f, 1.0f};
+            constexpr sw::Vec4 kTextDim{0.64f, 0.75f, 0.88f, 1.0f};
+            constexpr sw::Vec4 kOk{0.42f, 0.95f, 0.55f, 1.0f};
+            constexpr sw::Vec4 kWarn{1.0f, 0.78f, 0.30f, 1.0f};
+            constexpr sw::Vec4 kBad{1.0f, 0.46f, 0.40f, 1.0f};
+
+            /// One colour per building family, shown as a chip at the head of
+            /// every row. A catalogue of eight machines sorts itself the
+            /// moment the eye can group it without reading a word.
+            [[nodiscard]] sw::Vec4 categoryColor(sw::factory::BuildingCategory category)
+            {
+                switch (category)
+                {
+                case sw::factory::BuildingCategory::Miner:
+                    return {0.85f, 0.55f, 0.25f, 1.0f};
+                case sw::factory::BuildingCategory::Refinery:
+                    return {0.90f, 0.35f, 0.30f, 1.0f};
+                case sw::factory::BuildingCategory::Storage:
+                    return {0.55f, 0.60f, 0.66f, 1.0f};
+                case sw::factory::BuildingCategory::Solar:
+                    return {0.98f, 0.85f, 0.30f, 1.0f};
+                case sw::factory::BuildingCategory::Battery:
+                    return {0.35f, 0.85f, 0.55f, 1.0f};
+                case sw::factory::BuildingCategory::Pole:
+                    return {0.45f, 0.72f, 0.98f, 1.0f};
+                case sw::factory::BuildingCategory::Conveyor:
+                    return {0.70f, 0.70f, 0.75f, 1.0f};
+                case sw::factory::BuildingCategory::Beacon:
+                    return {1.0f, 0.78f, 0.28f, 1.0f};
+                case sw::factory::BuildingCategory::Hub:
+                    return {0.62f, 0.50f, 0.95f, 1.0f};
+                default:
+                    return {0.60f, 0.66f, 0.74f, 1.0f};
+                }
+            }
+
+            /// A power balance a player can read. "{:.0f} KW" turned the
+            /// belt segment's half-kilowatt into "-0 KW", which says
+            /// something false with total confidence; below half a kilowatt
+            /// the honest word is PASSIVE.
+            [[nodiscard]] std::string powerText(sw::f64 kw)
+            {
+                if (std::abs(kw) < 0.05)
+                {
+                    return "PASSIVE";
+                }
+                const char* sign = (kw > 0.0) ? "+" : "-";
+                return (std::abs(kw) >= 10.0)
+                           ? std::format("{}{:.0f} KW", sign, std::abs(kw))
+                           : std::format("{}{:.1f} KW", sign, std::abs(kw));
+            }
+
+            /// Uppercased copy: the glyph font has one case, and mixing them
+            /// in the source makes the widths lie.
+            [[nodiscard]] std::string caps(std::string text)
+            {
+                for (char& c : text)
+                {
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                }
+                return text;
+            }
+        } // namespace hud
+
         /// The VAB palette shows ROCKET parts. Since F1 the catalogue also
         /// holds buildings — same file format, same Part Studio, same stable
         /// id space — and those belong to the ground build mode (F2), not to
@@ -667,9 +761,22 @@ namespace game
         physics.addSystem(std::make_unique<sw::phys::SurfaceAnchorSystem>());
         // Parts ride their vessel (lockstep interpolation), last.
         physics.addSystem(std::make_unique<sw::parts::PartAttachmentSystem>());
+        // ...and only NOW is every solid thing where it is going to be, so
+        // this is the one place the walker can be pushed back out of what it
+        // walked into. Before the anchors and the part attachment it would
+        // be resolving against last tick's building positions, which on a
+        // spinning planet is 595 m of lie.
+        m_hullCollision = new sw::phys::HullCollisionSystem();
+        physics.addSystem(
+            std::unique_ptr<sw::phys::HullCollisionSystem>(m_hullCollision));
 
         auto& automation = m_simulation.findLane("Automation")->scheduler();
         automation.addSystem(std::make_unique<SolarChargeSystem>());
+        // F3 — THE GRID RUNS FIRST. Every building's `satisfaction` for this
+        // tick is decided here, from the real sun and the site's batteries,
+        // and the executor below spends it. The other order would run the
+        // factory on last tick's weather.
+        automation.addSystem(std::make_unique<sw::factory::PowerGridSystem>(m_solEntity));
         // The generic recipe executor: ONE system for every building the
         // player will ever place. The two below stay for the asteroid rig
         // and the orbital station, which are craft, not buildings.
@@ -900,6 +1007,10 @@ namespace game
         }
         const sw::u32 moduleMeshId = registerMesh(renderer().createMesh(
             sw::PrimitiveFactory::makeCube(1.0f, {0.75f, 0.78f, 0.82f, 1.0f})));
+        // The F2 overlay's box: a UNIT cube (half extent 0.5), scaled to
+        // each hull box. White, so the tint alone decides how it reads.
+        m_hullBoxMeshIndex = registerMesh(renderer().createMesh(
+            sw::PrimitiveFactory::makeCube(1.0f, {1.0f, 1.0f, 1.0f, 1.0f})));
         // Part meshes, indexed by catalog id (small ids: direct table).
         for (const sw::parts::PartDefinition& definition : sw::parts::catalog())
         {
@@ -917,7 +1028,7 @@ namespace game
             constexpr sw::f32 kHuge = 1.0e9f;
             sw::Vec3 low{kHuge, kHuge, kHuge};
             sw::Vec3 high{-kHuge, -kHuge, -kHuge};
-            sw::parts::expandPartColliderBounds(*belt, sw::Vec3{0.0f},
+            sw::parts::expandPartHullBounds(*belt, sw::Vec3{0.0f},
                                                 sw::Quat{1.0f, 0.0f, 0.0f, 0.0f}, low,
                                                 high);
             if (low.z <= high.z)
@@ -933,11 +1044,56 @@ namespace game
         {
             m_cargoMeshIndex = m_partMeshIds.at(crate->id);
         }
+        // The CABLE is the same story: one authored span, repeated along the
+        // curve. Its length comes off its own collider, so a thicker or
+        // longer CW-1 redrawn in Part Studio re-wires the whole base.
+        if (const auto* wire = sw::parts::findDefinition(sw::parts::kBuildingCable))
+        {
+            m_cableMeshIndex = m_partMeshIds.at(wire->id);
+            constexpr sw::f32 kHuge = 1.0e9f;
+            sw::Vec3 low{kHuge, kHuge, kHuge};
+            sw::Vec3 high{-kHuge, -kHuge, -kHuge};
+            sw::parts::expandPartHullBounds(*wire, sw::Vec3{0.0f},
+                                                sw::Quat{1.0f, 0.0f, 0.0f, 0.0f}, low,
+                                                high);
+            if (low.z <= high.z)
+            {
+                m_cableSegmentM = std::max(0.1f, high.z - low.z);
+            }
+            SW_LOG_INFO("Game", "Cable part: {:.2f} m span segment", m_cableSegmentM);
+        }
 
         const auto& partMeshIds = m_partMeshIds;
-        m_capsuleMeshIndex = registerMesh(renderer().createMesh(
-            sw::PrimitiveFactory::makeCapsule(0.5f, 0.5f, 12, 16,
-                                              {0.9f, 0.6f, 0.2f, 1.0f})));
+        // THE PLAYER IS A PART. First person or not, you are visible to
+        // yourself in the map, to a future second player, and in every
+        // screenshot taken from the ship — and a capsule primitive said
+        // "placeholder" in all of them. EV-1 is an ordinary .swpart prop, so
+        // the suit is redrawn in Part Studio like everything else, and its
+        // ground hull comes from its own hitbox rather than from a constant
+        // in this file that could drift from the model.
+        if (const auto* suit = sw::parts::findDefinition(sw::parts::kPropEvaSuit))
+        {
+            m_capsuleMeshIndex = m_partMeshIds.at(suit->id);
+            constexpr sw::f32 kHuge = 1.0e9f;
+            sw::Vec3 low{kHuge, kHuge, kHuge};
+            sw::Vec3 high{-kHuge, -kHuge, -kHuge};
+            sw::parts::expandPartHullBounds(*suit, sw::Vec3{0.0f},
+                                            sw::Quat{1.0f, 0.0f, 0.0f, 0.0f}, low, high);
+            if (low.y <= high.y)
+            {
+                m_capsuleHull.centre = (low + high) * 0.5f;
+                m_capsuleHull.halfExtents = (high - low) * 0.5f;
+            }
+            SW_LOG_INFO("Game", "EVA suit hull: centre {:.2f} half {:.2f} x {:.2f}",
+                        m_capsuleHull.centre.y, m_capsuleHull.halfExtents.x,
+                        m_capsuleHull.halfExtents.y);
+        }
+        else
+        {
+            m_capsuleMeshIndex = registerMesh(renderer().createMesh(
+                sw::PrimitiveFactory::makeCapsule(0.5f, 0.5f, 12, 16,
+                                                  {0.9f, 0.6f, 0.2f, 1.0f})));
+        }
         m_markerMeshIndex = registerMesh(renderer().createMesh(buildMarkerMesh()));
 
         // Sun position and eclipse occluders are camera-relative and set
@@ -1189,7 +1345,22 @@ namespace game
                 sw::parts::kBuildingStorage, 0.0f, -30.0f, 0u, {},
                 yawToFace(siteUp, portDirection(storagePart, sw::parts::NodeType::ConveyorIn),
                           siteEast));
-            spawnBuilding(sw::parts::kBuildingSolarFarm, -34.0f, -15.0f, 0u, {});
+            const sw::ecs::Entity solarEntity =
+                spawnBuilding(sw::parts::kBuildingSolarFarm, -34.0f, -15.0f, 0u, {});
+
+            // F3: the BANK. A site with panels and no storage is a site that
+            // stops every sunset, so the starting outpost is delivered with
+            // one — half charged, which makes the first night a decision
+            // (run the smelter now, or keep the charge?) instead of a
+            // scripted blackout.
+            const sw::ecs::Entity batteryEntity =
+                spawnBuilding(sw::parts::kBuildingBatteryBank, -34.0f, 14.0f, 0u, {});
+            if (!batteryEntity.isNull())
+            {
+                sw::factory::inventoryAdd(
+                    m_world.getComponent<sw::factory::InventoryComponent>(batteryEntity),
+                    sw::res::Resource::ElectricCharge, 500000.0); // 500 MJ
+            }
 
             // The BEACON: the site is at a surveyed spot on a 6,371 km
             // sphere, and nothing else here can be seen from the air. Its
@@ -1231,6 +1402,39 @@ namespace game
 
             // ...and now derive what those rows of segments actually connect.
             rebuildConveyorNetwork();
+
+            // ---- the GRID, wired the way the player would wire it --------
+            // One PL-1 in the middle of the yard, and a single span from it
+            // to every machine. That is not decoration: without the pole the
+            // outpost could not be one grid at all, because a building takes
+            // exactly one cable and seven of them cannot form a chain.
+            // The starting base gets no exemption from the rule it teaches.
+            const sw::ecs::Entity poleEntity =
+                spawnBuilding(sw::parts::kBuildingPowerPole, 10.0f, -14.0f, 0u, {});
+            rebuildPowerNetwork(); // number the nodes before asking about them
+            if (!poleEntity.isNull())
+            {
+                for (const sw::ecs::Entity end :
+                     {hubEntity, minerEntity, refineryEntity, storageEntity, solarEntity,
+                      batteryEntity, beaconEntity})
+                {
+                    if (end.isNull())
+                    {
+                        continue;
+                    }
+                    sw::WorldVec3 from{};
+                    sw::WorldVec3 to{};
+                    const sw::factory::CableVerdict verdict =
+                        planCable(poleEntity, end, from, to);
+                    if (verdict != sw::factory::CableVerdict::Ok)
+                    {
+                        SW_LOG_WARN("Game", "Starting cable refused: {}",
+                                    sw::factory::cableVerdictText(verdict));
+                        continue;
+                    }
+                    layCable(terraEntity, poleEntity, end);
+                }
+            }
 
             if (!hubEntity.isNull())
             {
@@ -1442,9 +1646,9 @@ namespace game
                 m_world.addComponent(e, sw::factory::RefineryComponent{
                                             sw::res::Resource::IronOre,
                                             sw::res::Resource::Iron, 1.0, 0.9, 0.0});
-                m_world.addComponent(e, sw::factory::ItemLinkComponent{
+                m_world.addComponent(e, sw::factory::makeItemLink(
                                             asteroidEntity, sw::res::Resource::IronOre,
-                                            1.5});
+                                            1.5));
                 refineryEntity = e;
             }
             else if (i == 1)
@@ -1452,8 +1656,8 @@ namespace game
                 sw::factory::InventoryComponent silo{};
                 silo.volumeCapacityM3 = 60.0;
                 m_world.addComponent(e, silo);
-                m_world.addComponent(e, sw::factory::ItemLinkComponent{
-                                            refineryEntity, sw::res::Resource::Iron, 1.0});
+                m_world.addComponent(e, sw::factory::makeItemLink(
+                                            refineryEntity, sw::res::Resource::Iron, 1.0));
             }
         }
     }
@@ -1492,15 +1696,28 @@ namespace game
         m_saveSchema.registerComponent<sw::factory::MinerComponent>("factory.Miner", 1);
         m_saveSchema.registerComponent<sw::factory::RefineryComponent>("factory.Refinery",
                                                                        1);
+        // v2: an ARRAY of channels — a machine can be fed more than one
+        // good, which is what the fuel chain's synthesiser needs.
         m_saveSchema.registerComponent<sw::factory::ItemLinkComponent>("factory.ItemLink",
-                                                                       1);
+                                                                       2);
         // F1 — the data-driven industry.
         m_saveSchema.registerComponent<sw::factory::BuildingComponent>("factory.Building",
                                                                        1);
         m_saveSchema.registerComponent<sw::factory::RecipeStateComponent>(
             "factory.RecipeState", 1);
-        m_saveSchema.registerComponent<sw::factory::PowerComponent>("factory.Power", 1);
-        m_saveSchema.registerComponent<sw::factory::SiteComponent>("factory.Site", 1);
+        // F3 — the grid. v2: + actualProducedKw, priority. v3: + gridId and
+        // the grid's books, which arrived with the cables.
+        m_saveSchema.registerComponent<sw::factory::PowerComponent>("factory.Power", 3);
+        // v2 of Site: + batteryFlowKw.
+        m_saveSchema.registerComponent<sw::factory::SiteComponent>("factory.Site", 2);
+        m_saveSchema.registerComponent<sw::factory::BatteryComponent>("factory.Battery", 1);
+        // THE CABLES. The link is what is stored — its two ends — because
+        // unlike a belt there is no intermediate object to derive it from.
+        // The CableComponent's curve is NOT authoritative: rebuildPowerNetwork
+        // re-hangs it from the endpoints after every load.
+        m_saveSchema.registerComponent<sw::factory::PowerLinkComponent>(
+            "factory.PowerLink", 1);
+        m_saveSchema.registerComponent<CableComponent>("game.Cable", 1);
         // v2: + nearRangeM (the pointer steps aside once you have arrived).
         m_saveSchema.registerComponent<sw::factory::BeaconComponent>("factory.Beacon", 2);
         m_saveSchema.registerComponent<BoundsComponent>("game.Bounds", 1);
@@ -1514,7 +1731,7 @@ namespace game
         m_saveSchema.registerComponent<ShipControlsComponent>("game.ShipControls", 2);
         m_saveSchema.registerComponent<CapsuleComponent>("game.Capsule", 1);
         m_saveSchema.registerComponent<MapMarkerComponent>("game.MapMarker", 1);
-        m_saveSchema.registerComponent<ConveyorComponent>("game.Conveyor", 1);
+        m_saveSchema.registerComponent<ConveyorComponent>("game.Conveyor", 2); // v2: source
     }
 
     void StarWorksGame::saveGame()
@@ -1599,6 +1816,14 @@ namespace game
                 m_camera.position(), std::atan2(-forward.x, -forward.z),
                 std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
         }
+
+        // The two DERIVED networks. Neither is stored — the belts' chains
+        // come from where the mouths ended up, the grids from the cables —
+        // so a loaded world has to re-derive both before the first tick, or
+        // it runs one frame with an empty factory and a dead grid.
+        rebuildConveyorNetwork();
+        rebuildPowerNetwork();
+        rebuildHulls();
 
         SW_LOG_INFO("Game", "Loaded '{}': {} entities, t={:.1f}s, warp x{:g}",
                     path.string(), m_world.aliveCount(), m_simulation.simulatedSeconds(),
@@ -2333,14 +2558,25 @@ namespace game
             m_world.addComponent(
                 e, PreviousTransformComponent{transform.position, transform.rotation});
             m_world.addComponent(e, transform);
-            m_world.addComponent(e, BoundsComponent{1.2f});
+            m_world.addComponent(e, BoundsComponent{1.4f});
             m_world.addComponent(e, MeshComponent{m_capsuleMeshIndex});
             m_world.addComponent(e, MapMarkerComponent{{1.0f, 0.8f, 0.2f, 1.0f}});
             // The suit STANDS on the ground rather than being buried to the
-            // waist: the capsule mesh is a 1 m radius, 1 m barrel centred on
-            // the origin, so it reaches 1 m below its own transform.
-            m_world.addComponent(e, sw::phys::GroundHullComponent{
-                                        {0.0f, 0.0f, 0.0f}, {0.5f, 1.0f, 0.5f}});
+            // waist, and the box it stands on is EV-1's own hitbox — one
+            // description of how big the player is, not two.
+            m_world.addComponent(e, m_capsuleHull);
+            // ...and the same boxes again as the SOLID shape, plus the tag
+            // that says this is the thing that gets pushed out rather than
+            // the thing that does the pushing.
+            if (const auto* suit = sw::parts::findDefinition(sw::parts::kPropEvaSuit))
+            {
+                sw::phys::HullComponent hull{};
+                if (hullFor(*suit, hull))
+                {
+                    m_world.addComponent(e, hull);
+                    m_world.addComponent(e, sw::phys::HullMoverComponent{});
+                }
+            }
             m_world.addComponent(e, CapsuleComponent{});
             m_world.addComponent(e, ShipControlsComponent{});
             sw::phys::DynamicBodyComponent body{};
@@ -2778,6 +3014,34 @@ namespace game
         if (input().wasKeyPressed(sw::KeyCode::F) && !m_editorMode)
         {
             m_buildMenu = !m_buildMenu;
+            m_configTarget = {}; // one panel at a time
+        }
+        // F2 shows the collision hulls. Not a debug flag hidden behind a
+        // rebuild: the hitboxes are authored by hand now, and an authoring
+        // mistake and an engine mistake look identical until you can see
+        // the boxes.
+        if (input().wasKeyPressed(sw::KeyCode::F2))
+        {
+            m_showHitboxes = !m_showHitboxes;
+            SW_LOG_INFO("Game", "HITBOXES {}", m_showHitboxes ? "SHOWN" : "HIDDEN");
+        }
+        // E opens the MACHINE panel of whatever you are standing next to.
+        // On foot only: E is also the ship's roll axis, and a pilot pressing
+        // it means roll. (`m_evaMode` is checked inside.)
+        if (input().wasKeyPressed(sw::KeyCode::E) && m_evaMode && !m_editorMode)
+        {
+            // Closing needs nothing; OPENING casts a ray from the camera, so
+            // it has to wait for this frame's camera — the same reason the
+            // ground cursor aims last. Answering here would aim at where you
+            // were looking one frame ago.
+            if (!m_configTarget.isNull())
+            {
+                m_configTarget = {};
+            }
+            else
+            {
+                m_configRequested = true;
+            }
         }
         handleHudClicks();
         if (auto* sas = m_world.tryGetComponent<SasComponent>(m_shipEntity))
@@ -2884,6 +3148,12 @@ namespace game
         // tick pose. Running it up with the key handling put a whole frame
         // between where you were looking and where the ghost landed.
         updateBuildCursor();
+        // ...and E, for the same reason: it is a ray from THIS frame's eye.
+        if (m_configRequested)
+        {
+            m_configRequested = false;
+            toggleConfigMenu();
+        }
 
         // --- periodic statistics ------------------------------------------------
         const sw::f64 now = clock().totalSeconds();
@@ -2920,6 +3190,41 @@ namespace game
         return CelestialLodComponent::kLodLevels - 1;
     }
 
+    void StarWorksGame::hudQuad(sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
+                                const sw::Vec4& color)
+    {
+        sw::DrawItem item{};
+        item.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
+        item.transform =
+            glm::translate(sw::Mat4{1.0f}, {(x0 + x1) * 0.5f, (y0 + y1) * 0.5f, 0.0f}) *
+            glm::scale(sw::Mat4{1.0f}, {(x1 - x0) * 0.5f, (y1 - y0) * 0.5f, 1.0f});
+        item.screenSpace = true;
+        item.tint = color;
+        m_drawItems.push_back(item);
+    }
+
+    void StarWorksGame::hudPanel(sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
+                                 const sw::Vec4& fill)
+    {
+        constexpr sw::f32 kEdge = 0.004f;
+        hudQuad(x0 - kEdge, y0 - kEdge, x1 + kEdge, y1 + kEdge, hud::kEdge);
+        hudQuad(x0, y0, x1, y1, fill);
+    }
+
+    bool StarWorksGame::hudCursor(sw::f32& outX, sw::f32& outY)
+    {
+        sw::u32 width = 0;
+        sw::u32 height = 0;
+        window().framebufferSize(width, height);
+        if (width == 0 || height == 0)
+        {
+            return false;
+        }
+        outX = input().mouseX() / static_cast<sw::f32>(width) * 2.0f - 1.0f;
+        outY = input().mouseY() / static_cast<sw::f32>(height) * 2.0f - 1.0f;
+        return true;
+    }
+
     void StarWorksGame::hudText(std::string_view text, sw::f32 x, sw::f32 y,
                                 sw::f32 heightNdc, const sw::Vec4& color)
     {
@@ -2941,6 +3246,10 @@ namespace game
                 item.transform = glm::translate(sw::Mat4{1.0f}, {penX, y, 0.0f}) *
                                  glm::scale(sw::Mat4{1.0f}, {scaleX, heightNdc, 1.0f});
                 item.screenSpace = true;
+                // TEXT IS A LAYER, not a submission order to get right: a
+                // glyph is never painted over by a panel, whatever else the
+                // frame decided to draw. See UI/HudOrder.hpp.
+                item.hudLayer = static_cast<sw::u8>(sw::ui::HudLayer::Text);
                 item.tint = color;
                 m_drawItems.push_back(item);
             }
@@ -3318,37 +3627,61 @@ namespace game
             const bool beltMode =
                 held != nullptr &&
                 held->building.category == sw::factory::BuildingCategory::Conveyor;
+            const bool cableMode =
+                held != nullptr &&
+                held->building.category == sw::factory::BuildingCategory::Cable;
 
             if (beltMode)
             {
                 // Two clicks, and the HUD says which one you are on.
                 if (m_beltSource.isNull())
                 {
-                    hudText("BELT  PICK AN OUTPUT", -0.36f, 0.70f, 0.038f,
-                            {0.85f, 0.92f, 1.0f, 1.0f});
+                    hudText("BELT  PICK AN OUTPUT", -0.36f, 0.70f, 0.038f, hud::kTitle);
                     hudText(m_buildCursor.target.isNull()
                                 ? "LOOK AT A MACHINE"
                                 : std::format("LCLICK  FROM {}",
                                               nameOf(m_buildCursor.target)),
-                            -0.36f, 0.75f, 0.030f, {0.55f, 0.72f, 0.88f, 0.9f});
+                            -0.36f, 0.75f, 0.030f, hud::kTextDim);
                 }
                 else
                 {
                     const bool ok = m_beltVerdict == sw::build::Verdict::Ok &&
                                     !m_beltPreview.empty();
                     hudText(std::format("BELT  FROM {}", nameOf(m_beltSource)), -0.36f,
-                            0.70f, 0.038f,
-                            ok ? sw::Vec4{0.65f, 1.0f, 0.70f, 1.0f}
-                               : sw::Vec4{1.0f, 0.62f, 0.55f, 1.0f});
+                            0.70f, 0.038f, ok ? hud::kOk : hud::kBad);
                     hudText(m_beltPreview.empty()
                                 ? "LOOK AT AN INPUT   R CANCEL"
                                 : (ok ? std::format("LCLICK  {} SEGMENTS TO {}   R CANCEL",
                                                     m_beltPreview.size(),
                                                     nameOf(m_buildCursor.target))
                                       : std::string(sw::build::verdictText(m_beltVerdict))),
-                            -0.36f, 0.75f, 0.030f,
-                            ok ? sw::Vec4{0.55f, 0.72f, 0.88f, 0.9f}
-                               : sw::Vec4{1.0f, 0.55f, 0.45f, 0.95f});
+                            -0.36f, 0.75f, 0.030f, ok ? hud::kTextDim : hud::kBad);
+                }
+            }
+            else if (cableMode)
+            {
+                if (m_cableSource.isNull())
+                {
+                    hudText("CABLE  PICK A CONNECTION", -0.36f, 0.70f, 0.038f,
+                            hud::kTitle);
+                    hudText(m_buildCursor.target.isNull()
+                                ? std::string("LOOK AT A BUILDING OR A POLE")
+                                : std::format("LCLICK  FROM {}   R CUT ITS CABLES",
+                                              nameOf(m_buildCursor.target)),
+                            -0.36f, 0.75f, 0.030f, hud::kTextDim);
+                }
+                else
+                {
+                    const bool ok = m_cableVerdict == sw::factory::CableVerdict::Ok;
+                    hudText(std::format("CABLE  FROM {}", nameOf(m_cableSource)), -0.36f,
+                            0.70f, 0.038f, ok ? hud::kOk : hud::kBad);
+                    hudText(m_buildCursor.target.isNull()
+                                ? std::string("LOOK AT THE OTHER END   R CANCEL")
+                                : (ok ? std::format("LCLICK  WIRE TO {}   R CANCEL",
+                                                    nameOf(m_buildCursor.target))
+                                      : std::string(sw::factory::cableVerdictText(
+                                            m_cableVerdict))),
+                            -0.36f, 0.75f, 0.030f, ok ? hud::kTextDim : hud::kBad);
                 }
             }
             else if (held != nullptr)
@@ -3356,19 +3689,24 @@ namespace game
                 const bool ok = m_buildCursor.verdict == sw::build::Verdict::Ok;
                 hudText(std::format("BUILD {}  {:.0f} M", held->name,
                                     m_buildCursor.rangeM),
-                        -0.36f, 0.70f, 0.038f,
-                        ok ? sw::Vec4{0.65f, 1.0f, 0.70f, 1.0f}
-                           : sw::Vec4{1.0f, 0.62f, 0.55f, 1.0f});
+                        -0.36f, 0.70f, 0.038f, ok ? hud::kOk : hud::kBad);
                 hudText(ok ? "LCLICK BUILD   WHEEL ROTATE   F MENU"
                            : sw::build::verdictText(m_buildCursor.verdict),
-                        -0.36f, 0.75f, 0.030f,
-                        ok ? sw::Vec4{0.55f, 0.72f, 0.88f, 0.9f}
-                           : sw::Vec4{1.0f, 0.55f, 0.45f, 0.95f});
+                        -0.36f, 0.75f, 0.030f, ok ? hud::kTextDim : hud::kBad);
             }
-            if (!beltMode && !m_buildCursor.target.isNull())
+            // F3: the machine panel. Only worth advertising when there IS a
+            // machine within arm's reach, which is also exactly when E works.
+            if (held == nullptr && m_configTarget.isNull() &&
+                !m_buildCursor.target.isNull() &&
+                m_buildCursor.rangeM <= kConfigRangeM)
+            {
+                hudText(std::format("E  CONFIGURE {}", nameOf(m_buildCursor.target)),
+                        -0.36f, 0.70f, 0.034f, hud::kText);
+            }
+            if (!beltMode && !cableMode && !m_buildCursor.target.isNull())
             {
                 hudText(std::format("R  DEMOLISH {}", nameOf(m_buildCursor.target)),
-                        -0.36f, 0.80f, 0.030f, {1.0f, 0.72f, 0.35f, 0.95f});
+                        -0.36f, 0.80f, 0.030f, hud::kWarn);
             }
         }
 
@@ -3378,6 +3716,10 @@ namespace game
             // it owns m_hudButtons, so nothing behind it can be clicked
             // through.
             collectBuildMenu();
+        }
+        else if (!m_configTarget.isNull() && !m_editorMode && !m_mapView)
+        {
+            collectConfigMenu();
         }
         else if (!m_mapView && !m_editorMode)
         {
@@ -3968,7 +4310,7 @@ namespace game
             {
                 if (const auto* definition = sw::parts::findDefinition(bp.definitionId))
                 {
-                    sw::parts::expandPartColliderBounds(*definition, bp.localPosition,
+                    sw::parts::expandPartHullBounds(*definition, bp.localPosition,
                                                         bp.localRotation, low, high);
                 }
             }
@@ -4094,6 +4436,15 @@ namespace game
             component.localPosition = bp.localPosition;
             component.localRotation = bp.localRotation;
             m_world.addComponent(part, component);
+            // Rocket parts are solid too: you cannot walk through a fuel
+            // tank, and a landed booster is furniture like anything else.
+            {
+                sw::phys::HullComponent hull{};
+                if (hullFor(*definition, hull))
+                {
+                    m_world.addComponent(part, hull);
+                }
+            }
             if (definition->capacities[0].resource != sw::res::Resource::Count)
             {
                 sw::factory::InventoryComponent inventory{};
@@ -4641,6 +4992,14 @@ namespace game
             m_world.addComponent(e, MapMarkerComponent{marker});
         }
 
+        // SOLID. Straight from the .swpart's hitboxes — belts and cables
+        // excepted, which is why you can walk a factory floor at all.
+        sw::phys::HullComponent hull{};
+        if (hullFor(*definition, hull))
+        {
+            m_world.addComponent(e, hull);
+        }
+
         sw::phys::SurfaceAnchorComponent anchor{};
         anchor.body = body;
         anchor.localPosition = sw::WorldVec3(up) * (gravity->bodyRadius + elevation);
@@ -4669,7 +5028,19 @@ namespace game
         {
             power.consumedKw += recipe->powerKw;
         }
+        // Who the grid drops first when the sun goes down. A default, not a
+        // law: the E panel will let the player promote their electrolyser.
+        power.priority = sw::factory::defaultPowerPriority(spec.category);
         m_world.addComponent(e, power);
+
+        // A battery bank is a building that happens to hold joules. Giving
+        // it the component here (rather than a flag in the .swpart) keeps
+        // the part file about GEOMETRY, which is what the Part Studio edits.
+        if (spec.category == sw::factory::BuildingCategory::Battery)
+        {
+            sw::factory::BatteryComponent battery{};
+            m_world.addComponent(e, battery);
+        }
 
         if (spec.inventoryVolumeM3 > 0.0)
         {
@@ -4726,6 +5097,12 @@ namespace game
     bool StarWorksGame::conveyorPortOf(sw::ecs::Entity entity, sw::parts::NodeType type,
                                        sw::WorldVec3& outLocal)
     {
+        return conveyorPortOf(entity, type, 0, outLocal);
+    }
+
+    bool StarWorksGame::conveyorPortOf(sw::ecs::Entity entity, sw::parts::NodeType type,
+                                       sw::u32 index, sw::WorldVec3& outLocal)
+    {
         const auto* building =
             m_world.tryGetComponent<sw::factory::BuildingComponent>(entity);
         const auto* anchor =
@@ -4739,15 +5116,440 @@ namespace game
         {
             return false;
         }
-        const sw::parts::AttachNode* port =
-            sw::parts::findConveyorNode(*definition, type);
-        if (port == nullptr)
+        const std::vector<const sw::parts::AttachNode*> ports =
+            sw::parts::conveyorNodes(*definition, type);
+        if (index >= ports.size())
+        {
+            return false;
+        }
+        outLocal = anchor->localPosition +
+                   sw::WorldVec3(anchor->localRotation * ports[index]->position);
+        return true;
+    }
+
+    // WHICH MOUTH DID YOU MEAN?
+    //
+    // A machine with two out ports needs a port picked, and the least
+    // intrusive way to ask is not to ask: the player is already aiming at
+    // the machine, so take the mouth nearest their aim. It reads as "click
+    // the side you want", which is what you would do with real plumbing.
+    //
+    // Mouths that already have a belt on them are skipped — that is what
+    // makes the SECOND port reachable at all once the first is wired, and
+    // it means clicking the same machine twice lays two different runs
+    // rather than refusing the second.
+    sw::u32 StarWorksGame::chooseConveyorPort(sw::ecs::Entity entity,
+                                              sw::parts::NodeType type,
+                                              const sw::WorldVec3& aimLocal, bool& outAny)
+    {
+        outAny = false;
+        sw::u32 best = 0;
+        sw::f64 bestDistance = 1.0e30;
+        for (sw::u32 index = 0; index < sw::factory::kMaxMachinePorts; ++index)
+        {
+            sw::WorldVec3 port{};
+            if (!conveyorPortOf(entity, type, index, port))
+            {
+                break;
+            }
+            // Taken? A belt mouth within the snap radius already owns it.
+            bool taken = false;
+            m_world.forEach<sw::factory::BuildingComponent,
+                            sw::phys::SurfaceAnchorComponent>(
+                [&](sw::ecs::Entity other, sw::factory::BuildingComponent& building,
+                    sw::phys::SurfaceAnchorComponent&) {
+                    if (taken || other == entity ||
+                        building.category != sw::factory::BuildingCategory::Conveyor)
+                    {
+                        return;
+                    }
+                    // A belt's mouth of the OPPOSITE kind is what would meet
+                    // this one: our out port is met by a belt's in port.
+                    const sw::parts::NodeType facing =
+                        (type == sw::parts::NodeType::ConveyorOut)
+                            ? sw::parts::NodeType::ConveyorIn
+                            : sw::parts::NodeType::ConveyorOut;
+                    sw::WorldVec3 beltPort{};
+                    if (conveyorPortOf(other, facing, 0, beltPort) &&
+                        glm::length(beltPort - port) < sw::factory::kConveyorPortSnapM)
+                    {
+                        taken = true;
+                    }
+                });
+            if (taken)
+            {
+                continue;
+            }
+            const sw::f64 distance = glm::length(port - aimLocal);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = index;
+                outAny = true;
+            }
+        }
+        return best;
+    }
+
+    // SOLIDITY, from the .swpart. A definition's authored hitboxes become
+    // the entity's HullComponent at spawn, so collision never goes back to
+    // the catalogue and an entity's solidity is a fact about the entity.
+    //
+    // Belts and cables get none, on purpose: you step over a conveyor deck
+    // and duck under a wire. Making them solid would turn a factory floor
+    // into an obstacle course, and they are the two things a player walks
+    // among most.
+    bool StarWorksGame::hullFor(const sw::parts::PartDefinition& definition,
+                                sw::phys::HullComponent& outHull)
+    {
+        if (!sw::parts::isSolid(definition))
+        {
+            return false;
+        }
+        const std::vector<sw::parts::HitBox> boxes = sw::parts::effectiveHull(definition);
+        if (boxes.empty())
+        {
+            return false;
+        }
+        outHull = sw::phys::HullComponent{};
+        for (const sw::parts::HitBox& box : boxes)
+        {
+            if (outHull.count >= sw::phys::kMaxHullBoxes)
+            {
+                break;
+            }
+            outHull.boxes[outHull.count++] = {box.center, glm::abs(box.halfExtents)};
+            outHull.radius = std::max(outHull.radius,
+                                      sw::phys::obbRadius(box.center, box.halfExtents));
+        }
+        return outHull.count > 0;
+    }
+
+    // Hulls are DERIVED from the .swpart, so they are not saved — a hull in
+    // a save file would be a second copy of the model's own answer, free to
+    // drift the moment a part is redrawn. They are rebuilt after a load
+    // instead, exactly like the conveyor chains and the power grids. Without
+    // this a loaded world had no solid objects at all and E hit nothing.
+    void StarWorksGame::rebuildHulls()
+    {
+        std::vector<std::pair<sw::ecs::Entity, sw::phys::HullComponent>> hulls;
+        auto collect = [&](sw::ecs::Entity entity, sw::u32 definitionId) {
+            const auto* definition = sw::parts::findDefinition(definitionId);
+            sw::phys::HullComponent hull{};
+            if (definition != nullptr && hullFor(*definition, hull))
+            {
+                hulls.emplace_back(entity, hull);
+            }
+        };
+        m_world.forEach<sw::factory::BuildingComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building) {
+                collect(entity, building.definitionId);
+            });
+        m_world.forEach<sw::parts::PartComponent>(
+            [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
+                collect(entity, part.definitionId);
+            });
+        for (const auto& [entity, hull] : hulls)
+        {
+            if (m_world.hasComponent<sw::phys::HullComponent>(entity))
+            {
+                m_world.getComponent<sw::phys::HullComponent>(entity) = hull;
+            }
+            else
+            {
+                m_world.addComponent(entity, hull);
+            }
+        }
+        // ...and the player, who is the one thing that gets pushed.
+        if (!m_capsuleEntity.isNull())
+        {
+            if (const auto* suit = sw::parts::findDefinition(sw::parts::kPropEvaSuit))
+            {
+                sw::phys::HullComponent hull{};
+                if (hullFor(*suit, hull))
+                {
+                    if (m_world.hasComponent<sw::phys::HullComponent>(m_capsuleEntity))
+                    {
+                        m_world.getComponent<sw::phys::HullComponent>(m_capsuleEntity) =
+                            hull;
+                    }
+                    else
+                    {
+                        m_world.addComponent(m_capsuleEntity, hull);
+                    }
+                    if (!m_world.hasComponent<sw::phys::HullMoverComponent>(
+                            m_capsuleEntity))
+                    {
+                        m_world.addComponent(m_capsuleEntity,
+                                             sw::phys::HullMoverComponent{});
+                    }
+                }
+            }
+        }
+        SW_LOG_INFO("Game", "Hulls rebuilt: {} solid objects", hulls.size());
+    }
+
+    // WHAT AM I LOOKING AT? A ray from the eye against the solid hulls —
+    // which is exactly the question "near enough, and in front of me", and
+    // exactly what a distance-to-centre check could not answer. A 16 m solar
+    // field whose centre is 20 m away is still right there in front of you;
+    // a silo behind your shoulder is not, however close its centre is.
+    sw::ecs::Entity StarWorksGame::hullUnderCrosshair(sw::f64 maxDistanceM)
+    {
+        // THE CAMERA IS IN THE RENDERED WORLD, so the boxes must be too.
+        //
+        // The first version read each building's TransformComponent raw —
+        // its TICK pose — and cast an 18 m ray at it from a camera sitting
+        // in the interpolated world. One physics step of Terra's orbit is
+        // 595 m, so the buildings were never anywhere near the ray and E
+        // simply stopped working: not "sometimes wrong", never right.
+        //
+        // Same interpolation as the mesh pass, the hull overlay, the belt
+        // cargo and the build ghost. FIFTH time. On this project, anything
+        // that compares a camera-space quantity against a body on a moving
+        // planet goes through `mix(previous, current, alpha)`, full stop.
+        const sw::f32 alpha = m_physicsLane->alpha();
+        const sw::f64 alpha64 = static_cast<sw::f64>(alpha);
+        const sw::WorldVec3 eye = m_camera.position();
+        const sw::Vec3 forward = m_camera.forward();
+
+        sw::ecs::Entity best{};
+        sw::f32 bestT = static_cast<sw::f32>(maxDistanceM);
+        m_world.forEach<TransformComponent, PreviousTransformComponent,
+                        sw::phys::HullComponent, sw::factory::BuildingComponent>(
+            [&](sw::ecs::Entity entity, TransformComponent& transform,
+                PreviousTransformComponent& previous, sw::phys::HullComponent& hull,
+                sw::factory::BuildingComponent&) {
+                const sw::WorldVec3 position =
+                    glm::mix(previous.position, transform.position, alpha64);
+                const sw::Quat rotation =
+                    glm::slerp(previous.rotation, transform.rotation, alpha);
+
+                // Broad phase first, same as the collision system: one f64
+                // subtraction rejects everything but the neighbours.
+                const sw::WorldVec3 offset = position - eye;
+                const sw::f64 reach = maxDistanceM + static_cast<sw::f64>(hull.radius);
+                if (glm::dot(offset, offset) > reach * reach)
+                {
+                    return;
+                }
+                const sw::Vec3 relative = sw::Vec3(offset);
+                for (sw::u32 i = 0; i < hull.count; ++i)
+                {
+                    const sw::phys::Obb box =
+                        sw::phys::makeObb(relative + rotation * hull.boxes[i].centre,
+                                          hull.boxes[i].halfExtents, rotation);
+                    sw::f32 t = 0.0f;
+                    sw::Vec3 normal{};
+                    if (sw::phys::rayObb(sw::Vec3{0.0f}, forward, box, bestT, t, normal) &&
+                        t < bestT)
+                    {
+                        bestT = t;
+                        best = entity;
+                    }
+                }
+            });
+        return best;
+    }
+
+    // Where a cable hooks onto this entity, in the body's rotating frame.
+    // Same shape as `conveyorPortOf` and for the same reason: the node is
+    // authored on the geometry, so there is exactly one way to ask where it
+    // ended up once the building was stood on a sphere.
+    bool StarWorksGame::powerNodeOf(sw::ecs::Entity entity, sw::WorldVec3& outLocal)
+    {
+        const auto* building =
+            m_world.tryGetComponent<sw::factory::BuildingComponent>(entity);
+        const auto* anchor =
+            m_world.tryGetComponent<sw::phys::SurfaceAnchorComponent>(entity);
+        if (building == nullptr || anchor == nullptr)
+        {
+            return false;
+        }
+        const auto* definition = sw::parts::findDefinition(building->definitionId);
+        if (definition == nullptr)
+        {
+            return false;
+        }
+        const sw::parts::AttachNode* node = sw::parts::findPowerNode(*definition);
+        if (node == nullptr)
         {
             return false;
         }
         outLocal =
-            anchor->localPosition + sw::WorldVec3(anchor->localRotation * port->position);
+            anchor->localPosition + sw::WorldVec3(anchor->localRotation * node->position);
         return true;
+    }
+
+    // ------------------------------------------------------------------------
+    // THE GRID, DERIVED FROM THE CABLES
+    //
+    // Run after every build and every demolition, exactly like the conveyor
+    // network — and for the same reason: there must not be a second copy of
+    // "who is connected to whom" that can fall out of step with the objects
+    // the player can see.
+    //
+    // What it does, in order:
+    //   1. drops cables whose endpoints have gone (demolished under the wire);
+    //   2. numbers every building, unions the ones a cable joins, and writes
+    //      the resulting component id into each PowerComponent;
+    //   3. re-hangs every surviving cable's curve from its endpoints' CURRENT
+    //      power nodes, so a span can never be left pointing at where a
+    //      machine used to be.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::rebuildPowerNetwork()
+    {
+        // ---- 1. every building, in a stable order ------------------------
+        std::vector<sw::ecs::Entity> nodes;
+        std::unordered_map<sw::ecs::Entity, sw::u32> indexOf;
+        m_world.forEach<sw::factory::BuildingComponent, sw::factory::PowerComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::BuildingComponent&,
+                sw::factory::PowerComponent&) {
+                indexOf[entity] = static_cast<sw::u32>(nodes.size());
+                nodes.push_back(entity);
+            });
+
+        // ---- 2. the cables, minus the ones left dangling -----------------
+        std::vector<sw::factory::PowerLink> links;
+        std::vector<sw::ecs::Entity> cables;
+        std::vector<sw::ecs::Entity> orphans;
+        m_world.forEach<sw::factory::PowerLinkComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::PowerLinkComponent& link) {
+                const auto endA = indexOf.find(link.a);
+                const auto endB = indexOf.find(link.b);
+                if (endA == indexOf.end() || endB == indexOf.end())
+                {
+                    orphans.push_back(entity); // one end was demolished
+                    return;
+                }
+                links.push_back({endA->second, endB->second});
+                cables.push_back(entity);
+            });
+        for (const sw::ecs::Entity entity : orphans)
+        {
+            m_world.destroyEntity(entity);
+        }
+
+        // ---- 3. the components, into the components ----------------------
+        const std::vector<sw::u32> grid =
+            sw::factory::traceGrids(nodes.size(), links);
+        for (sw::usize i = 0; i < nodes.size(); ++i)
+        {
+            if (auto* power =
+                    m_world.tryGetComponent<sw::factory::PowerComponent>(nodes[i]))
+            {
+                power->gridId = grid[i];
+            }
+        }
+
+        // ---- 4. re-hang every span ---------------------------------------
+        for (sw::usize i = 0; i < cables.size(); ++i)
+        {
+            const auto& link =
+                m_world.getComponent<sw::factory::PowerLinkComponent>(cables[i]);
+            auto* cable = m_world.tryGetComponent<CableComponent>(cables[i]);
+            if (cable == nullptr)
+            {
+                continue;
+            }
+            sw::WorldVec3 from{};
+            sw::WorldVec3 to{};
+            if (!powerNodeOf(link.a, from) || !powerNodeOf(link.b, to))
+            {
+                continue;
+            }
+            hangCable(*cable, from, to);
+        }
+        SW_LOG_INFO("Game", "Power network: {} buildings, {} cables", nodes.size(),
+                    cables.size());
+    }
+
+    // The sagging curve, sampled into the component. `up` is the local
+    // vertical at the middle of the span — on a 6,371 km sphere the two ends
+    // of a 40 m cable have verticals 0.0004 degrees apart, so one is enough,
+    // and using the midpoint's keeps the sag symmetric.
+    void StarWorksGame::hangCable(CableComponent& cable, const sw::WorldVec3& from,
+                                  const sw::WorldVec3& to)
+    {
+        const sw::Vec3 up = sw::Vec3(glm::normalize((from + to) * 0.5));
+        cable.pointCount = CableComponent::kMaxPoints;
+        sw::f64 length = 0.0;
+        for (sw::u32 i = 0; i < cable.pointCount; ++i)
+        {
+            const sw::f64 t = static_cast<sw::f64>(i) /
+                              static_cast<sw::f64>(cable.pointCount - 1);
+            cable.points[i] =
+                sw::factory::cablePointAt(from, to, up, kCableSagFraction, t);
+            if (i > 0)
+            {
+                length += glm::length(cable.points[i] - cable.points[i - 1]);
+            }
+        }
+        cable.lengthM = static_cast<sw::f32>(length);
+    }
+
+    // The whole answer to "may this cable be laid", for the preview and for
+    // the commit. One function, so the green line you were shown and the
+    // wire you get cannot disagree.
+    sw::factory::CableVerdict StarWorksGame::planCable(sw::ecs::Entity from,
+                                                       sw::ecs::Entity to,
+                                                       sw::WorldVec3& outFrom,
+                                                       sw::WorldVec3& outTo)
+    {
+        if (from.isNull() || to.isNull() || from == to)
+        {
+            return sw::factory::CableVerdict::SameNode;
+        }
+        if (!powerNodeOf(from, outFrom) || !powerNodeOf(to, outTo))
+        {
+            return sw::factory::CableVerdict::NoPowerNode;
+        }
+        const auto* buildingA =
+            m_world.tryGetComponent<sw::factory::BuildingComponent>(from);
+        const auto* buildingB =
+            m_world.tryGetComponent<sw::factory::BuildingComponent>(to);
+        const auto* powerA = m_world.tryGetComponent<sw::factory::PowerComponent>(from);
+        const auto* powerB = m_world.tryGetComponent<sw::factory::PowerComponent>(to);
+        if (buildingA == nullptr || buildingB == nullptr || powerA == nullptr ||
+            powerB == nullptr)
+        {
+            return sw::factory::CableVerdict::NoPowerNode;
+        }
+
+        // How many wires already meet at each end.
+        sw::u32 onA = 0;
+        sw::u32 onB = 0;
+        m_world.forEach<sw::factory::PowerLinkComponent>(
+            [&](sw::ecs::Entity, sw::factory::PowerLinkComponent& link) {
+                if (link.a == from || link.b == from) { onA += 1; }
+                if (link.a == to || link.b == to) { onB += 1; }
+            });
+
+        return sw::factory::validateCable(
+            true, true, buildingA->category, buildingB->category, onA, onB,
+            powerA->gridId, powerB->gridId, glm::length(outTo - outFrom),
+            kMaxCableLengthM);
+    }
+
+    void StarWorksGame::layCable(sw::ecs::Entity body, sw::ecs::Entity from,
+                                 sw::ecs::Entity to)
+    {
+        sw::WorldVec3 fromNode{};
+        sw::WorldVec3 toNode{};
+        if (planCable(from, to, fromNode, toNode) != sw::factory::CableVerdict::Ok)
+        {
+            return;
+        }
+        const sw::ecs::Entity entity = m_world.createEntity();
+        m_world.addComponent(entity, TransformComponent{});
+        m_world.addComponent(entity, PreviousTransformComponent{});
+        m_world.addComponent(entity, sw::factory::PowerLinkComponent{from, to});
+        CableComponent cable{};
+        cable.body = body;
+        hangCable(cable, fromNode, toNode);
+        m_world.addComponent(entity, cable);
+        // ...and only NOW is the grid what the cables say it is.
+        rebuildPowerNetwork();
     }
 
     // ------------------------------------------------------------------------
@@ -4767,6 +5569,14 @@ namespace game
                                                sw::ecs::Entity to,
                                                std::vector<BeltTile>& outTiles)
     {
+        return planBelt(body, from, 0, to, 0, outTiles);
+    }
+
+    sw::build::Verdict StarWorksGame::planBelt(sw::ecs::Entity body, sw::ecs::Entity from,
+                                               sw::u32 fromPortIndex, sw::ecs::Entity to,
+                                               sw::u32 toPortIndex,
+                                               std::vector<BeltTile>& outTiles)
+    {
         outTiles.clear();
         const auto* terrain = m_world.tryGetComponent<sw::planet::TerrainComponent>(body);
         const auto* gravity =
@@ -4780,8 +5590,9 @@ namespace game
 
         sw::WorldVec3 fromPort{};
         sw::WorldVec3 toPort{};
-        if (!conveyorPortOf(from, sw::parts::NodeType::ConveyorOut, fromPort) ||
-            !conveyorPortOf(to, sw::parts::NodeType::ConveyorIn, toPort))
+        if (!conveyorPortOf(from, sw::parts::NodeType::ConveyorOut, fromPortIndex,
+                            fromPort) ||
+            !conveyorPortOf(to, sw::parts::NodeType::ConveyorIn, toPortIndex, toPort))
         {
             return sw::build::Verdict::NoDefinition; // one of them has no mouth
         }
@@ -4865,19 +5676,23 @@ namespace game
                 node.isBelt =
                     building.category == sw::factory::BuildingCategory::Conveyor;
                 node.centre = anchor.localPosition;
-                if (const auto* port = sw::parts::findConveyorNode(
-                        *definition, sw::parts::NodeType::ConveyorOut))
+                // EVERY mouth, in authored order — the order is the
+                // contract: out mouth i ships the recipe's product i.
+                for (const sw::parts::AttachNode* port : sw::parts::conveyorNodes(
+                         *definition, sw::parts::NodeType::ConveyorOut))
                 {
-                    node.outPort = anchor.localPosition +
-                                   sw::WorldVec3(anchor.localRotation * port->position);
-                    node.hasOut = true;
+                    if (node.outCount >= sw::factory::kMaxMachinePorts) { break; }
+                    node.outPorts[node.outCount++] =
+                        anchor.localPosition +
+                        sw::WorldVec3(anchor.localRotation * port->position);
                 }
-                if (const auto* port = sw::parts::findConveyorNode(
-                        *definition, sw::parts::NodeType::ConveyorIn))
+                for (const sw::parts::AttachNode* port : sw::parts::conveyorNodes(
+                         *definition, sw::parts::NodeType::ConveyorIn))
                 {
-                    node.inPort = anchor.localPosition +
-                                  sw::WorldVec3(anchor.localRotation * port->position);
-                    node.hasIn = true;
+                    if (node.inCount >= sw::factory::kMaxMachinePorts) { break; }
+                    node.inPorts[node.inCount++] =
+                        anchor.localPosition +
+                        sw::WorldVec3(anchor.localRotation * port->position);
                 }
                 nodes.push_back(node);
                 bodies.push_back(anchor.body);
@@ -4913,27 +5728,64 @@ namespace game
             // The cargo path: out of the source, along every deck, into the
             // destination.
             std::vector<sw::WorldVec3> path;
-            path.push_back(source.outPort);
+            path.push_back(source.outPorts[chain.sourcePort]);
             for (const sw::u32 belt : chain.belts)
             {
                 path.push_back(nodes[belt].centre);
             }
-            path.push_back(destination.inPort);
+            path.push_back(destination.inPorts[chain.destinationPort]);
 
-            // WHAT does it carry? Whatever the source makes. Nothing to say
-            // means nothing to move.
-            sw::res::Resource resource = sw::res::Resource::Count;
+            // WHAT does it carry? EVERYTHING the source makes — a belt out
+            // of an electrolyser carries the hydrogen and the oxygen, because
+            // ONE MOUTH, EVERYTHING; SEVERAL MOUTHS, ONE PRODUCT EACH.
+            //
+            // A machine with a single out port has nowhere else to put its
+            // products, so its belt carries all of them — that is what made
+            // the fuel chain buildable at all. A machine with SEVERAL ports
+            // is making a different statement: mouth i ships product i, so
+            // hydrogen leaves by one belt and oxygen by the other, and the
+            // player decides where each goes. Nothing to say means nothing
+            // to move.
+            sw::res::Resource carried[sw::factory::kMaxRecipeIngredients]{
+                sw::res::Resource::Count, sw::res::Resource::Count,
+                sw::res::Resource::Count, sw::res::Resource::Count};
+            sw::usize carriedCount = 0;
+            const bool splitByPort = source.outCount > 1;
             if (const auto* state =
                     m_world.tryGetComponent<sw::factory::RecipeStateComponent>(
                         source.entity))
             {
                 if (const auto* recipe = sw::factory::findRecipe(state->recipeId))
                 {
-                    resource = recipe->outputs[0].resource;
+                    sw::u32 productIndex = 0;
+                    for (const sw::factory::Ingredient& output : recipe->outputs)
+                    {
+                        if (output.resource == sw::res::Resource::Count ||
+                            output.unitsPerSecond <= 0.0)
+                        {
+                            continue;
+                        }
+                        if (splitByPort)
+                        {
+                            // Mouth i ships product i, and a mouth past the
+                            // last product ships nothing — an unused port is
+                            // an empty belt, which is the honest picture.
+                            if (productIndex == chain.sourcePort)
+                            {
+                                carried[carriedCount++] = output.resource;
+                            }
+                        }
+                        else
+                        {
+                            carried[carriedCount++] = output.resource;
+                        }
+                        ++productIndex;
+                    }
                 }
             }
-            if (resource == sw::res::Resource::Count)
+            if (carriedCount == 0)
             {
+                // A silo ships what it is holding.
                 if (const auto* inventory =
                         m_world.tryGetComponent<sw::factory::InventoryComponent>(
                             source.entity))
@@ -4942,23 +5794,38 @@ namespace game
                     {
                         if (slot.resource != sw::res::Resource::Count && slot.units > 0.0)
                         {
-                            resource = slot.resource;
+                            carried[carriedCount++] = slot.resource;
                             break;
                         }
                     }
                 }
             }
-            if (resource == sw::res::Resource::Count ||
+            if (carriedCount == 0 ||
                 !m_world.hasComponent<sw::factory::InventoryComponent>(
                     destination.entity))
             {
                 continue; // nothing to carry, or nowhere to put it
             }
+            const sw::res::Resource resource = carried[0]; // what it looks like
 
-            // The LINK, on the destination, as it has always been.
-            m_world.addComponent(
-                destination.entity,
-                sw::factory::ItemLinkComponent{source.entity, resource, 3.0});
+            // THE LINK, on the destination — one channel per good. Several
+            // belts may arrive at the same machine, so the component may
+            // already be there: add to it rather than replacing it.
+            if (!m_world.hasComponent<sw::factory::ItemLinkComponent>(destination.entity))
+            {
+                m_world.addComponent(destination.entity,
+                                     sw::factory::ItemLinkComponent{});
+            }
+            {
+                auto& link =
+                    m_world.getComponent<sw::factory::ItemLinkComponent>(
+                        destination.entity);
+                for (sw::usize i = 0; i < carriedCount; ++i)
+                {
+                    sw::factory::linkAddChannel(link, source.entity, carried[i],
+                                                kConveyorRateUnitsPerSecond);
+                }
+            }
 
             // ...and the cargo path, subsampled if the run is longer than the
             // component can hold: the crates are a depiction, and sixteen
@@ -4966,6 +5833,7 @@ namespace game
             ConveyorComponent conveyor{};
             conveyor.body = bodies[chain.source];
             conveyor.link = destination.entity;
+            conveyor.source = source.entity;
             conveyor.cargoColor = resourceCargoColor(resource);
             const sw::usize count =
                 std::min<sw::usize>(path.size(), ConveyorComponent::kMaxPoints);
@@ -5073,9 +5941,10 @@ namespace game
         m_beltPreview.clear();
         m_beltVerdict = sw::build::Verdict::NoGround;
         if (!m_evaMode || m_mapView || m_editorMode || m_buildMenu ||
-            m_capsuleEntity.isNull())
+            !m_configTarget.isNull() || m_capsuleEntity.isNull())
         {
             m_beltSource = {};
+            m_cableSource = {};
             return;
         }
 
@@ -5169,10 +6038,27 @@ namespace game
             {
                 m_beltSource = {};
             }
+            // The aim point on the ground, in the body frame: which mouth
+            // the player means is answered by which one they are nearest.
+            const sw::WorldVec3 aimLocal =
+                sw::WorldVec3(m_buildCursor.direction) *
+                (gravity->bodyRadius +
+                 sw::planet::terrainElevation(*terrain, m_buildCursor.direction));
             if (!m_beltSource.isNull() && !m_buildCursor.target.isNull())
             {
+                bool anyIn = false;
+                m_beltDestinationPort = chooseConveyorPort(
+                    m_buildCursor.target, sw::parts::NodeType::ConveyorIn, aimLocal,
+                    anyIn);
                 m_beltVerdict =
-                    planBelt(body, m_beltSource, m_buildCursor.target, m_beltPreview);
+                    anyIn ? planBelt(body, m_beltSource, m_beltSourcePort,
+                                     m_buildCursor.target, m_beltDestinationPort,
+                                     m_beltPreview)
+                          : sw::build::Verdict::NoDefinition;
+                if (!anyIn)
+                {
+                    m_beltPreview.clear();
+                }
             }
 
             if (input().wasKeyPressed(sw::KeyCode::R) && !m_beltSource.isNull())
@@ -5186,15 +6072,19 @@ namespace game
             {
                 if (m_beltSource.isNull())
                 {
-                    sw::WorldVec3 unused{};
-                    if (conveyorPortOf(m_buildCursor.target,
-                                       sw::parts::NodeType::ConveyorOut, unused))
+                    bool anyOut = false;
+                    const sw::u32 port = chooseConveyorPort(
+                        m_buildCursor.target, sw::parts::NodeType::ConveyorOut, aimLocal,
+                        anyOut);
+                    if (anyOut)
                     {
                         m_beltSource = m_buildCursor.target;
+                        m_beltSourcePort = port;
                     }
                     else
                     {
-                        SW_LOG_INFO("Game", "That machine has no output port");
+                        SW_LOG_INFO("Game",
+                                    "That machine has no free output port");
                     }
                 }
                 else if (m_beltVerdict == sw::build::Verdict::Ok &&
@@ -5206,7 +6096,9 @@ namespace game
                                       tile.yawRadians, 0u,
                                       siteNear(body, tile.direction), {});
                     }
-                    SW_LOG_INFO("Game", "BELT laid: {} segments", m_beltPreview.size());
+                    SW_LOG_INFO("Game", "BELT laid: {} segments, port {} -> port {}",
+                                m_beltPreview.size(), m_beltSourcePort,
+                                m_beltDestinationPort);
                     m_beltSource = {};
                     m_beltPreview.clear();
                     // ...and it is carrying goods from this frame on.
@@ -5216,6 +6108,89 @@ namespace game
             return;
         }
         m_beltSource = {};
+
+        // ---- CABLE MODE: pick two power nodes ----------------------------
+        // The same two clicks as the belt, asking a different question: not
+        // "feed this from that" but "put these on the same grid". A cable is
+        // ONE entity rather than a row of tiles, so there is nothing to walk
+        // along the ground — the span hangs between the two nodes.
+        const bool cableMode =
+            held != nullptr &&
+            held->building.category == sw::factory::BuildingCategory::Cable;
+        if (cableMode)
+        {
+            if (!m_world.isAlive(m_cableSource))
+            {
+                m_cableSource = {};
+            }
+            m_cableVerdict = sw::factory::CableVerdict::NoPowerNode;
+            if (!m_cableSource.isNull() && !m_buildCursor.target.isNull())
+            {
+                sw::WorldVec3 from{};
+                sw::WorldVec3 to{};
+                m_cableVerdict = planCable(m_cableSource, m_buildCursor.target, from, to);
+            }
+
+            if (input().wasKeyPressed(sw::KeyCode::R))
+            {
+                if (!m_cableSource.isNull())
+                {
+                    m_cableSource = {}; // R cancels a pending pick
+                    return;
+                }
+                // ...and with nothing pending, R CUTS. A wire has no
+                // footprint to look at, so the thing you aim at is the
+                // building it is tied to — which is also how you think
+                // about it ("unplug the smelter").
+                if (!m_buildCursor.target.isNull())
+                {
+                    std::vector<sw::ecs::Entity> cut;
+                    const sw::ecs::Entity target = m_buildCursor.target;
+                    m_world.forEach<sw::factory::PowerLinkComponent>(
+                        [&](sw::ecs::Entity entity,
+                            sw::factory::PowerLinkComponent& link) {
+                            if (link.a == target || link.b == target)
+                            {
+                                cut.push_back(entity);
+                            }
+                        });
+                    for (const sw::ecs::Entity entity : cut)
+                    {
+                        m_world.destroyEntity(entity);
+                    }
+                    if (!cut.empty())
+                    {
+                        SW_LOG_INFO("Game", "CUT {} cable(s)", cut.size());
+                        rebuildPowerNetwork();
+                    }
+                }
+                return;
+            }
+            if (input().wasMouseButtonPressed(sw::MouseButton::Left) &&
+                !m_buildCursor.target.isNull())
+            {
+                if (m_cableSource.isNull())
+                {
+                    sw::WorldVec3 unused{};
+                    if (powerNodeOf(m_buildCursor.target, unused))
+                    {
+                        m_cableSource = m_buildCursor.target;
+                    }
+                    else
+                    {
+                        SW_LOG_INFO("Game", "That building has no power connection");
+                    }
+                }
+                else if (m_cableVerdict == sw::factory::CableVerdict::Ok)
+                {
+                    layCable(body, m_cableSource, m_buildCursor.target);
+                    SW_LOG_INFO("Game", "CABLE laid");
+                    m_cableSource = {};
+                }
+            }
+            return;
+        }
+        m_cableSource = {};
 
         // ---- the verdict, for the armed building -------------------------
         if (held == nullptr)
@@ -5253,6 +6228,10 @@ namespace game
             m_world.destroyEntity(m_buildCursor.target);
             m_buildCursor.target = {};
             rebuildConveyorNetwork();
+            // ...and the GRID, which may just have been cut in two. Any
+            // cable left with a dead end is dropped in there, so a wire can
+            // never outlive the thing it was tied to.
+            rebuildPowerNetwork();
             return;
         }
 
@@ -5288,7 +6267,75 @@ namespace game
                 SW_LOG_INFO("Game", "BUILT {} at {:.0f} m", held->name,
                             m_buildCursor.rangeM);
                 rebuildConveyorNetwork();
+                rebuildPowerNetwork(); // a new building is its own grid of one
             }
+        }
+    }
+
+    // The cable preview: the span you are about to get, hung exactly as
+    // `hangCable` will hang it, in the colour of the verdict. Same curve
+    // function as the real thing, so what you are shown IS what you build.
+    void StarWorksGame::collectCableGhost(const sw::Camera& activeCamera)
+    {
+        if (m_cableSource.isNull() || m_buildCursor.target.isNull() ||
+            m_cableMeshIndex == 0xFFFFFFFFu)
+        {
+            return;
+        }
+        sw::WorldVec3 from{};
+        sw::WorldVec3 to{};
+        const sw::factory::CableVerdict verdict =
+            planCable(m_cableSource, m_buildCursor.target, from, to);
+        if (glm::length(to - from) < 1.0e-6)
+        {
+            return;
+        }
+        CableComponent preview{};
+        preview.body = m_buildCursor.body;
+        hangCable(preview, from, to);
+
+        sw::WorldVec3 bodyPosition{};
+        glm::dquat bodyRotation{};
+        bodyRenderPose(m_buildCursor.body, bodyPosition, bodyRotation);
+        const sw::Vec4 tint = (verdict == sw::factory::CableVerdict::Ok)
+                                  ? sw::Vec4{0.35f, 1.0f, 0.45f, 0.55f}
+                                  : sw::Vec4{1.0f, 0.35f, 0.30f, 0.45f};
+
+        for (sw::u32 i = 0; i + 1 < preview.pointCount; ++i)
+        {
+            const sw::WorldVec3 a = bodyPosition + bodyRotation * preview.points[i];
+            const sw::WorldVec3 b = bodyPosition + bodyRotation * preview.points[i + 1];
+            const sw::WorldVec3 delta = b - a;
+            const sw::f64 length = glm::length(delta);
+            if (length < 1.0e-3)
+            {
+                continue;
+            }
+            const sw::Vec3 forward = sw::Vec3(delta / length);
+            const sw::Vec3 hint = sw::Vec3(
+                glm::normalize(bodyRotation * glm::normalize(a - bodyPosition)));
+            sw::Vec3 right = glm::cross(forward, hint);
+            if (glm::length(right) < 1.0e-4f)
+            {
+                right = glm::cross(forward, sw::Vec3{0.0f, 0.0f, 1.0f});
+            }
+            right = glm::normalize(right);
+            const sw::Vec3 realUp = glm::cross(right, forward);
+
+            const sw::Vec3 relative = sw::Vec3((a + b) * 0.5 - activeCamera.position());
+            sw::DrawItem item{};
+            item.mesh = &m_meshes[m_cableMeshIndex];
+            item.transform =
+                glm::translate(sw::Mat4{1.0f}, relative) *
+                glm::mat4_cast(glm::quat_cast(sw::Mat3{right, realUp, -forward})) *
+                glm::scale(sw::Mat4{1.0f},
+                           sw::Vec3{2.2f, 2.2f,
+                                    static_cast<sw::f32>(length) / m_cableSegmentM});
+            item.boundsCenter = relative;
+            item.boundsRadius = static_cast<sw::f32>(length);
+            item.tint = tint;
+            item.transparent = true;
+            m_drawItems.push_back(item);
         }
     }
 
@@ -5309,6 +6356,14 @@ namespace game
         if (beltMode && m_beltPreview.empty())
         {
             return; // nothing picked yet, or nothing to show
+        }
+        // A CABLE has no ground ghost to draw: it is not placed on a spot,
+        // it is strung between two nodes. Its preview is the span itself,
+        // drawn below once both ends are known.
+        if (held->building.category == sw::factory::BuildingCategory::Cable)
+        {
+            collectCableGhost(activeCamera);
+            return;
         }
         const auto* gravity =
             m_world.tryGetComponent<sw::phys::GravitySourceComponent>(m_buildCursor.body);
@@ -5378,6 +6433,170 @@ namespace game
     // Spacing IS the flow: crates/second = flow / unitsPerCrate, so a belt
     // fed by a starving mine visibly thins out and a stopped one empties.
     // ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // THE CABLES
+    //
+    // A span is one entity, not a row of them — you do not demolish a metre
+    // of wire — so unlike the belt deck there is no per-tile entity for the
+    // world pass to draw, and the curve is stroked here.
+    //
+    // It goes through `bodyRenderPose` for the same reason the build ghost
+    // and the belt cargo do: the endpoints are in the body's ROTATING frame,
+    // and transforming them with the planet's tick pose instead of the pose
+    // it is being DRAWN at would hang every wire up to 595 m off its poles,
+    // resetting every tick. That rule has now cost three features; it is
+    // cheaper to obey it than to rediscover it.
+    // ------------------------------------------------------------------------
+    // F2 — WHAT YOU ACTUALLY BUMP INTO.
+    //
+    // Every solid hull, drawn as the boxes it is. Green for the things that
+    // stand still, amber for the things that get pushed out of them, so the
+    // player's own box is never confused with the world's. Belts and cables
+    // draw nothing, because they have no hull — which is itself the fastest
+    // way to confirm they are walk-through.
+    void StarWorksGame::collectHullOverlay(const sw::Camera& activeCamera)
+    {
+        if (!m_showHitboxes || m_hullBoxMeshIndex == 0xFFFFFFFFu)
+        {
+            return;
+        }
+        const sw::WorldVec3 cameraPosition = activeCamera.position();
+        // THE RENDERED POSE, not the tick pose. A building's TransformComponent
+        // is where it was at the last physics step; the mesh over it is drawn
+        // at the interpolated pose, and on Terra one step of orbital motion is
+        // 595 m. Reading the raw transform here drew every box swimming beside
+        // its own machine and snapping back every tick — the same mistake that
+        // has now cost the conveyor cargo, the build ghost and the cables, so
+        // this uses the identical mix the mesh pass uses rather than something
+        // that merely looks equivalent.
+        const sw::f32 alpha = m_physicsLane->alpha();
+        const sw::f64 alpha64 = static_cast<sw::f64>(alpha);
+
+        m_world.forEach<TransformComponent, PreviousTransformComponent,
+                        sw::phys::HullComponent>(
+            [&](sw::ecs::Entity entity, TransformComponent& transform,
+                PreviousTransformComponent& previous, sw::phys::HullComponent& hull) {
+                const sw::WorldVec3 position =
+                    glm::mix(previous.position, transform.position, alpha64);
+                const sw::Quat rotation =
+                    glm::slerp(previous.rotation, transform.rotation, alpha);
+
+                const sw::WorldVec3 offset = position - cameraPosition;
+                // Same broad phase as the collision itself: a box a
+                // kilometre away is not a box you are inspecting.
+                if (glm::dot(offset, offset) > 1.0e6)
+                {
+                    return;
+                }
+                const bool mover =
+                    m_world.hasComponent<sw::phys::HullMoverComponent>(entity);
+                const sw::Vec4 tint = mover ? sw::Vec4{1.0f, 0.72f, 0.20f, 0.30f}
+                                            : sw::Vec4{0.30f, 1.0f, 0.55f, 0.22f};
+                for (sw::u32 i = 0; i < hull.count; ++i)
+                {
+                    const sw::Vec3 relative =
+                        sw::Vec3(offset) + rotation * hull.boxes[i].centre;
+                    sw::DrawItem item{};
+                    item.mesh = &m_meshes[m_hullBoxMeshIndex];
+                    item.transform =
+                        glm::translate(sw::Mat4{1.0f}, relative) *
+                        glm::mat4_cast(rotation) *
+                        // The cube is 1 m across, so its half extent is 0.5:
+                        // scaling by the full extent is what makes the drawn
+                        // box the same size as the one being tested.
+                        glm::scale(sw::Mat4{1.0f},
+                                   glm::max(hull.boxes[i].halfExtents * 2.0f,
+                                            sw::Vec3{0.02f}));
+                    item.boundsCenter = relative;
+                    item.boundsRadius = glm::length(hull.boxes[i].halfExtents) + 0.5f;
+                    item.tint = tint;
+                    item.transparent = true;
+                    m_drawItems.push_back(item);
+                }
+            });
+    }
+
+    void StarWorksGame::collectCables(const sw::Camera& activeCamera)
+    {
+        if (m_cableMeshIndex == 0xFFFFFFFFu)
+        {
+            return;
+        }
+        const sw::WorldVec3 cameraPosition = activeCamera.position();
+
+        m_world.forEach<sw::factory::PowerLinkComponent, CableComponent>(
+            [&](sw::ecs::Entity, sw::factory::PowerLinkComponent& link,
+                CableComponent& cable) {
+            if (cable.pointCount < 2 || cable.body.isNull())
+            {
+                return;
+            }
+            // Is this wire's grid short? Read it off either end — they are
+            // on the same grid by construction, that being what a cable is.
+            if (const auto* power =
+                    m_world.tryGetComponent<sw::factory::PowerComponent>(link.a))
+            {
+                cable.starved = power->gridProducedKw + 1.0e-9 < power->gridConsumedKw;
+            }
+            sw::WorldVec3 bodyPosition{};
+            glm::dquat bodyRotation{};
+            bodyRenderPose(cable.body, bodyPosition, bodyRotation);
+
+            // A wire is 11 cm across. Past a couple of kilometres it is not
+            // a pixel, and stroking twelve segments of it is pure cost.
+            const sw::WorldVec3 anchor = bodyPosition + bodyRotation * cable.points[0];
+            if (glm::length(anchor - cameraPosition) > 3000.0)
+            {
+                return;
+            }
+
+            // A browning-out grid dims its own wires. It is the cheapest
+            // possible answer to "why is my smelter stopped" that does not
+            // involve opening a panel.
+            const sw::Vec4 tint = cable.starved ? sw::Vec4{0.62f, 0.32f, 0.26f, 1.0f}
+                                                : sw::Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+
+            for (sw::u32 i = 0; i + 1 < cable.pointCount; ++i)
+            {
+                const sw::WorldVec3 a = bodyPosition + bodyRotation * cable.points[i];
+                const sw::WorldVec3 b = bodyPosition + bodyRotation * cable.points[i + 1];
+                const sw::WorldVec3 delta = b - a;
+                const sw::f64 length = glm::length(delta);
+                if (length < 1.0e-3)
+                {
+                    continue;
+                }
+                // The part's cylinder runs along its own Z, and model -Z is
+                // "forward" everywhere in this codebase, so the segment is
+                // aimed the way a belt tile is and stretched to fit.
+                const sw::Vec3 forward = sw::Vec3(delta / length);
+                const sw::Vec3 hint = sw::Vec3(
+                    glm::normalize(bodyRotation * glm::normalize(a - bodyPosition)));
+                sw::Vec3 right = glm::cross(forward, hint);
+                if (glm::length(right) < 1.0e-4f)
+                {
+                    right = glm::cross(forward, sw::Vec3{0.0f, 0.0f, 1.0f});
+                }
+                right = glm::normalize(right);
+                const sw::Vec3 realUp = glm::cross(right, forward);
+
+                const sw::Vec3 relative = sw::Vec3((a + b) * 0.5 - cameraPosition);
+                sw::DrawItem item{};
+                item.mesh = &m_meshes[m_cableMeshIndex];
+                item.transform =
+                    glm::translate(sw::Mat4{1.0f}, relative) *
+                    glm::mat4_cast(glm::quat_cast(sw::Mat3{right, realUp, -forward})) *
+                    glm::scale(sw::Mat4{1.0f},
+                               sw::Vec3{1.0f, 1.0f,
+                                        static_cast<sw::f32>(length) / m_cableSegmentM});
+                item.boundsCenter = relative;
+                item.boundsRadius = static_cast<sw::f32>(length);
+                item.tint = tint;
+                m_drawItems.push_back(item);
+            }
+        });
+    }
+
     void StarWorksGame::collectConveyors(const sw::Camera& activeCamera)
     {
         const sw::WorldVec3 cameraPosition = activeCamera.position();
@@ -5480,7 +6699,12 @@ namespace game
                 const auto* link =
                     m_world.tryGetComponent<sw::factory::ItemLinkComponent>(
                         conveyor.link);
-                const sw::f64 flow = (link != nullptr) ? link->flowUnitsPerSecond : 0.0;
+                // Everything this belt's source is putting on it, whatever
+                // that is: two gases down one run are two streams of crates.
+                const sw::f64 flow =
+                    (link != nullptr)
+                        ? sw::factory::linkFlowFrom(*link, conveyor.source)
+                        : 0.0;
                 if (flow <= 1.0e-6)
                 {
                     return; // stopped: an empty belt is the honest picture
@@ -5546,70 +6770,80 @@ namespace game
             }
         }
 
-        auto panel = [&](sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
-                         const sw::Vec4& color) {
-            sw::DrawItem item{};
-            item.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
-            item.transform =
-                glm::translate(sw::Mat4{1.0f},
-                               {(x0 + x1) * 0.5f, (y0 + y1) * 0.5f, 0.0f}) *
-                glm::scale(sw::Mat4{1.0f}, {(x1 - x0) * 0.5f, (y1 - y0) * 0.5f, 1.0f});
-            item.screenSpace = true;
-            item.tint = color;
-            m_drawItems.push_back(item);
-        };
-
         constexpr sw::f32 kLeft = -0.62f;
         constexpr sw::f32 kRight = 0.62f;
-        constexpr sw::f32 kTop = -0.52f;
-        constexpr sw::f32 kRowHeight = 0.075f;
-        constexpr sw::f32 kRowGap = 0.012f;
+        constexpr sw::f32 kTop = -0.56f;
+        constexpr sw::f32 kRowHeight = 0.076f;
+        constexpr sw::f32 kRowGap = 0.008f;
+        constexpr sw::f32 kHeaderH = 0.090f;
+        constexpr sw::f32 kFooterH = 0.115f;
+        constexpr sw::f32 kPad = 0.018f;
 
+        sw::f32 cursorX = -2.0f;
+        sw::f32 cursorY = -2.0f;
+        const bool haveCursor = hudCursor(cursorX, cursorY);
+        auto hovering = [&](sw::f32 y) {
+            return haveCursor && cursorX >= kLeft + kPad && cursorX <= kRight - kPad &&
+                   cursorY >= y && cursorY <= y + kRowHeight;
+        };
+
+        const sw::f32 listTop = kTop + kHeaderH;
         const sw::f32 bottom =
-            kTop + 0.16f + static_cast<sw::f32>(buildings.size()) * (kRowHeight + kRowGap);
-        panel(kLeft, kTop, kRight, bottom + 0.16f, {0.05f, 0.08f, 0.12f, 0.88f});
-        hudText("BUILD", kLeft + 0.03f, kTop + 0.03f, 0.055f, {0.85f, 0.92f, 1.0f, 1.0f});
-        hudText("F CLOSE   CLICK TO ARM A BUILDING", kLeft + 0.30f, kTop + 0.045f, 0.028f,
-                {0.55f, 0.68f, 0.82f, 0.9f});
+            listTop + static_cast<sw::f32>(buildings.size()) * (kRowHeight + kRowGap) +
+            kFooterH;
+        hudPanel(kLeft, kTop, kRight, bottom, hud::kPanel);
+        hudQuad(kLeft, kTop, kRight, listTop - 0.006f, hud::kHeader);
+        hudText("BUILD", kLeft + 0.025f, kTop + 0.028f, 0.052f, hud::kTitle);
+        hudText("CLICK TO ARM   F CLOSE", kRight - 0.34f, kTop + 0.040f, 0.028f,
+                hud::kTextDim);
 
-        sw::f32 rowY = kTop + 0.11f;
+        sw::f32 rowY = listTop;
         for (sw::usize i = 0; i < buildings.size(); ++i)
         {
             const sw::parts::PartDefinition& definition = *buildings[i];
-            const bool armed = definition.id == m_heldBuilding;
-            panel(kLeft + 0.02f, rowY, kRight - 0.02f, rowY + kRowHeight,
-                  armed ? sw::Vec4{0.18f, 0.50f, 0.30f, 0.90f}
-                        : sw::Vec4{0.12f, 0.17f, 0.24f, 0.75f});
-            hudText(definition.name, kLeft + 0.04f, rowY + 0.019f, 0.036f,
-                    armed ? sw::Vec4{0.92f, 1.0f, 0.92f, 1.0f}
-                          : sw::Vec4{0.72f, 0.82f, 0.92f, 0.95f});
-
-            // The spec, read straight off the .swpart: what it is, how much
-            // ground it needs, and what it does to the grid.
             const sw::parts::BuildingSpec& spec = definition.building;
-            const std::string_view category =
-                sw::factory::categoryName(spec.category);
-            std::string summary = std::format(
-                "{}  {:.0f}X{:.0f} M  {}{:.0f} KW", category, spec.footprintM[0],
-                spec.footprintM[1], spec.powerKw >= 0.0 ? "+" : "-",
-                std::abs(spec.powerKw));
+            const bool armed = definition.id == m_heldBuilding;
+            const bool hot = hovering(rowY);
+
+            const sw::Vec4 fill = armed ? (hot ? hud::kRowOnHover : hud::kRowOn)
+                                        : (hot ? hud::kRowHover
+                                               : ((i % 2 == 0) ? hud::kRow : hud::kRowAlt));
+            hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight, fill);
+            // The category chip: a colour band down the left edge of the row.
+            hudQuad(kLeft + kPad, rowY, kLeft + kPad + 0.012f, rowY + kRowHeight,
+                    hud::categoryColor(spec.category));
+
+            hudText(hud::caps(definition.name), kLeft + kPad + 0.028f, rowY + 0.012f,
+                    0.036f, armed ? hud::kTitle : hud::kText);
+            hudText(hud::caps(std::string(sw::factory::categoryName(spec.category))),
+                    kLeft + kPad + 0.028f, rowY + 0.050f, 0.024f,
+                    hud::categoryColor(spec.category));
+
+            // The spec, read straight off the .swpart: how much ground it
+            // needs, and what it does to the grid.
+            std::string summary =
+                std::format("{:.0f}X{:.0f} M   {}", spec.footprintM[0], spec.footprintM[1],
+                            hud::powerText(spec.powerKw));
             if (spec.inventoryVolumeM3 > 0.0)
             {
-                summary += std::format("  {:.0f} M3", spec.inventoryVolumeM3);
+                summary += std::format("   {:.0f} M3", spec.inventoryVolumeM3);
             }
             if (spec.minOreDensity > 0.0)
             {
-                summary += std::format("  ORE {:.2f}", spec.minOreDensity);
+                summary += std::format("   ORE {:.2f}", spec.minOreDensity);
             }
-            for (char& c : summary)
+            hudText(summary, kRight - 0.44f, rowY + 0.020f, 0.028f,
+                    armed ? hud::kText : hud::kTextDim);
+            const sw::usize recipes =
+                sw::factory::recipesForCategory(spec.category).size();
+            if (recipes > 0)
             {
-                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                hudText(std::format("{} RECIPES   SLOPE {:.2f}", recipes,
+                                    spec.maxSlopeTangent),
+                        kRight - 0.44f, rowY + 0.052f, 0.024f, hud::kTextDim);
             }
-            hudText(summary, kRight - 0.62f, rowY + 0.024f, 0.026f,
-                    {0.55f, 0.68f, 0.82f, 0.9f});
 
-            m_hudButtons.push_back({kLeft + 0.02f, rowY, kRight - 0.02f,
-                                    rowY + kRowHeight,
+            m_hudButtons.push_back({kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
                                     400u + static_cast<sw::u32>(definition.id)});
             rowY += kRowHeight + kRowGap;
         }
@@ -5617,29 +6851,383 @@ namespace game
         if (buildings.empty())
         {
             hudText("NO BUILDINGS IN THE CATALOG", kLeft + 0.04f, rowY + 0.02f, 0.034f,
-                    {0.85f, 0.55f, 0.45f, 0.95f});
+                    hud::kBad);
             return;
         }
 
-        // The armed building, and what it is waiting for.
-        rowY += 0.03f;
+        // The footer: what is in your hand, and what it wants next.
+        rowY += 0.012f;
+        hudQuad(kLeft + kPad, rowY, kRight - kPad, bottom - 0.014f, hud::kHeader);
         if (const auto* held = sw::parts::findDefinition(m_heldBuilding);
             held != nullptr && sw::parts::isBuilding(*held))
         {
-            hudText(std::format("ARMED: {}", held->name), kLeft + 0.04f, rowY, 0.034f,
-                    {0.75f, 1.0f, 0.80f, 1.0f});
-            rowY += 0.048f;
-            hudText(std::format("MAX SLOPE {:.2f}   RECIPES {}",
-                                held->building.maxSlopeTangent,
-                                sw::factory::recipesForCategory(held->building.category)
-                                    .size()),
-                    kLeft + 0.04f, rowY, 0.028f, {0.55f, 0.68f, 0.82f, 0.9f});
+            const bool belt = held->building.category ==
+                              sw::factory::BuildingCategory::Conveyor;
+            const bool cable =
+                held->building.category == sw::factory::BuildingCategory::Cable;
+            hudText(std::format("ARMED   {}", hud::caps(held->name)), kLeft + 0.04f,
+                    rowY + 0.014f, 0.036f, hud::kOk);
+            hudText(belt    ? "PICK AN OUTPUT, THEN AN INPUT"
+                    : cable ? "PICK TWO POWER NODES"
+                            : "LOOK AT THE GROUND AND CLICK   WHEEL ROTATES",
+                    kLeft + 0.04f, rowY + 0.058f, 0.028f, hud::kTextDim);
         }
         else
         {
-            hudText("NOTHING ARMED", kLeft + 0.04f, rowY, 0.034f,
-                    {0.62f, 0.70f, 0.80f, 0.9f});
+            hudText("NOTHING ARMED", kLeft + 0.04f, rowY + 0.014f, 0.036f, hud::kTextDim);
+            hudText("PICK A BUILDING ABOVE", kLeft + 0.04f, rowY + 0.058f, 0.028f,
+                    hud::kTextDim);
         }
+    }
+
+    // ======================= THE MACHINE PANEL (E) =========================
+    //
+    // F3's premise is that a building is a GENERIC executor and its recipe is
+    // a choice. Somewhere that choice has to be made, and the honest place is
+    // standing in front of the machine: E, near it, and the panel is the
+    // machine's own front plate — what it is doing, why it is not, what the
+    // grid is giving it, what is in the bin, and the list of jobs its
+    // category knows how to do.
+    //
+    // Everything on it is READ from the components, nothing is cached. A
+    // panel that agreed with the simulation only at the moment it opened
+    // would be worse than no panel.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::toggleConfigMenu()
+    {
+        if (!m_configTarget.isNull())
+        {
+            m_configTarget = {};
+            return;
+        }
+        // On foot, near a building, nothing else in the way.
+        if (!m_evaMode || m_mapView || m_editorMode || m_buildMenu ||
+            m_capsuleEntity.isNull())
+        {
+            return;
+        }
+        const auto* player = m_world.tryGetComponent<TransformComponent>(m_capsuleEntity);
+        if (player == nullptr)
+        {
+            return;
+        }
+
+        // NEAR ENOUGH, AND IN FRONT OF YOU — asked of the machine's actual
+        // HULL rather than of its centre. The old rule took the nearest
+        // centre inside 18 m, which is wrong twice over: a 16 m solar field
+        // you are standing on has a centre 8 m away and loses to a silo
+        // behind your shoulder, and a machine you are touching can have its
+        // centre out of range entirely. A ray from the eye against the
+        // hitboxes answers the real question exactly, and reuses the very
+        // boxes you cannot walk through.
+        (void)player;
+        const sw::ecs::Entity best = hullUnderCrosshair(kConfigRangeM);
+        m_configTarget = best;
+        if (best.isNull())
+        {
+            SW_LOG_INFO("Game", "E: nothing in front of you within {:.0f} m",
+                        kConfigRangeM);
+        }
+    }
+
+    void StarWorksGame::collectConfigMenu()
+    {
+        m_hudButtons.clear();
+
+        const auto* building =
+            m_world.tryGetComponent<sw::factory::BuildingComponent>(m_configTarget);
+        const auto* definition =
+            (building != nullptr) ? sw::parts::findDefinition(building->definitionId)
+                                  : nullptr;
+        if (building == nullptr || definition == nullptr)
+        {
+            m_configTarget = {}; // demolished under our feet
+            return;
+        }
+        auto* state =
+            m_world.tryGetComponent<sw::factory::RecipeStateComponent>(m_configTarget);
+        auto* power = m_world.tryGetComponent<sw::factory::PowerComponent>(m_configTarget);
+        const auto* inventory =
+            m_world.tryGetComponent<sw::factory::InventoryComponent>(m_configTarget);
+
+        const std::vector<sw::u32> recipes =
+            sw::factory::recipesForCategory(building->category);
+
+        constexpr sw::f32 kLeft = -0.68f;
+        constexpr sw::f32 kRight = 0.68f;
+        constexpr sw::f32 kTop = -0.62f;
+        constexpr sw::f32 kRowHeight = 0.072f;
+        constexpr sw::f32 kRowGap = 0.008f;
+        constexpr sw::f32 kPad = 0.018f;
+        constexpr sw::f32 kHeaderH = 0.086f;
+        constexpr sw::f32 kStatsH = 0.168f;
+        constexpr sw::f32 kFooterH = 0.098f;
+
+        sw::f32 cursorX = -2.0f;
+        sw::f32 cursorY = -2.0f;
+        const bool haveCursor = hudCursor(cursorX, cursorY);
+        auto hovering = [&](sw::f32 y, sw::f32 x1) {
+            return haveCursor && cursorX >= kLeft + kPad && cursorX <= x1 &&
+                   cursorY >= y && cursorY <= y + kRowHeight;
+        };
+
+        const sw::f32 listTop = kTop + kHeaderH + kStatsH;
+        // The list's own header eats `kLabelH` before the first row: at
+        // 0.032 the word RECIPE was drawn straight through the STOP row
+        // under it, because a label needs its own height AND the gap.
+        constexpr sw::f32 kLabelH = 0.050f;
+        const sw::f32 bottom =
+            listTop + (recipes.empty()
+                           ? 0.06f
+                           : (kLabelH + static_cast<sw::f32>(recipes.size() + 1) *
+                                            (kRowHeight + kRowGap))) +
+            kFooterH;
+        hudPanel(kLeft, kTop, kRight, bottom, hud::kPanel);
+
+        // ---- HEADER: who this is -------------------------------------------
+        hudQuad(kLeft, kTop, kRight, kTop + kHeaderH - 0.006f, hud::kHeader);
+        hudQuad(kLeft, kTop, kLeft + 0.014f, kTop + kHeaderH - 0.006f,
+                hud::categoryColor(building->category));
+        hudText(hud::caps(definition->name), kLeft + 0.032f, kTop + 0.026f, 0.048f,
+                hud::kTitle);
+        hudText(hud::caps(std::string(sw::factory::categoryName(building->category))),
+                kRight - 0.34f, kTop + 0.020f, 0.026f,
+                hud::categoryColor(building->category));
+        hudText("E CLOSE", kRight - 0.34f, kTop + 0.052f, 0.026f, hud::kTextDim);
+
+        // ---- STATS: what it is doing, and on what power ---------------------
+        sw::f32 rowY = kTop + kHeaderH + 0.006f;
+        hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kStatsH - 0.020f,
+                hud::kRow);
+        rowY += 0.016f;
+
+        const char* stateText = "IDLE";
+        sw::Vec4 stateColor = hud::kTextDim;
+        if (state != nullptr)
+        {
+            switch (state->state)
+            {
+            case sw::factory::RecipeStateComponent::kRunning:
+                stateText = "RUNNING";
+                stateColor = hud::kOk;
+                break;
+            case sw::factory::RecipeStateComponent::kStarved:
+                stateText = "STARVED";
+                stateColor = hud::kWarn;
+                break;
+            case sw::factory::RecipeStateComponent::kBlocked:
+                stateText = "BLOCKED";
+                stateColor = hud::kWarn;
+                break;
+            case sw::factory::RecipeStateComponent::kNoPower:
+                stateText = "NO POWER";
+                stateColor = hud::kBad;
+                break;
+            default:
+                break;
+            }
+        }
+        // The state gets its own coloured tab: it is the one thing on this
+        // panel you should be able to read from across the room.
+        hudQuad(kLeft + kPad, rowY - 0.006f, kLeft + kPad + 0.008f, rowY + 0.040f,
+                stateColor);
+        hudText(stateText, kLeft + kPad + 0.020f, rowY, 0.042f, stateColor);
+
+        if (power != nullptr)
+        {
+            const bool short_ = power->satisfaction < 0.999;
+            hudText(std::format("SUPPLY {:.0f}%", power->satisfaction * 100.0),
+                    kLeft + 0.32f, rowY + 0.004f, 0.034f,
+                    short_ ? hud::kBad : hud::kOk);
+            hudText(std::format("PRIORITY {}", power->priority), kRight - 0.30f,
+                    rowY + 0.004f, 0.034f, hud::kText);
+        }
+        rowY += 0.050f;
+
+        if (power != nullptr)
+        {
+            // Two labelled columns, so 0 reads as a zero rather than as the
+            // word PASSIVE (which belongs on a catalogue row showing ONE
+            // number, not on a line that already says which side is which).
+            hudText(std::format("THIS  MAKES {:.0f} KW  DRAWS {:.0f} KW",
+                                power->actualProducedKw, power->consumedKw),
+                    kLeft + kPad + 0.014f, rowY, 0.028f, hud::kTextDim);
+            hudText(std::format("GRID {}  MAKES {:.0f} KW  DRAWS {:.0f} KW",
+                                power->gridId, power->gridProducedKw,
+                                power->gridConsumedKw),
+                    kLeft + 0.32f, rowY, 0.028f,
+                    (power->gridProducedKw + 1.0e-9 < power->gridConsumedKw)
+                        ? hud::kWarn
+                        : hud::kTextDim);
+        }
+        rowY += 0.034f;
+
+        if (inventory != nullptr)
+        {
+            std::string stock;
+            for (const sw::factory::InventorySlot& slot : inventory->slots)
+            {
+                if (slot.resource == sw::res::Resource::Count || slot.units <= 0.0)
+                {
+                    continue;
+                }
+                if (!stock.empty()) { stock += "   "; }
+                stock += std::format("{} {:.0f}",
+                                     hud::caps(std::string(
+                                         sw::res::definition(slot.resource).name)),
+                                     slot.units);
+            }
+            const sw::f64 used = sw::factory::inventoryVolume(*inventory);
+            hudText(stock.empty()
+                        ? std::format("BIN EMPTY   0 / {:.0f} M3",
+                                      inventory->volumeCapacityM3)
+                        : std::format("{}   {:.1f} / {:.0f} M3", stock, used,
+                                      inventory->volumeCapacityM3),
+                    kLeft + kPad + 0.014f, rowY, 0.028f, hud::kText);
+        }
+
+        // ---- THE JOB LIST ----------------------------------------------------
+        rowY = listTop;
+        if (recipes.empty())
+        {
+            hudText("THIS BUILDING RUNS NO RECIPES", kLeft + kPad + 0.014f, rowY + 0.030f,
+                    0.032f, hud::kTextDim);
+        }
+        else
+        {
+            hudText("RECIPE", kLeft + kPad + 0.004f, rowY + 0.006f, 0.026f,
+                    hud::kTextDim);
+            rowY += kLabelH;
+
+            const sw::u32 current = (state != nullptr) ? state->recipeId : 0u;
+
+            // STOP is a job like any other: an idle machine still pays its
+            // idle draw, and on a battery night that is a choice worth having.
+            {
+                const bool selected = (sw::factory::findRecipe(current) == nullptr);
+                const bool hot = hovering(rowY, kRight - kPad);
+                hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
+                        selected ? hud::kRowStop
+                                 : (hot ? hud::kRowHover : hud::kRow));
+                hudText("STOP", kLeft + kPad + 0.018f, rowY + 0.018f, 0.036f,
+                        selected ? hud::kTitle : hud::kText);
+                hudText("IDLE DRAW ONLY", kLeft + 0.30f, rowY + 0.022f, 0.026f,
+                        hud::kTextDim);
+                m_hudButtons.push_back(
+                    {kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight, 600u});
+                rowY += kRowHeight + kRowGap;
+            }
+
+            sw::usize index = 0;
+            for (const sw::u32 id : recipes)
+            {
+                const sw::factory::RecipeDefinition* recipe = sw::factory::findRecipe(id);
+                if (recipe == nullptr)
+                {
+                    continue;
+                }
+                const bool selected = (id == current);
+                const bool hot = hovering(rowY, kRight - kPad);
+                hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
+                        selected ? (hot ? hud::kRowOnHover : hud::kRowOn)
+                                 : (hot ? hud::kRowHover
+                                        : ((index % 2 == 0) ? hud::kRow : hud::kRowAlt)));
+                hudText(hud::caps(recipe->name), kLeft + kPad + 0.018f, rowY + 0.018f,
+                        0.036f, selected ? hud::kTitle : hud::kText);
+
+                // The recipe read as a sentence: what goes in, what comes out,
+                // what it costs. The whole fuel chain is legible from these.
+                std::string flow;
+                for (const sw::factory::Ingredient& in : recipe->inputs)
+                {
+                    if (in.resource == sw::res::Resource::Count ||
+                        in.unitsPerSecond <= 0.0)
+                    {
+                        continue;
+                    }
+                    if (!flow.empty()) { flow += " + "; }
+                    flow += std::format("{:.2f} {}", in.unitsPerSecond,
+                                        hud::caps(std::string(
+                                            sw::res::definition(in.resource).name)));
+                }
+                if (flow.empty()) { flow = "GROUND"; }
+                flow += " > ";
+                bool firstOut = true;
+                for (const sw::factory::Ingredient& out : recipe->outputs)
+                {
+                    if (out.resource == sw::res::Resource::Count ||
+                        out.unitsPerSecond <= 0.0)
+                    {
+                        continue;
+                    }
+                    if (!firstOut) { flow += " + "; }
+                    firstOut = false;
+                    flow += std::format("{:.2f} {}", out.unitsPerSecond,
+                                        hud::caps(std::string(
+                                            sw::res::definition(out.resource).name)));
+                }
+                hudText(flow, kLeft + 0.26f, rowY + 0.024f, 0.026f,
+                        selected ? hud::kText : hud::kTextDim);
+                hudText(std::format("{:.0f} KW", recipe->powerKw), kRight - 0.13f,
+                        rowY + 0.024f, 0.028f,
+                        (recipe->powerKw >= 400.0) ? hud::kWarn : hud::kTextDim);
+
+                m_hudButtons.push_back({kLeft + kPad, rowY, kRight - kPad,
+                                        rowY + kRowHeight, 610u + id});
+                rowY += kRowHeight + kRowGap;
+                ++index;
+            }
+        }
+
+        // ---- FOOTER: the priority control -----------------------------------
+        if (power != nullptr)
+        {
+            rowY += 0.012f;
+            const sw::f32 buttonRight = kLeft + 0.40f;
+            const bool hot = hovering(rowY, buttonRight);
+            hudQuad(kLeft + kPad, rowY, buttonRight, rowY + kRowHeight,
+                    hot ? hud::kRowHover : hud::kRowAlt);
+            hudText(std::format("GRID PRIORITY  {}", power->priority),
+                    kLeft + kPad + 0.018f, rowY + 0.020f, 0.032f, hud::kText);
+            m_hudButtons.push_back(
+                {kLeft + kPad, rowY, buttonRight, rowY + kRowHeight, 601u});
+            hudText("CLICK TO CYCLE. LOWER IS SERVED FIRST", kLeft + 0.43f,
+                    rowY + 0.022f, 0.026f, hud::kTextDim);
+        }
+    }
+
+    // Choosing a recipe changes three things at once, and all three have to
+    // move together or the site lies about itself: what the machine runs,
+    // what it draws from the grid, and what its outgoing belt is carrying.
+    void StarWorksGame::applyRecipeChoice(sw::ecs::Entity entity, sw::u32 recipeId)
+    {
+        auto* state = m_world.tryGetComponent<sw::factory::RecipeStateComponent>(entity);
+        if (state == nullptr)
+        {
+            return;
+        }
+        state->recipeId = recipeId;
+        state->state = sw::factory::RecipeStateComponent::kIdle;
+
+        if (auto* power = m_world.tryGetComponent<sw::factory::PowerComponent>(entity))
+        {
+            const auto* building =
+                m_world.tryGetComponent<sw::factory::BuildingComponent>(entity);
+            const auto* definition =
+                (building != nullptr)
+                    ? sw::parts::findDefinition(building->definitionId)
+                    : nullptr;
+            const sw::f64 idleKw =
+                (definition != nullptr) ? std::max(0.0, -definition->building.powerKw)
+                                        : 0.0;
+            power->consumedKw = idleKw;
+            if (const auto* recipe = sw::factory::findRecipe(recipeId))
+            {
+                power->consumedKw += recipe->powerKw;
+            }
+        }
+        // The belt out of this machine carries whatever it now makes.
+        rebuildConveyorNetwork();
     }
 
     // The map is where you look at your fleet, so it is where you should be
@@ -5709,6 +7297,28 @@ namespace game
             if (ndcX >= button.x0 && ndcX <= button.x1 && ndcY >= button.y0 &&
                 ndcY <= button.y1)
             {
+                // ---- the machine panel (E) ----------------------------------
+                // Checked FIRST: its ids sit above the build menu's, and it
+                // is the panel actually on screen when they are live.
+                if (button.id >= 610 && !m_configTarget.isNull())
+                {
+                    applyRecipeChoice(m_configTarget, button.id - 610u);
+                    return;
+                }
+                if (button.id == 600 && !m_configTarget.isNull())
+                {
+                    applyRecipeChoice(m_configTarget, 0u); // STOP
+                    return;
+                }
+                if (button.id == 601 && !m_configTarget.isNull())
+                {
+                    if (auto* power = m_world.tryGetComponent<sw::factory::PowerComponent>(
+                            m_configTarget))
+                    {
+                        power->priority = (power->priority + 1u) % 5u;
+                    }
+                    return;
+                }
                 if (button.id >= 400) // build menu: arm this building
                 {
                     const sw::u32 definitionId = button.id - 400u;
@@ -6523,6 +8133,8 @@ namespace game
         if (!mapView)
         {
             collectConveyors(activeCamera);
+            collectCables(activeCamera);
+            collectHullOverlay(activeCamera);
             collectBuildGhost(activeCamera);
         }
         // Beacons overlay both views; the HUD is drawn last so its panels

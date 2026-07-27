@@ -6,7 +6,7 @@
   "costCredits": 600,
   "volumeM3": 0.5,
   "crashToleranceMps": 9,
-  "breakingForceN": 250000.0,
+  "breakingForceN": 250000,
   "dragCoefficientArea": 0.4,
   "liftCoefficient": 0,
   "thrustNewtons": 0,
@@ -16,108 +16,52 @@
   "shapes": [
     {
       "kind": "cylinder",
-      "position": [
-        0,
-        0,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        1.1,
-        0.25,
-        0
-      ],
-      "color": [
-        0.72,
-        0.6,
-        0.24
-      ],
-      "emissive": 0.0,
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.100000023841858, 0.25, 0],
+      "color": [0.7200000286102295, 0.6000000238418579, 0.23999999463558197],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
       "segments": 28,
       "visible": true,
       "collider": true
     },
     {
       "kind": "tube",
-      "position": [
-        0,
-        0,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        1.115,
-        0.1,
-        1.04
-      ],
-      "color": [
-        0.12,
-        0.12,
-        0.12
-      ],
-      "emissive": 0.0,
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.1150000095367432, 0.10000000149011612, 1.0399999618530273],
+      "color": [0.11999999731779099, 0.11999999731779099, 0.11999999731779099],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
       "segments": 28,
       "visible": true,
       "collider": false
     },
     {
       "kind": "box",
-      "position": [
-        0,
-        1.05,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        0.12,
-        0.08,
-        0.14
-      ],
-      "color": [
-        0.8,
-        0.2,
-        0.15
-      ],
-      "emissive": 0.0,
+      "position": [0, 1.0499999523162842, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.11999999731779099, 0.07999999821186066, 0.14000000059604645],
+      "color": [0.800000011920929, 0.20000000298023224, 0.15000000596046448],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
       "segments": 28,
       "visible": true,
       "collider": false
     },
     {
       "kind": "box",
-      "position": [
-        0,
-        -1.05,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        0.12,
-        0.08,
-        0.14
-      ],
-      "color": [
-        0.8,
-        0.2,
-        0.15
-      ],
-      "emissive": 0.0,
+      "position": [0, -1.0499999523162842, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.11999999731779099, 0.07999999821186066, 0.14000000059604645],
+      "color": [0.800000011920929, 0.20000000298023224, 0.15000000596046448],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
       "segments": 28,
       "visible": true,
       "collider": false
@@ -126,33 +70,23 @@
   "nodes": [
     {
       "name": "top",
-      "position": [
-        0,
-        0,
-        -0.25
-      ],
-      "direction": [
-        0,
-        0,
-        -1
-      ],
+      "position": [0, 0, -0.25],
+      "direction": [0, 0, -1],
       "type": "stack",
-      "size": 1.1
+      "size": 1.100000023841858
     },
     {
       "name": "bottom",
-      "position": [
-        0,
-        0,
-        0.25
-      ],
-      "direction": [
-        0,
-        0,
-        1
-      ],
+      "position": [0, 0, 0.25],
+      "direction": [0, 0, 1],
       "type": "stack",
-      "size": 1.1
+      "size": 1.100000023841858
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [1.100000023841858, 1.100000023841858, 0.25]
     }
   ]
 }

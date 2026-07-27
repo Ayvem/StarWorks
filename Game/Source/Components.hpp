@@ -143,13 +143,42 @@ namespace game
     {
         static constexpr sw::u32 kMaxPoints = sw::factory::kMaxConveyorPoints;
         sw::ecs::Entity body{};  // the celestial body it is built on
-        sw::ecs::Entity link{};  // the entity carrying the ItemLinkComponent
+        sw::ecs::Entity link{};   // the entity carrying the ItemLinkComponent
+        /// The machine at the far end. Several belts can feed one machine,
+        /// so a belt reads only the channels that came from ITS source —
+        /// otherwise two runs into the same silo would each draw the other's
+        /// cargo as well as their own.
+        sw::ecs::Entity source{};
         sw::u32 pointCount = 0;
         sw::WorldVec3 points[kMaxPoints]{}; // body frame, metres
         sw::f32 lengthM = 0.0f;
         sw::f32 speedMps = 2.6f;   // how fast cargo rides
         sw::f32 unitsPerCrate = 1.0f;
         sw::Vec3 cargoColor{0.6f, 0.6f, 0.6f};
+    };
+
+    /// A CABLE, as it is drawn: the sagging curve between two power nodes,
+    /// in the body's rotating frame.
+    ///
+    /// Unlike a conveyor, whose deck is a row of real CV-1 entities, a cable
+    /// is ONE entity — a span is not something you demolish a metre of. Its
+    /// look still comes from a `.swpart` (CW-1), instanced along the curve,
+    /// so the wire's gauge and colour are edited in Part Studio like
+    /// everything else.
+    ///
+    /// The curve is DERIVED: `rebuildPowerNetwork` recomputes it from the two
+    /// endpoints' anchors whenever anything is built or demolished, so a
+    /// cable can never be left hanging off a machine that has moved or gone.
+    struct CableComponent
+    {
+        static constexpr sw::u32 kMaxPoints = 12;
+        sw::ecs::Entity body{};  // the celestial body its ends stand on
+        sw::u32 pointCount = 0;
+        sw::WorldVec3 points[kMaxPoints]{}; // body frame, metres
+        sw::f32 lengthM = 0.0f;
+        /// Live-ish: the grid this span belongs to had a shortfall last tick.
+        /// A base browning out should be visible from the wires.
+        bool starved = false;
     };
 
     /// Marks an entity with a star-map marker (see the M map view): an
@@ -160,6 +189,7 @@ namespace game
     };
 
     static_assert(std::is_trivially_copyable_v<ConveyorComponent>);
+    static_assert(std::is_trivially_copyable_v<CableComponent>);
     static_assert(std::is_trivially_copyable_v<BoundsComponent>);
     static_assert(std::is_trivially_copyable_v<SpinComponent>);
     static_assert(std::is_trivially_copyable_v<MeshComponent>);

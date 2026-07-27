@@ -1,6 +1,7 @@
 #include "Physics/PhysicsSystems.hpp"
 
 #include "Core/Log.hpp"
+#include "Physics/HullCollision.hpp"
 #include "ECS/World.hpp"
 #include "Simulation/Simulation.hpp"
 
@@ -598,5 +599,151 @@ namespace sw::phys
                     w.addComponent(entity, rails);
                 });
             });
+    }
+
+    // ------------------------------------------------------------------------
+    // HullCollisionSystem
+    // ------------------------------------------------------------------------
+    void HullCollisionSystem::update(ecs::World& world, f32 deltaSeconds)
+    {
+        (void)deltaSeconds;
+
+        // ---- gather ------------------------------------------------------
+        // One pass over every solid thing, keeping only what the broad phase
+        // needs: where it is, how far it reaches, and which way it faces.
+        struct Solid
+        {
+            ecs::Entity entity{};
+            WorldVec3 position{0.0};
+            Quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+            const HullComponent* hull = nullptr;
+            f64 radius = 0.0;
+        };
+        std::vector<Solid> solids;
+        std::vector<usize> movers;
+        world.forEach<TransformComponent, HullComponent>(
+            [&](ecs::Entity entity, TransformComponent& transform, HullComponent& hull) {
+                if (hull.count == 0)
+                {
+                    return;
+                }
+                if (world.hasComponent<HullMoverComponent>(entity))
+                {
+                    movers.push_back(solids.size());
+                }
+                solids.push_back({entity, transform.position, transform.rotation, &hull,
+                                  static_cast<f64>(hull.radius)});
+            });
+        m_hullCount = static_cast<u32>(solids.size());
+        m_narrowPairs = 0;
+        if (movers.empty())
+        {
+            return;
+        }
+
+        for (const usize moverIndex : movers)
+        {
+            Solid& mover = solids[moverIndex];
+            const auto* limit =
+                world.tryGetComponent<HullMoverComponent>(mover.entity);
+            const f32 maxPush = (limit != nullptr) ? limit->maxPushM : 1.5f;
+
+            // The mover's boxes, ONCE, in a frame centred on itself.
+            Obb moverBoxes[kMaxHullBoxes]{};
+            for (u32 i = 0; i < mover.hull->count; ++i)
+            {
+                moverBoxes[i] = makeObb(mover.rotation * mover.hull->boxes[i].centre,
+                                        mover.hull->boxes[i].halfExtents, mover.rotation);
+            }
+
+            Vec3 push{0.0f};
+            for (usize other = 0; other < solids.size(); ++other)
+            {
+                if (other == moverIndex)
+                {
+                    continue;
+                }
+                const Solid& blocker = solids[other];
+                // BROAD PHASE. One subtraction, one comparison, and the
+                // overwhelming majority of a base never gets any further.
+                const WorldVec3 offset = blocker.position - mover.position;
+                const f64 reach = mover.radius + blocker.radius;
+                if (glm::dot(offset, offset) > reach * reach)
+                {
+                    continue;
+                }
+                m_narrowPairs += 1;
+
+                // NARROW PHASE, in f32 metres around the mover — never in
+                // world coordinates, where a planet radius would eat the
+                // centimetres this is trying to resolve.
+                const Vec3 relative = Vec3(offset);
+                for (u32 b = 0; b < blocker.hull->count; ++b)
+                {
+                    const Obb blockerBox =
+                        makeObb(relative + blocker.rotation * blocker.hull->boxes[b].centre,
+                                blocker.hull->boxes[b].halfExtents, blocker.rotation);
+                    for (u32 m = 0; m < mover.hull->count; ++m)
+                    {
+                        Vec3 axis{0.0f};
+                        f32 depth = 0.0f;
+                        if (!obbPenetration(moverBoxes[m], blockerBox, axis, depth))
+                        {
+                            continue;
+                        }
+                        // Accumulate the deepest push per direction rather
+                        // than summing: standing in a corner, two walls each
+                        // asking for 10 cm is one 10 cm step out, not 20.
+                        const f32 along = glm::dot(push, axis);
+                        if (depth > along)
+                        {
+                            push += axis * (depth - along);
+                        }
+                    }
+                }
+            }
+
+            if (glm::dot(push, push) <= 1.0e-10f)
+            {
+                continue;
+            }
+            const f32 length = glm::length(push);
+            if (length > maxPush)
+            {
+                push *= maxPush / length;
+            }
+            auto* transform = world.tryGetComponent<TransformComponent>(mover.entity);
+            if (transform == nullptr)
+            {
+                continue;
+            }
+            transform->position += WorldVec3(push);
+
+            // THE VELOCITY IS NOT TOUCHED, and that is deliberate.
+            //
+            // The obvious next line is "remove the component heading into
+            // the wall". It launched the player a hundred metres, because
+            // `velocity` is a WORLD velocity: standing on Terra it already
+            // carries ~30 km/s of orbital motion plus 465 m/s of the
+            // planet's rotation. Projecting that onto a wall normal and
+            // subtracting it is not a small correction, it is a kilometres-
+            // per-second impulse, and the wall fires the player off like a
+            // catapult.
+            //
+            // What would be correct is the velocity RELATIVE to the blocker
+            // — and the blocker's carrier velocity is a question about the
+            // planet it is anchored to, which this system deliberately knows
+            // nothing about. It does not need to: the walker SETS its
+            // tangential velocity from input every tick in the local surface
+            // frame (see CapsuleMovementSystem), so nothing accumulates and
+            // pushing the position back out is the whole job. Walk into a
+            // wall and you simply stop.
+            //
+            // The general rule this cost us, restated: on a planet, a world
+            // velocity is mostly carrier motion. Anything that reasons about
+            // how fast something is moving RELATIVE to the ground has to
+            // subtract that carrier first, or it is doing arithmetic on
+            // 30 km/s it did not mean to touch.
+        }
     }
 } // namespace sw::phys

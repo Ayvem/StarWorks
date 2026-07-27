@@ -114,4 +114,60 @@ namespace sw::factory
         }
         return units - remaining;
     }
+
+    i32 linkAddChannel(ItemLinkComponent& link, ecs::Entity source,
+                       res::Resource resource, f64 unitsPerSecond)
+    {
+        if (resource == res::Resource::Count)
+        {
+            return -1;
+        }
+        i32 free = -1;
+        for (u32 i = 0; i < kMaxLinkChannels; ++i)
+        {
+            LinkChannel& channel = link.channels[i];
+            if (channel.resource == resource && channel.source == source)
+            {
+                // The same feed, declared twice: raise the rate rather than
+                // spend a channel on it. Two belts side by side ARE faster.
+                channel.unitsPerSecond += unitsPerSecond;
+                return static_cast<i32>(i);
+            }
+            if (free < 0 && channel.resource == res::Resource::Count)
+            {
+                free = static_cast<i32>(i);
+            }
+        }
+        if (free < 0)
+        {
+            return -1;
+        }
+        link.channels[static_cast<u32>(free)] = {source, resource, unitsPerSecond, 0.0};
+        return free;
+    }
+
+    f64 linkFlow(const ItemLinkComponent& link, res::Resource resource)
+    {
+        for (const LinkChannel& channel : link.channels)
+        {
+            if (channel.resource == resource)
+            {
+                return channel.flowUnitsPerSecond;
+            }
+        }
+        return 0.0;
+    }
+
+    f64 linkFlowFrom(const ItemLinkComponent& link, ecs::Entity source)
+    {
+        f64 total = 0.0;
+        for (const LinkChannel& channel : link.channels)
+        {
+            if (channel.source == source && channel.resource != res::Resource::Count)
+            {
+                total += channel.flowUnitsPerSecond;
+            }
+        }
+        return total;
+    }
 } // namespace sw::factory

@@ -1,0 +1,123 @@
+{
+  "id": 109,
+  "type": "Structural",
+  "name": "PL-1 Power Pole",
+  "dryMassKg": 900,
+  "costCredits": 0,
+  "volumeM3": 2,
+  "crashToleranceMps": 6,
+  "breakingForceN": 90000,
+  "dragCoefficientArea": 0.6,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "building": {
+    "category": "pole",
+    "footprintM": [3, 3],
+    "powerKw": 0,
+    "inventoryVolumeM3": 0,
+    "maxSlopeTangent": 0.4,
+    "minOreDensity": 0
+  },
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0.25, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.100000023841858, 0.25, 1.100000023841858],
+      "color": [0.3199999928474426, 0.3199999928474426, 0.3400000035762787],
+      "emissive": 0,
+      "specular": 0.25,
+      "gloss": 0.20000000298023224,
+      "segments": 12,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0, 5, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.2199999988079071, 5, 0.2199999988079071],
+      "color": [0.46000000834465027, 0.3799999952316284, 0.2800000011920929],
+      "emissive": 0,
+      "specular": 0.20000000298023224,
+      "gloss": 0.18000000715255737,
+      "segments": 12,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0, 9.100000381469727, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.899999976158142, 0.10999999940395355, 0.14000000059604645],
+      "color": [0.41999998688697815, 0.3499999940395355, 0.25999999046325684],
+      "emissive": 0,
+      "specular": 0.20000000298023224,
+      "gloss": 0.18000000715255737,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-1.600000023841858, 9.420000076293945, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.1599999964237213, 0.2199999988079071, 0.1599999964237213],
+      "color": [0.2800000011920929, 0.6200000047683716, 0.7200000286102295],
+      "emissive": 0.05000000074505806,
+      "specular": 0.699999988079071,
+      "gloss": 0.75,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [1.600000023841858, 9.420000076293945, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.1599999964237213, 0.2199999988079071, 0.1599999964237213],
+      "color": [0.2800000011920929, 0.6200000047683716, 0.7200000286102295],
+      "emissive": 0.05000000074505806,
+      "specular": 0.699999988079071,
+      "gloss": 0.75,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 10.149999618530273, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.12999999523162842, 0.15000000596046448, 0.12999999523162842],
+      "color": [0.949999988079071, 0.7200000286102295, 0.2199999988079071],
+      "emissive": 0.550000011920929,
+      "specular": 0.6000000238418579,
+      "gloss": 0.6000000238418579,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "power",
+      "position": [0, 10, 0],
+      "direction": [0, 1, 0],
+      "type": "power",
+      "size": 0.6000000238418579
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0.25, 0],
+      "halfExtents": [1.100000023841858, 0.25, 1.100000023841858]
+    },
+    {
+      "center": [0, 5, 0],
+      "halfExtents": [0.2199999988079071, 5, 0.2199999988079071]
+    }
+  ]
+}

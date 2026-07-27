@@ -10,6 +10,7 @@
 #include "Renderer/Vulkan/VulkanPipeline.hpp"
 #include "Renderer/Vulkan/VulkanSwapchain.hpp"
 #include "Scene/Camera.hpp"
+#include "UI/HudOrder.hpp"
 
 #include <algorithm>
 #include <array>
@@ -252,9 +253,31 @@ namespace sw
                       return glm::dot(items[a].boundsCenter, items[a].boundsCenter) >
                              glm::dot(items[b].boundsCenter, items[b].boundsCenter);
                   });
-        // HUD glyphs batch well too, and their draw order has no meaning.
-        std::sort(m_hudIndices.begin(), m_hudIndices.end(),
-                  [&items](u32 a, u32 b) { return items[a].mesh < items[b].mesh; });
+        // THE HUD DRAWS IN THE ORDER IT WAS SUBMITTED, by layer. This used
+        // to be a plain sort by mesh pointer — "their draw order has no
+        // meaning" — and it cost a blank, flickering build menu: a panel and
+        // the rows on it share one unit-quad mesh, so the sort scrambled
+        // them against each other, and the glyph meshes sit at unrelated
+        // addresses, so text landed above or below its panel depending on
+        // where the mesh table happened to put them. The rule now lives in
+        // one pure, tested function (UI/HudOrder.hpp) instead of in a
+        // comparator's side effects.
+        {
+            std::vector<ui::HudItemKey> keys;
+            keys.reserve(m_hudIndices.size());
+            for (const u32 index : m_hudIndices)
+            {
+                keys.push_back({items[index].hudLayer, items[index].mesh});
+            }
+            const std::vector<u32> order = ui::hudDrawOrder(keys);
+            std::vector<u32> reordered;
+            reordered.reserve(order.size());
+            for (const u32 slot : order)
+            {
+                reordered.push_back(m_hudIndices[slot]);
+            }
+            m_hudIndices.swap(reordered);
+        }
 
         const u32 visibleCount = static_cast<u32>(m_visibleIndices.size());
         const u32 transparentCount = static_cast<u32>(m_transparentIndices.size());

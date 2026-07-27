@@ -8,6 +8,13 @@ namespace studio
 {
     namespace
     {
+        /// `PrimitiveFactory::makeCube(1)` is a cube ONE METRE ACROSS, so
+        /// its half extent is 0.5. To draw a box of half extents `h` with
+        /// it you scale by `2h`. The constant exists so that fact is
+        /// written down once instead of being re-derived — wrongly, as it
+        /// turned out — at each call site.
+        constexpr sw::f32 kUnitBoxScale = 2.0f;
+
         /// Three letters for the node list; the inspector spells it out.
         [[nodiscard]] std::string_view nodeTypeShortName(sw::parts::NodeType type)
         {
@@ -63,6 +70,13 @@ namespace studio
             sw::PrimitiveFactory::makeGridPlane(12.0f, 24, {0.16f, 0.24f, 0.3f, 1.0f})));
         m_markerMeshIndex = registerMesh(renderer().createMesh(
             sw::PrimitiveFactory::makeOctahedron(1.0f, {1.0f, 1.0f, 1.0f, 1.0f})));
+        // A 1 m CUBE — so its HALF extent is 0.5, not 1. Anything drawing a
+        // box of known half extents with it must therefore scale by the FULL
+        // extent (2 * halfExtents), which is what `kUnitBoxScale` below is
+        // for. Getting this wrong drew every collider and every hitbox in
+        // this editor at half its real size for months, and hulls were then
+        // authored to LOOK right against a lie — the suit came out twice as
+        // tall as the body inside it.
         m_unitBoxMeshIndex = registerMesh(renderer().createMesh(
             sw::PrimitiveFactory::makeCube(1.0f, {1.0f, 1.0f, 1.0f, 1.0f})));
         m_shapeMeshBase = m_meshes.size();
@@ -121,6 +135,7 @@ namespace studio
             m_untitled = false;
             m_selectedShape = m_part.shapes.empty() ? -1 : 0;
             m_selectedNode = -1;
+            m_selectedHitbox = -1;
             m_mode = Mode::Idle;
             markGeometryDirty();
             setStatus(std::format("LOADED {}", m_files[m_fileIndex].filename().string()));
@@ -227,7 +242,51 @@ namespace studio
                m_selectedNode < static_cast<sw::i32>(m_part.nodes.size());
     }
 
+    bool PartStudioApp::hasHitboxSelection() const
+    {
+        return m_selectedHitbox >= 0 &&
+               m_selectedHitbox < static_cast<sw::i32>(m_part.hitboxes.size());
+    }
+
     // ========================= editing actions ===============================
+    // THE HULL IS AUTHORED NOW. A new box starts around the part's own
+    // bounds rather than at a unit cube in the middle of it: the first thing
+    // you want after pressing the button is almost always "that, but tighter".
+    void PartStudioApp::addHitbox()
+    {
+        sw::parts::HitBox box{};
+        constexpr sw::f32 kHuge = 1.0e9f;
+        sw::Vec3 low{kHuge, kHuge, kHuge};
+        sw::Vec3 high{-kHuge, -kHuge, -kHuge};
+        sw::parts::expandPartHullBounds(m_part, sw::Vec3{0.0f},
+                                        sw::Quat{1.0f, 0.0f, 0.0f, 0.0f}, low, high);
+        if (low.x <= high.x)
+        {
+            box.center = (low + high) * 0.5f;
+            box.halfExtents = glm::max((high - low) * 0.5f, sw::Vec3{0.05f});
+        }
+        m_part.hitboxes.push_back(box);
+        m_selectedHitbox = static_cast<sw::i32>(m_part.hitboxes.size() - 1);
+        m_selectedShape = -1;
+        m_selectedNode = -1;
+        m_showHitboxes = true;
+        setStatus("HITBOX ADDED");
+    }
+
+    // One box per collider shape — a hull good enough to EDIT from rather
+    // than to draw from scratch. It is the same call the shipped catalogue
+    // was seeded with, so a generated hull and an authored one are the same
+    // kind of object.
+    void PartStudioApp::fitHitboxes()
+    {
+        m_part.hitboxes = sw::parts::hitboxesFromColliders(m_part);
+        m_selectedHitbox = m_part.hitboxes.empty() ? -1 : 0;
+        m_selectedShape = -1;
+        m_selectedNode = -1;
+        m_showHitboxes = true;
+        setStatus(std::format("HULL FITTED: {} BOXES", m_part.hitboxes.size()));
+    }
+
     void PartStudioApp::addShape(sw::parts::ShapeKind kind)
     {
         sw::parts::PartShape shape{};
@@ -245,6 +304,7 @@ namespace studio
         m_part.shapes.push_back(shape);
         m_selectedShape = static_cast<sw::i32>(m_part.shapes.size() - 1);
         m_selectedNode = -1;
+        m_selectedHitbox = -1;
         markGeometryDirty();
     }
 
@@ -320,6 +380,14 @@ namespace studio
             }
             m_nodeBackup = m_part.nodes[static_cast<sw::usize>(m_selectedNode)];
         }
+        else if (hasHitboxSelection())
+        {
+            if (mode == Mode::Rotate)
+            {
+                return; // an AABB has no orientation, by definition
+            }
+            m_hitboxBackup = m_part.hitboxes[static_cast<sw::usize>(m_selectedHitbox)];
+        }
         else
         {
             return;
@@ -345,6 +413,10 @@ namespace studio
         else if (hasNodeSelection())
         {
             m_part.nodes[static_cast<sw::usize>(m_selectedNode)] = m_nodeBackup;
+        }
+        else if (hasHitboxSelection())
+        {
+            m_part.hitboxes[static_cast<sw::usize>(m_selectedHitbox)] = m_hitboxBackup;
         }
         m_mode = Mode::Idle;
         markGeometryDirty();
@@ -427,6 +499,16 @@ namespace studio
                     node.position[axis] = snapValue(node.position[axis], positionSnap);
                 }
             }
+            else if (hasHitboxSelection())
+            {
+                sw::parts::HitBox& box =
+                    m_part.hitboxes[static_cast<sw::usize>(m_selectedHitbox)];
+                box.center = m_hitboxBackup.center + delta;
+                for (sw::i32 axis = 0; axis < 3; ++axis)
+                {
+                    box.center[axis] = snapValue(box.center[axis], positionSnap);
+                }
+            }
             markGeometryDirty();
         }
         else if (m_mode == Mode::Rotate && hasShapeSelection())
@@ -469,6 +551,26 @@ namespace studio
                 sw::parts::AttachNode& node =
                     m_part.nodes[static_cast<sw::usize>(m_selectedNode)];
                 node.size = std::clamp(m_nodeBackup.size * factor, 0.05f, 3.0f);
+            }
+            else if (hasHitboxSelection())
+            {
+                sw::parts::HitBox& box =
+                    m_part.hitboxes[static_cast<sw::usize>(m_selectedHitbox)];
+                box.halfExtents = m_hitboxBackup.halfExtents;
+                if (m_modeAxis < 0)
+                {
+                    box.halfExtents = m_hitboxBackup.halfExtents * factor;
+                }
+                else
+                {
+                    box.halfExtents[m_modeAxis] =
+                        m_hitboxBackup.halfExtents[m_modeAxis] * factor;
+                }
+                for (sw::i32 axis = 0; axis < 3; ++axis)
+                {
+                    box.halfExtents[axis] =
+                        std::max(snapValue(box.halfExtents[axis], kSnapFine), 0.02f);
+                }
             }
             markGeometryDirty();
         }
@@ -593,6 +695,7 @@ namespace studio
         if (bestShape >= 0)
         {
             m_selectedNode = -1;
+            m_selectedHitbox = -1;
         }
     }
 
@@ -613,6 +716,7 @@ namespace studio
         if (input().wasKeyPressed(sw::KeyCode::R)) { beginMode(Mode::Rotate); }
         if (input().wasKeyPressed(sw::KeyCode::S)) { beginMode(Mode::Scale); }
         if (input().wasKeyPressed(sw::KeyCode::K)) { m_showColliders = !m_showColliders; }
+        if (input().wasKeyPressed(sw::KeyCode::H)) { m_showHitboxes = !m_showHitboxes; }
         if (input().wasKeyPressed(sw::KeyCode::Delete))
         {
             if (hasShapeSelection() && m_part.shapes.size() > 1)
@@ -626,9 +730,14 @@ namespace studio
                 m_part.nodes.erase(m_part.nodes.begin() + m_selectedNode);
                 m_selectedNode = -1;
             }
+            else if (hasHitboxSelection())
+            {
+                m_part.hitboxes.erase(m_part.hitboxes.begin() + m_selectedHitbox);
+                m_selectedHitbox = -1;
+            }
         }
         // Node direction: X/Y/Z aligns, pressing the same axis again flips.
-        if (hasNodeSelection())
+        if (hasNodeSelection() && !hasHitboxSelection())
         {
             sw::parts::AttachNode& node =
                 m_part.nodes[static_cast<sw::usize>(m_selectedNode)];
@@ -763,15 +872,35 @@ namespace studio
                 color[channel] = std::clamp(color[channel] + delta, 0.0f, 1.0f);
                 markGeometryDirty();
             }
+            else if (id == 270) { addHitbox(); }
+            else if (id == 271) { fitHitboxes(); }
+            else if (id == 272)
+            {
+                if (hasHitboxSelection())
+                {
+                    m_part.hitboxes.erase(m_part.hitboxes.begin() + m_selectedHitbox);
+                    m_selectedHitbox = -1;
+                    setStatus("HITBOX DELETED");
+                }
+            }
+            else if (id == 273) { m_showHitboxes = !m_showHitboxes; }
+            else if (id >= 500 && id < 500 + m_part.hitboxes.size())
+            {
+                m_selectedHitbox = static_cast<sw::i32>(id - 500);
+                m_selectedShape = -1;
+                m_selectedNode = -1;
+            }
             else if (id >= 300 && id < 300 + m_part.shapes.size())
             {
                 m_selectedShape = static_cast<sw::i32>(id - 300);
                 m_selectedNode = -1;
+                m_selectedHitbox = -1;
             }
             else if (id >= 400 && id < 400 + m_part.nodes.size())
             {
                 m_selectedNode = static_cast<sw::i32>(id - 400);
                 m_selectedShape = -1;
+                m_selectedHitbox = -1;
             }
             return; // click consumed by the UI
         }
@@ -885,9 +1014,31 @@ namespace studio
                 }
                 const sw::Mat4 local =
                     glm::mat4_cast(sw::parts::shapeRotation(shape)) *
-                    glm::scale(sw::Mat4{1.0f}, glm::max(halfExtents, sw::Vec3{0.01f}));
+                    glm::scale(sw::Mat4{1.0f},
+                               glm::max(halfExtents, sw::Vec3{0.01f}) * kUnitBoxScale);
                 push(m_unitBoxMeshIndex, shape.position, local,
                      {1.0f, 0.55f, 0.15f, selected ? 0.4f : 0.22f}, true,
+                     glm::length(halfExtents) + 0.2f);
+            }
+        }
+
+        // THE HULL. Drawn in a colour nothing else uses, because the whole
+        // point of looking at it is to see where it does NOT match the model
+        // — a hitbox that reads as part of the geometry is a hitbox you
+        // stop checking.
+        if (m_showHitboxes)
+        {
+            for (sw::usize i = 0; i < m_part.hitboxes.size(); ++i)
+            {
+                const sw::parts::HitBox& box = m_part.hitboxes[i];
+                const bool selected = static_cast<sw::i32>(i) == m_selectedHitbox;
+                const sw::Vec3 halfExtents = glm::max(box.halfExtents, sw::Vec3{0.01f});
+                // The SAME arithmetic the game's F2 overlay uses, so a box
+                // drawn here is the box you bump into there.
+                const sw::Mat4 local =
+                    glm::scale(sw::Mat4{1.0f}, halfExtents * kUnitBoxScale);
+                push(m_unitBoxMeshIndex, box.center, local,
+                     {0.25f, 0.95f, 0.85f, selected ? 0.42f : 0.18f}, true,
                      glm::length(halfExtents) + 0.2f);
             }
         }
@@ -991,12 +1142,15 @@ namespace studio
                        : (m_files.empty() ? "-" : m_files[m_fileIndex].filename().string());
         hudText(std::format("PART STUDIO - {}", fileName), -0.97f, -0.97f, 0.045f,
                 {1.0f, 0.85f, 0.35f, 1.0f});
-        hudText(std::format("{}  ID {}  DRY {:.0f} KG  SHAPES {}  NODES {}",
+        hudText(std::format("{}  ID {}  DRY {:.0f} KG  SHAPES {}  NODES {}  HULL {}",
                             m_part.name, m_part.id, m_part.dryMassKg,
-                            m_part.shapes.size(), m_part.nodes.size()),
+                            m_part.shapes.size(), m_part.nodes.size(),
+                            m_part.hitboxes.empty()
+                                ? std::string("AUTO")
+                                : std::format("{}", m_part.hitboxes.size())),
                 -0.97f, -0.90f, 0.032f, textColor);
         hudText("RCLICK ORBIT  WHEEL ZOOM  LCLICK SELECT  G/R/S +X/Y/Z  SHIFT FINE  "
-                "K COLLIDERS  DEL REMOVE",
+                "K COLLIDERS  H HULL  DEL REMOVE",
                 -0.97f, -0.845f, 0.026f, dimColor);
 
         // ---- file row --------------------------------------------------------------
@@ -1025,6 +1179,17 @@ namespace studio
         button(0.00f, 0.82f, 0.16f, "SNAP SURF", 232, false);
         button(0.18f, 0.82f, 0.15f, "ND TYPE", 233, false);
         button(0.35f, 0.82f, 0.14f, "ND DEL", 234, false);
+
+        // ---- hull row ----------------------------------------------------------------
+        // The HITBOX is what the part bumps into: the ground it rests on,
+        // the parts it may not overlap in the VAB, the box a building's
+        // footprint is checked against. It is edited here rather than
+        // inferred from the model, so a hull can be fixed without redrawing
+        // anything and a forty-segment nose cone still collides as one box.
+        button(-0.66f, 0.74f, 0.15f, "+HITBOX", 270, false);
+        button(-0.49f, 0.74f, 0.15f, "FIT HULL", 271, false);
+        button(-0.32f, 0.74f, 0.13f, "HB DEL", 272, false);
+        button(-0.17f, 0.74f, 0.16f, "H HULL VIEW", 273, m_showHitboxes);
 
         // ---- shape list (left column) --------------------------------------------------
         sw::f32 y = -0.76f;
@@ -1061,9 +1226,38 @@ namespace studio
                                  400u + static_cast<sw::u32>(i)});
             y += 0.058f;
         }
+        // Hull list under the nodes.
+        y += 0.02f;
+        for (sw::usize i = 0; i < m_part.hitboxes.size() && i < 8; ++i)
+        {
+            const sw::parts::HitBox& box = m_part.hitboxes[i];
+            const bool selected = static_cast<sw::i32>(i) == m_selectedHitbox;
+            panel(-0.98f, y, -0.70f, y + 0.052f,
+                  selected ? sw::Vec4{0.16f, 0.45f, 0.48f, 0.85f}
+                           : sw::Vec4{0.12f, 0.2f, 0.22f, 0.55f});
+            hudText(std::format("HB {:.1f}x{:.1f}x{:.1f}", box.halfExtents.x * 2.0f,
+                                box.halfExtents.y * 2.0f, box.halfExtents.z * 2.0f),
+                    -0.965f, y + 0.013f, 0.026f,
+                    selected ? sw::Vec4{0.85f, 1.0f, 1.0f, 1.0f} : textColor);
+            m_buttons.push_back({-0.98f, y, -0.70f, y + 0.052f,
+                                 500u + static_cast<sw::u32>(i)});
+            y += 0.058f;
+        }
 
         // ---- selection details + color tools (right column) ------------------------------
-        if (hasShapeSelection())
+        if (hasHitboxSelection())
+        {
+            const sw::parts::HitBox& box =
+                m_part.hitboxes[static_cast<sw::usize>(m_selectedHitbox)];
+            hudText(std::format("HITBOX  CENTRE {:.2f} {:.2f} {:.2f}", box.center.x,
+                                box.center.y, box.center.z),
+                    0.30f, -0.97f, 0.028f, textColor);
+            hudText(std::format("SIZE {:.2f} {:.2f} {:.2f}   G MOVE   S SIZE",
+                                box.halfExtents.x * 2.0f, box.halfExtents.y * 2.0f,
+                                box.halfExtents.z * 2.0f),
+                    0.30f, -0.93f, 0.028f, textColor);
+        }
+        else if (hasShapeSelection())
         {
             const sw::parts::PartShape& shape =
                 m_part.shapes[static_cast<sw::usize>(m_selectedShape)];

@@ -15,9 +15,9 @@ namespace sw::factory
         constexpr const char* kLogCat = "Recipes";
 
         constexpr std::array<std::string_view, static_cast<usize>(BuildingCategory::Count)>
-            kCategoryNames = {"miner",  "refinery",   "storage",  "solar",
-                              "fabricator", "pad", "hub", "beacon",
-                              "conveyor"};
+            kCategoryNames = {"miner",      "refinery", "storage", "solar",
+                              "fabricator", "pad",      "hub",     "beacon",
+                              "conveyor",   "battery",  "pole",    "cable"};
 
         Ingredient make(res::Resource resource, f64 unitsPerSecond)
         {

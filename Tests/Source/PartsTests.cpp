@@ -282,8 +282,8 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
                  (parts::isBuilding(definition) || parts::isProp(definition)));
     }
     SW_CHECK_EQ(rocketParts, static_cast<usize>(9));
-    SW_CHECK_EQ(buildings, static_cast<usize>(7)); // + the CV-1 belt segment
-    SW_CHECK_EQ(props, static_cast<usize>(1));     // the CR-1 crate
+    SW_CHECK_EQ(buildings, static_cast<usize>(10)); // + CV-1, BT-1, PL-1, CW-1
+    SW_CHECK_EQ(props, static_cast<usize>(2));     // CR-1 crate, EV-1 suit
 
     // CONVEYOR PORTS. Every machine that takes part in a chain declares its
     // mouths on its geometry, and their DIRECTION is the contract: goods
@@ -319,7 +319,7 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
     // whole point of the port being data is that Part Studio writes it.
     for (const parts::NodeType type :
          {parts::NodeType::Stack, parts::NodeType::Radial, parts::NodeType::ConveyorIn,
-          parts::NodeType::ConveyorOut})
+          parts::NodeType::ConveyorOut, parts::NodeType::Power})
     {
         parts::NodeType parsed = parts::NodeType::Count;
         SW_CHECK(parts::nodeTypeFromName(parts::nodeTypeName(type), parsed));

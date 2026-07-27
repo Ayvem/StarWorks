@@ -197,7 +197,7 @@ namespace sw::parts
         // Node type names as they appear in .swpart JSON. Kept lower-case and
         // hyphenated so a hand-edited file reads the way the tool writes it.
         constexpr std::string_view kNodeTypeNames[] = {"stack", "radial", "conveyor-in",
-                                                       "conveyor-out"};
+                                                       "conveyor-out", "power"};
 
         [[nodiscard]] json::Value vec3ToJson(const Vec3& v)
         {
@@ -266,6 +266,30 @@ namespace sw::parts
             }
         }
         return nullptr;
+    }
+
+    std::vector<const AttachNode*> conveyorNodes(const PartDefinition& definition,
+                                                 NodeType type)
+    {
+        std::vector<const AttachNode*> found;
+        for (const AttachNode& node : definition.nodes)
+        {
+            if (node.type == type)
+            {
+                found.push_back(&node);
+            }
+        }
+        return found;
+    }
+
+    u32 conveyorNodeCount(const PartDefinition& definition, NodeType type)
+    {
+        u32 count = 0;
+        for (const AttachNode& node : definition.nodes)
+        {
+            count += (node.type == type) ? 1u : 0u;
+        }
+        return count;
     }
 
     std::span<const PartDefinition> catalog() { return registry(); }
@@ -427,6 +451,22 @@ namespace sw::parts
             }
         }
 
+        // THE HULL. Absent means "derive it from the collider shapes" —
+        // every .swpart written before hitboxes existed keeps its old
+        // behaviour, and a part whose hull happens to match its geometry
+        // never has to say so twice.
+        if (const json::Value* boxes = root.find("hitboxes"))
+        {
+            for (const json::Value& entry : boxes->asArray())
+            {
+                HitBox box{};
+                box.center = vec3FromJson(entry.find("center"), Vec3{0.0f});
+                box.halfExtents = glm::abs(
+                    vec3FromJson(entry.find("halfExtents"), Vec3{0.5f}));
+                definition.hitboxes.push_back(box);
+            }
+        }
+
         if (definition.shapes.empty())
         {
             SW_LOG_ERROR("Parts", "'{}': a part needs at least one shape", path.string());
@@ -523,6 +563,19 @@ namespace sw::parts
             nodes.push(std::move(entry));
         }
         root.set("nodes", std::move(nodes));
+
+        if (!definition.hitboxes.empty())
+        {
+            json::Value boxes = json::Value::makeArray();
+            for (const HitBox& box : definition.hitboxes)
+            {
+                json::Value entry = json::Value::makeObject();
+                entry.set("center", vec3ToJson(box.center));
+                entry.set("halfExtents", vec3ToJson(box.halfExtents));
+                boxes.push(std::move(entry));
+            }
+            root.set("hitboxes", std::move(boxes));
+        }
 
         const std::string text = json::serialize(root);
         try
@@ -819,7 +872,7 @@ namespace sw::parts
             constexpr f32 kHuge = 1.0e9f;
             auto [entry, inserted] = hulls.try_emplace(
                 part.vessel, Vec3{kHuge, kHuge, kHuge}, Vec3{-kHuge, -kHuge, -kHuge});
-            expandPartColliderBounds(*definition, part.localPosition, part.localRotation,
+            expandPartHullBounds(*definition, part.localPosition, part.localRotation,
                                      entry->second.first, entry->second.second);
             vessel->dryMassKg += definition->dryMassKg;
             vessel->totalCostCredits += definition->costCredits;

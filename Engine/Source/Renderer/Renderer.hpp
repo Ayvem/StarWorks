@@ -83,6 +83,10 @@ namespace sw
         /// tested but not depth-written, no face culling (visible from
         /// inside — the sky IS the far side of the shell).
         bool transparent = false;
+        /// HUD PAINTER'S LAYER (see UI/HudOrder.hpp). Higher is drawn later.
+        /// Backgrounds are 0 and text is 1, so a glyph can never end up
+        /// underneath the panel it belongs to. Ignored unless `screenSpace`.
+        u8 hudLayer = 0;
     };
 
     struct RenderStats

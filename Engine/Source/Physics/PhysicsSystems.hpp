@@ -256,4 +256,51 @@ namespace sw::phys
         bool m_forceRails = false;
         std::vector<BodySnapshot> m_bodies; // scratch, rebuilt each update
     };
+
+    // ------------------------------------------------------------------------
+    // HullCollisionSystem — you cannot walk through a refinery.
+    //
+    // Every solid thing carries its authored hitboxes as a HullComponent;
+    // the ones that get pushed out of the others also carry a
+    // HullMoverComponent. This runs late in the Physics lane, after motion
+    // has already happened, and moves the movers back out — the standard
+    // discrete order, and the one that keeps the walker's own controller
+    // simple: it may step wherever it likes, and this puts it right.
+    //
+    // The broad phase is a bounding-sphere test on positions the entities
+    // already carry, so a base of a hundred buildings costs a hundred f64
+    // subtractions before anything expensive happens. The narrow phase is
+    // box-against-box, and only ever for the handful within arm's reach.
+    // ------------------------------------------------------------------------
+    class HullCollisionSystem final : public ecs::System
+    {
+    public:
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "HullCollisionSystem";
+        }
+
+        [[nodiscard]] ecs::SystemAccess access() const override
+        {
+            // POSITION ONLY. It does not write velocities on purpose — see
+            // the comment in update(): a world velocity on a planet is
+            // mostly carrier motion, and taking a bite out of it is a
+            // kilometres-per-second impulse.
+            return ecs::SystemAccess{}
+                .write<TransformComponent>()
+                .read<HullComponent>()
+                .read<HullMoverComponent>();
+        }
+
+        void update(ecs::World& world, f32 deltaSeconds) override;
+
+        /// Solid things seen last tick — how much work the pair test did,
+        /// for the HUD and for proving the broad phase is doing its job.
+        [[nodiscard]] u32 lastHullCount() const { return m_hullCount; }
+        [[nodiscard]] u32 lastNarrowPairs() const { return m_narrowPairs; }
+
+    private:
+        u32 m_hullCount = 0;
+        u32 m_narrowPairs = 0;
+    };
 } // namespace sw::phys

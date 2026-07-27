@@ -106,6 +106,15 @@ namespace sw::parts
         /// discovering it at runtime.
         ConveyorIn,
         ConveyorOut,
+        /// THE POWER CONNECTION. Where a cable may be hooked onto this
+        /// building, in its own frame — usually the top of a mast or a
+        /// junction box on the roof, because a wire that meets a machine at
+        /// ankle height looks like a trip hazard rather than a supply.
+        ///
+        /// A building without one takes no cable at all, which is the honest
+        /// way to say "this thing does not touch the grid": a conveyor tile
+        /// has no power node and so can never be wired to anything.
+        Power,
         Count
     };
 
@@ -117,6 +126,30 @@ namespace sw::parts
     {
         return type == NodeType::ConveyorIn || type == NodeType::ConveyorOut;
     }
+
+    /// ONE BOX OF A PART'S HITBOX.
+    ///
+    /// Until now a part's collision hull was inferred from the shapes marked
+    /// `collider` — the same primitives that draw it. That conflates two
+    /// different jobs. What a part LOOKS like wants cones, tubes, greebles
+    /// and forty segments; what a part BUMPS INTO wants as few boxes as will
+    /// do, because every one of them is tested against every other part.
+    /// Worse, it meant you could not fix a hull without changing the model.
+    ///
+    /// So the hull is now authored: a LIST of boxes, axis-aligned in the
+    /// part's own frame — that is what makes it an AABB, and what makes it
+    /// cheap. A part is not one box (a rocket with fins is not a crate), so
+    /// the hull is their union, and Part Studio draws and edits them the way
+    /// it already does shapes and nodes.
+    ///
+    /// A definition with NO hitboxes falls back to its collider shapes,
+    /// exactly as before — every .swpart written before this loads and
+    /// behaves unchanged.
+    struct HitBox
+    {
+        Vec3 center{0.0f};
+        Vec3 halfExtents{0.5f};
+    };
 
     /// A named attachment location on a part, in the part's local frame.
     /// Authored ON the collider surface by Part Studio — never inside.
@@ -199,6 +232,10 @@ namespace sw::parts
         // ---- geometry & connexions ----------------------------------------------
         std::vector<PartShape> shapes;
         std::vector<AttachNode> nodes;
+        /// The COLLISION HULL, as boxes. Empty means "derive it from the
+        /// collider shapes", which is what every part did before hitboxes
+        /// existed.
+        std::vector<HitBox> hitboxes;
     };
 
     /// The catalog. Before loadCatalog() succeeds it holds a minimal
@@ -239,6 +276,10 @@ namespace sw::parts
     inline constexpr u32 kBuildingBeacon = 105;
     inline constexpr u32 kBuildingConveyor = 106; // one belt segment, tiled
     inline constexpr u32 kPropConveyorCrate = 107; // what rides the belt
+    inline constexpr u32 kBuildingBatteryBank = 108; // joules for the night
+    inline constexpr u32 kBuildingPowerPole = 109;   // the only place a grid branches
+    inline constexpr u32 kBuildingCable = 110;       // one span of wire
+    inline constexpr u32 kPropEvaSuit = 111;         // the player, on foot
 
     /// A PROP: authored geometry the GAME places, never the player. Conveyor
     /// cargo is the first one — a crate is not something you pick out of a
@@ -258,6 +299,45 @@ namespace sw::parts
     /// The first conveyor port of a definition matching `type`, or nullptr.
     [[nodiscard]] const AttachNode* findConveyorNode(const PartDefinition& definition,
                                                      NodeType type);
+
+    /// EVERY port of a type, in authored order.
+    ///
+    /// A machine may have more than one mouth of the same kind, and the
+    /// order is the contract: out port i ships the recipe's output i. That
+    /// is what lets an electrolyser put hydrogen on one belt and oxygen on
+    /// another instead of both down a single run — which is the difference
+    /// between a fuel chain you can lay out and one you cannot.
+    [[nodiscard]] std::vector<const AttachNode*> conveyorNodes(
+        const PartDefinition& definition, NodeType type);
+
+    /// How many mouths of this kind the definition has.
+    [[nodiscard]] u32 conveyorNodeCount(const PartDefinition& definition, NodeType type);
+
+    /// Where a cable hooks onto this definition, or nullptr if it does not
+    /// take one. Same lookup as the conveyor mouths — one node type, one
+    /// place it is authored, one place it is read.
+    [[nodiscard]] inline const AttachNode* findPowerNode(const PartDefinition& definition)
+    {
+        return findConveyorNode(definition, NodeType::Power);
+    }
+
+    /// SOLID THINGS. Everything a player can bump into carries a collision
+    /// hull; belts and cables deliberately do not. You step over a conveyor
+    /// deck and duck under a wire, and making the two things a player walks
+    /// among most into obstacles would turn a factory floor into an assault
+    /// course. It is a property of the CATEGORY rather than of the file, so
+    /// a new belt part cannot forget the rule — and it is separate from
+    /// SHAPE: a belt still has hitboxes, the renderer and the build
+    /// validator want them.
+    [[nodiscard]] inline bool isSolid(const PartDefinition& definition)
+    {
+        if (!definition.building.valid)
+        {
+            return true; // rocket parts and props are always solid
+        }
+        return definition.building.category != factory::BuildingCategory::Conveyor &&
+               definition.building.category != factory::BuildingCategory::Cable;
+    }
 
     /// True when this definition describes a planetary building rather than
     /// a rocket part — the VAB palette filters on it.

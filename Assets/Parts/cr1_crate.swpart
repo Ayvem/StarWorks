@@ -2,27 +2,26 @@
   "id": 107,
   "type": "Structural",
   "name": "CR-1 Cargo Crate",
-  "dryMassKg": 1.0,
-  "costCredits": 0.0,
+  "dryMassKg": 1,
+  "costCredits": 0,
   "volumeM3": 0.05,
   "crashToleranceMps": 4,
-  "breakingForceN": 1000.0,
+  "breakingForceN": 1000,
   "dragCoefficientArea": 0.1,
   "liftCoefficient": 0,
   "thrustNewtons": 0,
   "specificImpulseS": 0,
-  "chargeRateKw": 0.0,
-  "prop": true,
+  "chargeRateKw": 0,
   "capacities": [],
   "shapes": [
     {
       "kind": "box",
-      "position": [0, 0.20, 0],
+      "position": [0, 0.20000000298023224, 0],
       "rotationDeg": [0, 0, 0],
-      "size": [0.26, 0.18, 0.26],
-      "color": [1.0, 1.0, 1.0],
-      "emissive": 0.0,
-      "specular": 0.18,
+      "size": [0.25999999046325684, 0.18000000715255737, 0.25999999046325684],
+      "color": [1, 1, 1],
+      "emissive": 0,
+      "specular": 0.18000000715255737,
       "gloss": 0.25,
       "segments": 8,
       "visible": true,
@@ -30,17 +29,24 @@
     },
     {
       "kind": "box",
-      "position": [0, 0.385, 0],
+      "position": [0, 0.38499999046325684, 0],
       "rotationDeg": [0, 0, 0],
-      "size": [0.28, 0.025, 0.28],
-      "color": [0.72, 0.74, 0.78],
-      "emissive": 0.0,
-      "specular": 0.35,
-      "gloss": 0.45,
+      "size": [0.2800000011920929, 0.02500000037252903, 0.2800000011920929],
+      "color": [0.7200000286102295, 0.7400000095367432, 0.7799999713897705],
+      "emissive": 0,
+      "specular": 0.3499999940395355,
+      "gloss": 0.44999998807907104,
       "segments": 8,
       "visible": true,
       "collider": false
     }
   ],
-  "nodes": []
+  "prop": true,
+  "nodes": [],
+  "hitboxes": [
+    {
+      "center": [0, 0.20000000298023224, 0],
+      "halfExtents": [0.25999999046325684, 0.18000000715255737, 0.25999999046325684]
+    }
+  ]
 }

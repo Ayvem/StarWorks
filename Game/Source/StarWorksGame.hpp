@@ -108,7 +108,23 @@ namespace game
                                                   sw::ecs::Entity from,
                                                   sw::ecs::Entity to,
                                                   std::vector<BeltTile>& outTiles);
+        /// ...between two SPECIFIC mouths, which is what the tool uses once
+        /// a machine has more than one of a kind.
+        [[nodiscard]] sw::build::Verdict planBelt(sw::ecs::Entity body,
+                                                  sw::ecs::Entity from,
+                                                  sw::u32 fromPortIndex,
+                                                  sw::ecs::Entity to, sw::u32 toPortIndex,
+                                                  std::vector<BeltTile>& outTiles);
         /// The body-frame position of one of a building's conveyor mouths.
+        /// The mouth of `type` at `index`, in the body frame. A machine may
+        /// have several of a kind — see parts::conveyorNodes.
+        [[nodiscard]] bool conveyorPortOf(sw::ecs::Entity entity, sw::parts::NodeType type,
+                                          sw::u32 index, sw::WorldVec3& outLocal);
+        /// The free mouth nearest where the player is aiming.
+        [[nodiscard]] sw::u32 chooseConveyorPort(sw::ecs::Entity entity,
+                                                 sw::parts::NodeType type,
+                                                 const sw::WorldVec3& aimLocal,
+                                                 bool& outAny);
         [[nodiscard]] bool conveyorPortOf(sw::ecs::Entity entity, sw::parts::NodeType type,
                                           sw::WorldVec3& outLocal);
         /// F2: aims the ground build cursor and acts on click / R.
@@ -180,6 +196,37 @@ namespace game
         sw::f32 m_conveyorSegmentM = 2.0f;
         /// Top of the CV-1's deck in its own frame — where cargo rides.
         sw::f32 m_conveyorDeckHeightM = 0.66f;
+        /// Owned by the Physics lane; kept for its per-tick pair counts,
+        /// which the HUD shows so a base that has become expensive says so.
+        sw::phys::HullCollisionSystem* m_hullCollision = nullptr;
+        /// Turns a definition's authored hitboxes into the solid shape an
+        /// entity carries. Conveyor decks and cables get none — you step
+        /// over a belt, you do not climb it.
+        [[nodiscard]] static bool hullFor(const sw::parts::PartDefinition& definition,
+                                          sw::phys::HullComponent& outHull);
+        /// What the player is looking at, by their actual hull rather than
+        /// by distance to a centre: the E panel's question.
+        [[nodiscard]] sw::ecs::Entity hullUnderCrosshair(sw::f64 maxDistanceM);
+        /// Re-derives every entity's solid shape from its .swpart. Hulls are
+        /// derived data, so they are not saved; a load rebuilds them the way
+        /// it rebuilds the belt chains and the power grids.
+        void rebuildHulls();
+        /// E was pressed: resolve it AFTER the camera has been updated, for
+        /// the same reason the ground cursor aims last.
+        bool m_configRequested = false;
+        /// F2: draw every solid hull as the box it actually is. Seeing the
+        /// collision shape is the only way to tell an authoring mistake from
+        /// an engine one — a hull that matches the model looks like nothing
+        /// at all, which is exactly why it has to be lookable-at.
+        bool m_showHitboxes = false;
+        sw::u32 m_hullBoxMeshIndex = 0xFFFFFFFFu;
+        void collectHullOverlay(const sw::Camera& activeCamera);
+        /// The player's own hull, read off EV-1's hitbox at startup.
+        sw::phys::GroundHullComponent m_capsuleHull{{0.0f, 0.0f, 0.0f},
+                                                     {0.5f, 1.0f, 0.5f}};
+        /// The CW-1 wire span, same contract as the belt tile.
+        sw::u32 m_cableMeshIndex = 0xFFFFFFFFu;
+        sw::f32 m_cableSegmentM = 2.0f;
 
         // Artificial horizon (bottom-center instrument).
         sw::u32 m_navRingMeshIndex = 0;
@@ -332,7 +379,42 @@ namespace game
         // not its input. They are still ordinary buildings afterwards, and
         // the network is still derived from where their ports ended up, so
         // nothing about the rest of the system had to change.
+        /// What ONE belt can move, units per second, per good it carries.
+        /// The rated capacity of a conveyor: a machine that out-produces it
+        /// backs up, which is the bottleneck a factory is built around.
+        static constexpr sw::f64 kConveyorRateUnitsPerSecond = 3.0;
         sw::ecs::Entity m_beltSource{}; // picked, waiting for a destination
+        /// Which of the source's out mouths the pending run leaves by, and
+        /// which of the destination's in mouths the preview is aiming at.
+        sw::u32 m_beltSourcePort = 0;
+        sw::u32 m_beltDestinationPort = 0;
+
+        // ---- THE CABLE TOOL --------------------------------------------------
+        // Same two clicks as the belt, a different question: not "feed this
+        // from that" but "put these on the same grid". The rules are in
+        // factory::validateCable — one wire per building, unlimited at a
+        // pole — so the HUD's refusal and the commit's refusal are the same
+        // sentence from the same function.
+        sw::ecs::Entity m_cableSource{};
+        sw::factory::CableVerdict m_cableVerdict = sw::factory::CableVerdict::NoPowerNode;
+        /// Longest span. A wire is a straight line through the air, and one
+        /// long enough to cross a valley would go through the hill.
+        static constexpr sw::f64 kMaxCableLengthM = 120.0;
+        /// How far a span droops, as a fraction of its length. Enough to read
+        /// as a hanging wire, not enough to reach the ground.
+        static constexpr sw::f64 kCableSagFraction = 0.045;
+        bool powerNodeOf(sw::ecs::Entity entity, sw::WorldVec3& outLocal);
+        void rebuildPowerNetwork();
+        void hangCable(CableComponent& cable, const sw::WorldVec3& from,
+                       const sw::WorldVec3& to);
+        /// Both ends' rules, in the terms factory::validateCable wants them.
+        [[nodiscard]] sw::factory::CableVerdict planCable(sw::ecs::Entity from,
+                                                          sw::ecs::Entity to,
+                                                          sw::WorldVec3& outFrom,
+                                                          sw::WorldVec3& outTo);
+        void layCable(sw::ecs::Entity body, sw::ecs::Entity from, sw::ecs::Entity to);
+        void collectCables(const sw::Camera& activeCamera);
+        void collectCableGhost(const sw::Camera& activeCamera);
         std::vector<BeltTile> m_beltPreview;
         sw::build::Verdict m_beltVerdict = sw::build::Verdict::NoGround;
         /// Longest run the tool will lay in one go. A belt across a continent
@@ -341,6 +423,24 @@ namespace game
         /// Reach, in metres. Satisfactory's lesson: a factory is built by
         /// walking around it, so the cursor stops where your arm does.
         static constexpr sw::f64 kBuildRangeM = 30.0;
+        // ---- F3: THE MACHINE PANEL (E) --------------------------------------
+        // Walk up to a building, press E, and you are looking at what it is
+        // doing: its state, its share of the grid, what is in its bin, and
+        // the list of recipes its CATEGORY can run. Choosing one is the only
+        // way a player builds the fuel chain, so this panel is not chrome —
+        // it is the interface to the entire production system.
+        //
+        // It holds an ENTITY, not a copy of anything. A machine demolished
+        // while its panel is open simply stops resolving, and the panel
+        // closes itself on the next frame.
+        sw::ecs::Entity m_configTarget{};
+        /// How close you have to stand. Short on purpose: the panel is a
+        /// control on the machine, not a remote.
+        static constexpr sw::f64 kConfigRangeM = 18.0;
+        void collectConfigMenu();
+        void toggleConfigMenu();
+        void applyRecipeChoice(sw::ecs::Entity entity, sw::u32 recipeId);
+
         sw::Camera m_hangarCamera;
         sw::f32 m_hangarYaw = 0.6f;
         sw::f32 m_hangarPitch = 0.25f;
@@ -358,6 +458,17 @@ namespace game
         std::vector<HudButton> m_hudButtons; // rebuilt each frame
         void collectSasButtons();
         void handleHudClicks();
+        /// A filled screen-space rectangle in NDC. Every panel, row and chip
+        /// in the game goes through this one call.
+        void hudQuad(sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
+                     const sw::Vec4& color);
+        /// A panel with a hairline edge — the edge is what stops a dark list
+        /// from bleeding into a dark planet.
+        void hudPanel(sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
+                      const sw::Vec4& fill);
+        /// The cursor in the same NDC the buttons are laid out in, so a row
+        /// can light up under it. False when there is no window yet.
+        [[nodiscard]] bool hudCursor(sw::f32& outX, sw::f32& outY);
 
         // Visual particles: reentry plasma streaks and engine exhaust.
         struct ReentryParticle

@@ -35,7 +35,27 @@ namespace sw::parts
     /// (all shapes, visible or not).
     [[nodiscard]] f32 partBoundsRadius(const PartDefinition& definition);
 
-    /// Axis-aligned bounds of the part's COLLIDER shapes, posed at
+    /// True when the definition AUTHORS its collision hull as hitboxes.
+    /// False means "derive it from the collider shapes", which is what every
+    /// part did before hitboxes existed and what any .swpart written without
+    /// them still does.
+    [[nodiscard]] bool hasHitbox(const PartDefinition& definition);
+
+    /// One box per COLLIDER shape, each the axis-aligned bounds of that
+    /// shape in the part's own frame — a starting hull good enough to edit
+    /// from rather than to draw from scratch. Part Studio's FIT button and
+    /// the offline seeding of the shipped catalogue are the same call, so a
+    /// generated hull and an authored one are the same kind of object.
+    [[nodiscard]] std::vector<HitBox> hitboxesFromColliders(
+        const PartDefinition& definition);
+
+    /// The boxes a part actually collides with: its authored hitboxes if it
+    /// has any, the ones its collider shapes imply otherwise. One call, so
+    /// no caller has to remember the fallback rule.
+    [[nodiscard]] std::vector<HitBox> effectiveHull(const PartDefinition& definition);
+
+    /// Axis-aligned bounds of the part's HULL — its hitboxes if it has any,
+    /// its collider shapes otherwise — posed at
     /// `position`/`rotation` and projected onto the axes of THAT frame
     /// (vessel space, typically). Each collider shape contributes the same
     /// oriented box the overlap test uses — so what a vessel RESTS on is
@@ -45,8 +65,8 @@ namespace sw::parts
     /// `outMin`/`outMax` are EXPANDED, never reset: call it once per part
     /// over a running box. Falls back to the visible shapes when a part has
     /// no collider at all.
-    void expandPartColliderBounds(const PartDefinition& definition, const Vec3& position,
-                                  const Quat& rotation, Vec3& outMin, Vec3& outMax);
+    void expandPartHullBounds(const PartDefinition& definition, const Vec3& position,
+                              const Quat& rotation, Vec3& outMin, Vec3& outMax);
 
     struct PartRayHit
     {
@@ -64,8 +84,8 @@ namespace sw::parts
                                    const Vec3& direction, f32 maxDistance,
                                    PartRayHit& outHit);
 
-    /// Compound collider overlap between two POSED parts (positions in the
-    /// same frame, e.g. vessel-local). Each collider shape is tested as an
+    /// Compound HULL overlap between two POSED parts (positions in the
+    /// same frame, e.g. vessel-local). Each hull box is tested as an
     /// oriented box (separating-axis theorem); `margin` shrinks every box
     /// on all sides — pass a small positive margin so flush stack contact
     /// does not read as a collision.

@@ -392,8 +392,8 @@ SW_TEST(OutpostChainSmeltsWhatItMinesAndLosesOnlyItsSlag)
         makeMachine(world, sw::factory::BuildingCategory::Refinery,
                     sw::factory::kRecipeSmeltIron, 500.0);
     // The conveyor abstraction the scene wires between them.
-    world.addComponent(refinery, sw::factory::ItemLinkComponent{
-                                     miner, sw::res::Resource::IronOre, 3.0});
+    world.addComponent(refinery, sw::factory::makeItemLink(
+                                     miner, sw::res::Resource::IronOre, 3.0));
 
     sw::factory::ProductionSystem production;
     sw::factory::TransferSystem transfer;
@@ -564,8 +564,8 @@ SW_TEST(LinkThroughputIsTheAverageItActuallyMoves)
                     sw::factory::kRecipeMineIronOre, 500.0, 0.85f);
     const sw::ecs::Entity depot =
         makeMachine(world, sw::factory::BuildingCategory::Storage, 0u, 500.0);
-    world.addComponent(depot, sw::factory::ItemLinkComponent{
-                                  mine, sw::res::Resource::IronOre, 3.0});
+    world.addComponent(depot, sw::factory::makeItemLink(
+                                  mine, sw::res::Resource::IronOre, 3.0));
 
     sw::factory::ProductionSystem production;
     sw::factory::TransferSystem transfer;
@@ -585,8 +585,9 @@ SW_TEST(LinkThroughputIsTheAverageItActuallyMoves)
         if (tick >= 300)
         {
             const sw::f64 flow =
-                world.getComponent<sw::factory::ItemLinkComponent>(depot)
-                    .flowUnitsPerSecond;
+                sw::factory::linkFlow(
+                    world.getComponent<sw::factory::ItemLinkComponent>(depot),
+                    sw::res::Resource::IronOre);
             lowest = std::min(lowest, flow);
             highest = std::max(highest, flow);
         }
@@ -609,6 +610,7 @@ SW_TEST(LinkThroughputIsTheAverageItActuallyMoves)
     {
         transfer.update(world, 0.1f);
     }
-    SW_CHECK(world.getComponent<sw::factory::ItemLinkComponent>(depot)
-                 .flowUnitsPerSecond < 1.0e-3);
+    SW_CHECK(sw::factory::linkFlow(
+                 world.getComponent<sw::factory::ItemLinkComponent>(depot),
+                 sw::res::Resource::IronOre) < 1.0e-3);
 }

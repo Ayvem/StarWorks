@@ -67,6 +67,9 @@ namespace studio
         void snapSelectedNodeToSurface();
         [[nodiscard]] bool hasShapeSelection() const;
         [[nodiscard]] bool hasNodeSelection() const;
+        [[nodiscard]] bool hasHitboxSelection() const;
+        void addHitbox();
+        void fitHitboxes();
 
         /// Ray through the cursor, origin at the camera (world units;
         /// the edited part sits at the world origin).
@@ -92,6 +95,10 @@ namespace studio
         sw::parts::PartDefinition m_part;
         sw::i32 m_selectedShape = -1;
         sw::i32 m_selectedNode = -1;
+        /// THE HULL, selected the same way shapes and nodes are. A hitbox is
+        /// an axis-aligned box, so it has no rotation to edit — grab and
+        /// scale only, and Rotate refuses like it does for nodes.
+        sw::i32 m_selectedHitbox = -1;
 
         Mode m_mode = Mode::Idle;
         sw::i32 m_modeAxis = -1; // -1 free, 0/1/2 = X/Y/Z
@@ -99,8 +106,10 @@ namespace studio
         sw::f32 m_modalAccumY = 0.0f;
         sw::parts::PartShape m_shapeBackup{};
         sw::parts::AttachNode m_nodeBackup{};
+        sw::parts::HitBox m_hitboxBackup{};
 
         bool m_geometryDirty = true;
+        bool m_showHitboxes = true;
         bool m_showColliders = true;
 
         // ---- camera --------------------------------------------------------------

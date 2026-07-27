@@ -52,6 +52,49 @@ namespace sw::phys
         Vec3 halfExtents{0.0f}; // model space, metres
     };
 
+    inline constexpr u32 kMaxHullBoxes = 8;
+
+    /// THE SOLID SHAPE of an object, in its own frame.
+    ///
+    /// `GroundHullComponent` above is the single box an object RESTS on. This
+    /// is the several boxes it BUMPS INTO — the part's authored hitboxes,
+    /// copied onto the entity at spawn so collision never has to go back to
+    /// the catalogue, and so an entity's solidity is a fact about the entity
+    /// rather than a lookup that could fail.
+    ///
+    /// `radius` is the bounding sphere around the entity origin, and it is
+    /// the point of the whole component: the broad phase rejects a pair with
+    /// one f64 subtraction and one comparison, so a base of a hundred
+    /// buildings costs a hundred distance checks and then almost nothing.
+    ///
+    /// An entity with no HullComponent is not solid. That is how conveyor
+    /// decks and cables stay walk-through: you step over a belt, you do not
+    /// climb it.
+    struct HullBoxComponent
+    {
+        Vec3 centre{0.0f};
+        Vec3 halfExtents{0.5f};
+    };
+
+    struct HullComponent
+    {
+        HullBoxComponent boxes[kMaxHullBoxes]{};
+        u32 count = 0;
+        f32 radius = 0.0f;
+    };
+
+    /// Marks a hull that gets PUSHED OUT of the others. The player is one;
+    /// buildings are not, because a building does not move for anybody.
+    /// Keeping it a tag rather than a flag means the collision system's
+    /// query is "every mover", not "every hull, then filter".
+    struct HullMoverComponent
+    {
+        /// How far the mover may be displaced in one tick, metres. A cap:
+        /// a body that somehow starts deep inside a building gets walked
+        /// out over a few ticks instead of being flung across the map.
+        f32 maxPushM = 1.5f;
+    };
+
     /// How far the hull reaches HORIZONTALLY from the origin — the radius
     /// of its footprint on the ground. Ground contact samples the terrain
     /// out at this distance as well as under the centre, because on a slope

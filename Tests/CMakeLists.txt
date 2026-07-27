@@ -8,11 +8,17 @@ add_executable(StarWorksTests
     Source/EcsTests.cpp
     Source/FactoryTests.cpp
     Source/FrustumTests.cpp
+    Source/HudOrderTests.cpp
     Source/IndustryTests.cpp
     Source/JsonTests.cpp
     Source/Main.cpp
     Source/PartsTests.cpp
     Source/PhysicsTests.cpp
+    Source/PowerTests.cpp
+    # These two load the SHIPPED catalogue, which replaces the global
+    # registry — they must link AFTER PartsTests, which checks the
+    # built-in fallback.
+    Source/HullTests.cpp
     Source/ConstructionTests.cpp
     Source/PrimitivesTests.cpp
     Source/SaveTests.cpp

@@ -1,0 +1,118 @@
+{
+  "id": 108,
+  "type": "Structural",
+  "name": "BT-1 Battery Bank",
+  "dryMassKg": 9000,
+  "costCredits": 0,
+  "volumeM3": 10,
+  "crashToleranceMps": 8,
+  "breakingForceN": 300000,
+  "dragCoefficientArea": 1.6,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "building": {
+    "category": "battery",
+    "footprintM": [8, 5],
+    "powerKw": -2,
+    "inventoryVolumeM3": 150,
+    "maxSlopeTangent": 0.14,
+    "minOreDensity": 0
+  },
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0.25, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [7.199999809265137, 0.5, 4.199999809265137],
+      "color": [0.23999999463558197, 0.25, 0.27000001072883606],
+      "emissive": 0,
+      "specular": 0.30000001192092896,
+      "gloss": 0.25,
+      "segments": 16,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [-2.200000047683716, 1.5, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.200000047683716, 2, 3.4000000953674316],
+      "color": [0.3199999928474426, 0.3400000035762787, 0.36000001430511475],
+      "emissive": 0,
+      "specular": 0.4000000059604645,
+      "gloss": 0.3499999940395355,
+      "segments": 16,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0.4000000059604645, 1.5, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.200000047683716, 2, 3.4000000953674316],
+      "color": [0.3199999928474426, 0.3400000035762787, 0.36000001430511475],
+      "emissive": 0,
+      "specular": 0.4000000059604645,
+      "gloss": 0.3499999940395355,
+      "segments": 16,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [2.5999999046325684, 1.100000023841858, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.2000000476837158, 1.2000000476837158, 2.4000000953674316],
+      "color": [0.20000000298023224, 0.41999998688697815, 0.30000001192092896],
+      "emissive": 0.15000000596046448,
+      "specular": 0.5,
+      "gloss": 0.5,
+      "segments": 16,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [-0.8999999761581421, 2.75, 0],
+      "rotationDeg": [0, 0, 90],
+      "size": [0.18000000715255737, 5.199999809265137, 0.18000000715255737],
+      "color": [0.5, 0.41999998688697815, 0.1599999964237213],
+      "emissive": 0,
+      "specular": 0.6000000238418579,
+      "gloss": 0.5,
+      "segments": 10,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "power",
+      "position": [2.5999999046325684, 3.5, 0],
+      "direction": [0, 1, 0],
+      "type": "power",
+      "size": 0.5
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0.25, 0],
+      "halfExtents": [7.199999809265137, 0.5, 4.199999809265137]
+    },
+    {
+      "center": [-2.200000047683716, 1.5, 0],
+      "halfExtents": [2.200000047683716, 2, 3.4000000953674316]
+    },
+    {
+      "center": [0.4000000059604645, 1.5, 0],
+      "halfExtents": [2.200000047683716, 2, 3.4000000953674316]
+    },
+    {
+      "center": [2.5999999046325684, 1.100000023841858, 0],
+      "halfExtents": [1.2000000476837158, 1.2000000476837158, 2.4000000953674316]
+    }
+  ]
+}

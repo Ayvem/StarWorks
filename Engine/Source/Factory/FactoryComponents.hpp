@@ -58,11 +58,12 @@ namespace sw::factory
         f64 totalRefined = 0.0;    // lifetime statistics
     };
 
-    struct ItemLinkComponent
+    /// ONE feed into a machine: where from, what, how fast at most.
+    struct LinkChannel
     {
         ecs::Entity source{};
-        res::Resource resource = res::Resource::IronOre;
-        f64 unitsPerSecond = 1.0;
+        res::Resource resource = res::Resource::Count; // Count == unused
+        f64 unitsPerSecond = 0.0;
         /// What ACTUALLY moved last tick, units per second. A link is rarely
         /// running at its rated speed — the source starves, the destination
         /// fills — and the difference is the single most useful number about
@@ -71,6 +72,47 @@ namespace sw::factory
         /// and F4's UI will graph the same field.
         f64 flowUnitsPerSecond = 0.0;
     };
+
+    inline constexpr u32 kMaxLinkChannels = 4;
+
+    /// The feeds into ONE machine.
+    ///
+    /// It is an array and not a single link because the fuel chain demands
+    /// it: the synthesiser takes hydrogen AND oxygen, from the same
+    /// electrolyser, down two separate belts. A one-link component made that
+    /// chain — the chain the whole of F3 exists to enable — unbuildable.
+    /// Four channels is `kMaxRecipeIngredients`, which is not a coincidence:
+    /// a machine never needs more feeds than its recipe has inputs.
+    struct ItemLinkComponent
+    {
+        LinkChannel channels[kMaxLinkChannels]{};
+    };
+
+    /// Adds a feed. Returns the channel index, or -1 when full. An existing
+    /// channel with the same source AND resource is UPDATED rather than
+    /// duplicated — two belts between the same pair carrying the same goods
+    /// are one logistics link that happens to be drawn twice.
+    i32 linkAddChannel(ItemLinkComponent& link, ecs::Entity source,
+                       res::Resource resource, f64 unitsPerSecond);
+
+    /// Measured throughput of the channel carrying `resource`, or 0.
+    [[nodiscard]] f64 linkFlow(const ItemLinkComponent& link, res::Resource resource);
+
+    /// Measured throughput of everything arriving from one source — what a
+    /// single belt between two machines is actually moving, however many
+    /// goods it happens to be carrying.
+    [[nodiscard]] f64 linkFlowFrom(const ItemLinkComponent& link, ecs::Entity source);
+
+    /// A component carrying exactly one feed — the common case, and what
+    /// every call site used before machines needed two.
+    [[nodiscard]] inline ItemLinkComponent makeItemLink(ecs::Entity source,
+                                                        res::Resource resource,
+                                                        f64 unitsPerSecond)
+    {
+        ItemLinkComponent link{};
+        link.channels[0] = {source, resource, unitsPerSecond, 0.0};
+        return link;
+    }
 
     // ------------------------------------------------------------------------
     // F1 — the data-driven industry.
@@ -112,13 +154,61 @@ namespace sw::factory
         f64 consumedUnits = 0.0;
     };
 
-    /// Electrical books of one building. The site grid fills `satisfaction`
-    /// each tick (F3); until then everything runs at full power.
+    /// Electrical books of one building, written by the site grid every
+    /// Automation tick (F3).
     struct PowerComponent
     {
+        /// Nameplate output. For SOLAR this is what the panel makes with the
+        /// star overhead; the grid multiplies it by the real sun.
         f64 producedKw = 0.0;
         f64 consumedKw = 0.0;
         f64 satisfaction = 1.0; // 0..1 — the fraction of demand actually met
+        /// What the panel is ACTUALLY making right now, after elevation and
+        /// eclipse. 0 at night, which is the whole point of F3.
+        f64 actualProducedKw = 0.0;
+        /// Lower is served first in a brownout. Seeded from the category
+        /// (factory::defaultPowerPriority) and editable per building.
+        u32 priority = 0;
+        /// WHICH GRID this building is on — the connected component of the
+        /// cable graph it belongs to, recomputed by `rebuildPowerNetwork`
+        /// after every build and demolition. A building nobody has wired up
+        /// gets a grid of its own, which is exactly right: it runs on
+        /// whatever it makes itself, and usually that is nothing.
+        u32 gridId = 0;
+        /// That grid's books last tick. Duplicated onto every member so the
+        /// machine panel is a pure read of one component — 16 bytes against
+        /// a lookup through a table that would have to exist somewhere.
+        f64 gridProducedKw = 0.0;
+        f64 gridConsumedKw = 0.0;
+    };
+
+    /// A CABLE: one span of wire between two power nodes.
+    ///
+    /// Unlike the conveyor network, this one is DECLARED rather than derived,
+    /// and the difference is real. A belt is a row of tiles you can see, and
+    /// what they connect follows from where their mouths ended up — the
+    /// geometry is the statement. A cable has no intermediate object: the
+    /// span IS the statement, so it is what gets stored. What is derived
+    /// from it, every time, is the GRID (see Factory/PowerNetwork.hpp).
+    struct PowerLinkComponent
+    {
+        ecs::Entity a{};
+        ecs::Entity b{};
+    };
+
+    /// A BATTERY BANK. It is a building whose inventory holds ElectricCharge
+    /// (1 unit = 1 kJ), and whose job is the fourteen-day lunar night: charge
+    /// while the sun is up, carry the site through the dark, and — when it
+    /// cannot — let the factory stop, honestly, until dawn.
+    struct BatteryComponent
+    {
+        /// How fast it can take charge in and give it back, kW. A bank that
+        /// could dump its whole store in a tick would make the grid a
+        /// step function instead of a curve.
+        f64 maxChargeKw = 400.0;
+        f64 maxDischargeKw = 400.0;
+        /// Last tick's flow, positive charging. Purely for the UI.
+        f64 flowKw = 0.0;
     };
 
     /// A NAVIGATION BEACON: the one building whose product is being found.
@@ -152,6 +242,10 @@ namespace sw::factory
         ecs::Entity body{};      // the celestial body it stands on
         f64 producedKw = 0.0;    // last tick, summed over the site
         f64 consumedKw = 0.0;
+        /// Net battery flow last tick, positive charging. Negative means the
+        /// site is living off its banks — which on a lunar night is the most
+        /// important number on the screen.
+        f64 batteryFlowKw = 0.0;
         u32 buildingCount = 0;
     };
 
@@ -159,6 +253,8 @@ namespace sw::factory
     static_assert(std::is_trivially_copyable_v<BuildingComponent>);
     static_assert(std::is_trivially_copyable_v<RecipeStateComponent>);
     static_assert(std::is_trivially_copyable_v<PowerComponent>);
+    static_assert(std::is_trivially_copyable_v<BatteryComponent>);
+    static_assert(std::is_trivially_copyable_v<PowerLinkComponent>);
     static_assert(std::is_trivially_copyable_v<SiteComponent>);
     static_assert(std::is_trivially_copyable_v<BeaconComponent>);
     static_assert(std::is_trivially_copyable_v<MinerComponent>);

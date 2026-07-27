@@ -74,6 +74,8 @@ add_library(StarWorksEngine STATIC
     Source/Factory/FactorySystems.cpp
     Source/Factory/FactorySystems.hpp
     Source/Factory/Conveyor.hpp
+    Source/Factory/Power.hpp
+    Source/Factory/PowerNetwork.hpp
     Source/Factory/Recipes.cpp
     Source/Factory/Recipes.hpp
 
@@ -87,6 +89,7 @@ add_library(StarWorksEngine STATIC
     # --- Physics ---------------------------------------------------------------
     Source/Physics/Kepler.cpp
     Source/Physics/Kepler.hpp
+    Source/Physics/HullCollision.hpp
     Source/Physics/PhysicsComponents.hpp
     Source/Physics/PhysicsSystems.cpp
     Source/Physics/PhysicsSystems.hpp
@@ -138,6 +141,7 @@ add_library(StarWorksEngine STATIC
     # --- UI --------------------------------------------------------------------
     Source/UI/HudFont.cpp
     Source/UI/HudFont.hpp
+    Source/UI/HudOrder.hpp
     Source/UI/ScreenMarker.hpp
 
     # --- Public umbrella --------------------------------------------------------

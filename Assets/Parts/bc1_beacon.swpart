@@ -2,174 +2,109 @@
   "id": 105,
   "type": "Structural",
   "name": "BC-1 Nav Beacon",
-  "dryMassKg": 3200.0,
-  "costCredits": 0.0,
-  "volumeM3": 6.0,
+  "dryMassKg": 3200,
+  "costCredits": 0,
+  "volumeM3": 6,
   "crashToleranceMps": 6,
-  "breakingForceN": 120000.0,
+  "breakingForceN": 120000,
   "dragCoefficientArea": 1.2,
   "liftCoefficient": 0,
   "thrustNewtons": 0,
   "specificImpulseS": 0,
-  "chargeRateKw": 0.0,
-  "capacities": [],
+  "chargeRateKw": 0,
   "building": {
     "category": "beacon",
-    "footprintM": [
-      6,
-      6
-    ],
-    "powerKw": -4.0,
-    "inventoryVolumeM3": 0.0,
+    "footprintM": [6, 6],
+    "powerKw": -4,
+    "inventoryVolumeM3": 0,
     "maxSlopeTangent": 0.35,
-    "minOreDensity": 0.0
+    "minOreDensity": 0
   },
+  "capacities": [],
   "shapes": [
     {
       "kind": "cylinder",
-      "position": [
-        0,
-        0.5,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        4.4,
-        1.0,
-        4.4
-      ],
-      "color": [
-        0.34,
-        0.36,
-        0.4
-      ],
-      "emissive": 0.0,
+      "position": [0, 0.5, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [4.400000095367432, 1, 4.400000095367432],
+      "color": [0.3400000035762787, 0.36000001430511475, 0.4000000059604645],
+      "emissive": 0,
       "specular": 0.25,
-      "gloss": 0.3,
+      "gloss": 0.30000001192092896,
       "segments": 20,
       "visible": true,
       "collider": true
     },
     {
       "kind": "cylinder",
-      "position": [
-        0,
-        12.0,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        0.8,
-        22.0,
-        0.8
-      ],
-      "color": [
-        0.78,
-        0.8,
-        0.82
-      ],
-      "emissive": 0.0,
-      "specular": 0.35,
-      "gloss": 0.4,
+      "position": [0, 12, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.800000011920929, 22, 0.800000011920929],
+      "color": [0.7799999713897705, 0.800000011920929, 0.8199999928474426],
+      "emissive": 0,
+      "specular": 0.3499999940395355,
+      "gloss": 0.4000000059604645,
       "segments": 12,
       "visible": true,
       "collider": true
     },
     {
       "kind": "box",
-      "position": [
-        0,
-        7.0,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        2.6,
-        0.35,
-        2.6
-      ],
-      "color": [
-        1.0,
-        0.45,
-        0.15
-      ],
-      "emissive": 0.9,
-      "specular": 0.2,
-      "gloss": 0.2,
+      "position": [0, 7, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.5999999046325684, 0.3499999940395355, 2.5999999046325684],
+      "color": [1, 0.44999998807907104, 0.15000000596046448],
+      "emissive": 0.8999999761581421,
+      "specular": 0.20000000298023224,
+      "gloss": 0.20000000298023224,
       "segments": 12,
       "visible": true,
       "collider": false
     },
     {
       "kind": "box",
-      "position": [
-        0,
-        16.0,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        2.6,
-        0.35,
-        2.6
-      ],
-      "color": [
-        1.0,
-        0.45,
-        0.15
-      ],
-      "emissive": 0.9,
-      "specular": 0.2,
-      "gloss": 0.2,
+      "position": [0, 16, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.5999999046325684, 0.3499999940395355, 2.5999999046325684],
+      "color": [1, 0.44999998807907104, 0.15000000596046448],
+      "emissive": 0.8999999761581421,
+      "specular": 0.20000000298023224,
+      "gloss": 0.20000000298023224,
       "segments": 12,
       "visible": true,
       "collider": false
     },
     {
       "kind": "sphere",
-      "position": [
-        0,
-        24.2,
-        0
-      ],
-      "rotationDeg": [
-        0,
-        0,
-        0
-      ],
-      "size": [
-        2.6,
-        2.6,
-        2.6
-      ],
-      "color": [
-        1.0,
-        0.72,
-        0.25
-      ],
-      "emissive": 1.0,
-      "specular": 0.1,
-      "gloss": 0.1,
+      "position": [0, 24.200000762939453, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.5999999046325684, 2.5999999046325684, 2.5999999046325684],
+      "color": [1, 0.7200000286102295, 0.25],
+      "emissive": 1,
+      "specular": 0.10000000149011612,
+      "gloss": 0.10000000149011612,
       "segments": 18,
       "visible": true,
       "collider": false
     }
   ],
-  "nodes": []
+  "nodes": [
+    {
+      "name": "power",
+      "position": [0, 12.800000190734863, 0],
+      "direction": [0, 1, 0],
+      "type": "power",
+      "size": 0.5
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0.5, 0],
+      "halfExtents": [4.400000095367432, 4.400000095367432, 1]
+    },
+    {
+      "center": [0, 12, 0],
+      "halfExtents": [0.800000011920929, 0.800000011920929, 22]
+    }
+  ]
 }

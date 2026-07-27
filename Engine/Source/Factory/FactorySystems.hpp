@@ -9,6 +9,7 @@
 
 #include "ECS/System.hpp"
 #include "Factory/FactoryComponents.hpp"
+#include "Factory/Power.hpp"
 
 namespace sw::factory
 {
@@ -75,6 +76,49 @@ namespace sw::factory
     /// any matter. A machine that consumed its input and then found the
     /// output bin full would have destroyed matter, which is the one thing
     /// this codebase does not do.
+    /// THE SITE GRID (Automation lane, BEFORE the production executor).
+    ///
+    /// Every tick it answers one question per site — how much electricity is
+    /// there, and who gets it — and writes the answer into each building's
+    /// `satisfaction`, which is the only thing the executor reads. That
+    /// separation is the point: production does not know about the sun, and
+    /// the grid does not know about recipes.
+    ///
+    /// Solar output is the REAL star at the REAL local hour: elevation above
+    /// the site's own horizon, zero in eclipse. A fourteen-day lunar night is
+    /// therefore not a special case in the code — it is what this arithmetic
+    /// says when you point it at the Moon.
+    ///
+    /// Needs the star: construct it with the entity everything orbits.
+    class PowerGridSystem final : public ecs::System
+    {
+    public:
+        explicit PowerGridSystem(ecs::Entity star) : m_star(star) {}
+
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "PowerGridSystem";
+        }
+
+        [[nodiscard]] ecs::SystemAccess access() const override
+        {
+            return ecs::SystemAccess{}
+                .write<PowerComponent>()
+                .write<BatteryComponent>()
+                .write<SiteComponent>()
+                .write<InventoryComponent>() // batteries hold ElectricCharge
+                .read<BuildingComponent>()
+                .read<RecipeStateComponent>();
+        }
+
+        void update(ecs::World& world, f32 deltaSeconds) override;
+
+        void setStar(ecs::Entity star) { m_star = star; }
+
+    private:
+        ecs::Entity m_star{};
+    };
+
     class ProductionSystem final : public ecs::System
     {
     public:

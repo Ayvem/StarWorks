@@ -2,22 +2,23 @@
 
 An industrial space simulation game — mine, automate, build ships and stations, and grow a civilization that spans a star system. Powered by a bespoke C++20 / Vulkan engine written exclusively for this game.
 
-<img width="720" height="720" alt="image" src="https://github.com/user-attachments/assets/b8769305-65d8-4b8e-800f-66696fba902c" />
-<img width="1915" height="996" alt="image" src="https://github.com/user-attachments/assets/ab9ed464-d503-4915-b172-38538bee09cc" />
-<img width="1912" height="986" alt="image" src="https://github.com/user-attachments/assets/e04eaf62-2bc5-441b-aea4-9a941eabdab8" />
-<img width="1917" height="987" alt="image" src="https://github.com/user-attachments/assets/1a2f7ef2-cc68-459a-86ee-86006fd0f714" />
-<img width="1915" height="987" alt="image" src="https://github.com/user-attachments/assets/411c6ab4-092e-4daa-a664-a4ab2bd7a26c" />
-<img width="1914" height="986" alt="image" src="https://github.com/user-attachments/assets/73f442f4-453d-447d-bfa3-9539f0e5cba3" />
-<img width="1588" height="891" alt="image" src="https://github.com/user-attachments/assets/2451b716-d646-4fa3-beee-e75d8c3d7717" />
+## Current state — F3: Generic production and energy
 
+**A factory runs on the sun that is actually in the sky.** Solar output is the star's real elevation over that exact patch of ground, zero below the horizon and zero in eclipse — so a lunar site charges its banks by day, lives off them after dusk, stops honestly when they are flat, and starts again at dawn. Fourteen days is longer than any bank you can build, and that is the point: siting, storage and priorities are the game.
 
-## Current state — F2: Ground build mode
+**Press `E` at a machine** and you get its front plate — what it is doing (OK / STARVED / BLOCKED / NO POWER), its share of the grid, the site's books, what is in the bin, and every recipe its category can run, each read as a sentence. That is where the **fuel chain** gets built: ice to water to hydrogen and oxygen (electrolysis, 480 kW, the reason energy is the constraint) to propellant. The synthesiser is fed both gases down one belt, and it is hydrogen-limited — which is a true thing about the chain, not a bug.
+
+Priorities are simple and legible: a brownout stops the smelters and leaves the mines digging, because ore keeps overnight and a half-melted charge does not.
+
+**And the grid is the cables you strung.** Buildings have a power connection authored on their geometry; a cable is laid between two of them with the same two clicks as a conveyor, and it hangs. A building takes **one** cable, a **power pole** takes as many as you like — so a factory's electrical layout is something you plan rather than something that happens. A grid is whatever the wires joined together, recomputed after every build and every demolition, and a solar farm you forgot to connect powers nothing. Wires on a grid that is short dim to red.
+
+## Previously — F2: Ground build mode
 
 **You build a factory by walking around it.** Arm a machine in the `F` catalogue, look at the ground, click — the ghost lands where your gaze meets the real heightfield, inside a reach you have to walk to extend; the wheel spins it, `R` razes it. Whether it may stand there comes from the `.swpart` itself: on land, flat enough for its own footprint, on enough ore, with room for it.
 
 Conveyors get a **two-click tool**: pick the machine that ships, pick the one that receives, and the run is laid between their mouths — carrying goods from that frame on. The segments it lays are ordinary buildings, and what turns a row of them into a working link is that their mouths MEET: the network is derived from geometry after every build and every demolition, never stored. Take a tile out of the middle and the chain stops existing, because the ports no longer meet.
 
-## Previously — F1: The factory is data now, and it has belts
+## Earlier — F1: The factory is data now, and it has belts
 
 **EVA is first person**, because a factory is built at arm's length. **`F` opens a building catalogue** — every `.swpart` with an industrial block, with its footprint, power and ore requirement, and one of them armed and ready for the ground placement F2 brings. And the production chain has **real conveyors**: decks with rails and legs that follow the terrain, carrying visible crates whose spacing is the link's MEASURED throughput — a starving belt visibly thins out, and nothing about the cargo is simulated, it is a closed-form function of the clock.
 

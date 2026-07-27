@@ -92,22 +92,35 @@ namespace sw::factory
     // world, a renderer or a planet.
 
     /// One machine's conveyor mouths, resolved into the body frame.
+    /// Most mouths a machine may have of one kind. Four, to match
+    /// kMaxRecipeIngredients: a machine never needs more mouths than its
+    /// recipe has products.
+    inline constexpr u32 kMaxMachinePorts = 4;
+
     struct PortNode
     {
         ecs::Entity entity{};
         bool isBelt = false; // a segment, i.e. a link in a chain
         WorldVec3 centre{0.0};
-        WorldVec3 outPort{0.0};
-        WorldVec3 inPort{0.0};
-        bool hasOut = false;
-        bool hasIn = false;
+        /// EVERY mouth, in authored order. A machine with two outputs can
+        /// put hydrogen on one belt and oxygen on another, which is the
+        /// difference between a fuel chain you can lay out and one where
+        /// both gases are stuck sharing a single run.
+        WorldVec3 outPorts[kMaxMachinePorts]{};
+        WorldVec3 inPorts[kMaxMachinePorts]{};
+        u32 outCount = 0;
+        u32 inCount = 0;
     };
 
-    /// A complete run: a machine, some number of belts, another machine.
+    /// A complete run: a machine's OUT MOUTH, some number of belts, another
+    /// machine's IN MOUTH. The mouth indices matter — which product leaves
+    /// by which belt is decided by which port it left from.
     struct Chain
     {
         u32 source = 0;      // index into the node list
+        u32 sourcePort = 0;  // which of the source's out mouths
         u32 destination = 0;
+        u32 destinationPort = 0;
         std::vector<u32> belts; // in travel order, may be empty
     };
 
@@ -121,25 +134,47 @@ namespace sw::factory
     [[nodiscard]] inline std::vector<Chain> traceConveyorChains(
         std::span<const PortNode> nodes, f64 snapM)
     {
-        // Which IN port does this OUT port feed? The nearest one in range.
-        auto feeds = [&](u32 from) -> i32 {
-            if (!nodes[from].hasOut)
+        /// One end of a hop: which node, and which of its in mouths.
+        struct PortLink
+        {
+            i32 node = -1;
+            u32 port = 0;
+        };
+
+        // An IN MOUTH TAKES ONE BELT. Two runs arriving at the same mouth
+        // would be two links into one hole; claiming as we trace is also
+        // what makes a machine's second in mouth USEFUL, because the second
+        // run is pushed onto it instead of piling onto the first.
+        std::vector<u8> claimed(nodes.size() * kMaxMachinePorts, 0);
+        auto claimIndex = [](u32 node, u32 port) { return node * kMaxMachinePorts + port; };
+
+        // Which IN mouth does this OUT mouth feed? The nearest free one.
+        auto feeds = [&](u32 from, u32 fromPort) -> PortLink {
+            if (fromPort >= nodes[from].outCount)
             {
-                return -1;
+                return {};
             }
-            i32 best = -1;
+            PortLink best{};
             f64 bestDistance = snapM;
             for (u32 i = 0; i < nodes.size(); ++i)
             {
-                if (i == from || !nodes[i].hasIn)
+                if (i == from)
                 {
                     continue;
                 }
-                const f64 distance = glm::length(nodes[i].inPort - nodes[from].outPort);
-                if (distance < bestDistance)
+                for (u32 port = 0; port < nodes[i].inCount; ++port)
                 {
-                    bestDistance = distance;
-                    best = static_cast<i32>(i);
+                    if (claimed[claimIndex(i, port)] != 0)
+                    {
+                        continue;
+                    }
+                    const f64 distance =
+                        glm::length(nodes[i].inPorts[port] - nodes[from].outPorts[fromPort]);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = {static_cast<i32>(i), port};
+                    }
                 }
             }
             return best;
@@ -148,42 +183,55 @@ namespace sw::factory
         std::vector<Chain> chains;
         for (u32 start = 0; start < nodes.size(); ++start)
         {
-            if (nodes[start].isBelt || !nodes[start].hasOut)
+            if (nodes[start].isBelt)
             {
                 continue;
             }
-            Chain chain{};
-            chain.source = start;
+            for (u32 startPort = 0; startPort < nodes[start].outCount; ++startPort)
+            {
+                Chain chain{};
+                chain.source = start;
+                chain.sourcePort = startPort;
 
-            i32 cursor = feeds(start);
-            // The guard is a cycle breaker: a ring of segments feeding each
-            // other is a legal thing to BUILD and must not be an infinite
-            // loop to trace.
-            u32 guard = 0;
-            bool looped = false;
-            while (cursor >= 0 && nodes[static_cast<u32>(cursor)].isBelt)
-            {
-                const u32 belt = static_cast<u32>(cursor);
-                if (std::find(chain.belts.begin(), chain.belts.end(), belt) !=
-                        chain.belts.end() ||
-                    guard++ > 4096)
+                std::vector<u32> taken; // rolled back if the run leads nowhere
+                PortLink cursor = feeds(start, startPort);
+                // The guard is a cycle breaker: a ring of segments feeding
+                // each other is a legal thing to BUILD and must not be an
+                // infinite loop to trace.
+                u32 guard = 0;
+                bool looped = false;
+                while (cursor.node >= 0 && nodes[static_cast<u32>(cursor.node)].isBelt)
                 {
-                    looped = true;
-                    break;
+                    const u32 belt = static_cast<u32>(cursor.node);
+                    if (std::find(chain.belts.begin(), chain.belts.end(), belt) !=
+                            chain.belts.end() ||
+                        guard++ > 4096)
+                    {
+                        looped = true;
+                        break;
+                    }
+                    chain.belts.push_back(belt);
+                    taken.push_back(claimIndex(belt, cursor.port));
+                    claimed[claimIndex(belt, cursor.port)] = 1;
+                    cursor = feeds(belt, 0); // a belt has one mouth each way
                 }
-                chain.belts.push_back(belt);
-                cursor = feeds(belt);
+                if (looped || cursor.node < 0 ||
+                    nodes[static_cast<u32>(cursor.node)].isBelt ||
+                    static_cast<u32>(cursor.node) == start)
+                {
+                    // A stub, a ring, a run that leads nowhere, or a machine
+                    // feeding itself. Give the mouths back.
+                    for (const u32 index : taken)
+                    {
+                        claimed[index] = 0;
+                    }
+                    continue;
+                }
+                chain.destination = static_cast<u32>(cursor.node);
+                chain.destinationPort = cursor.port;
+                claimed[claimIndex(chain.destination, chain.destinationPort)] = 1;
+                chains.push_back(std::move(chain));
             }
-            if (looped || cursor < 0 || nodes[static_cast<u32>(cursor)].isBelt)
-            {
-                continue; // a stub, a ring, or a run that leads nowhere
-            }
-            chain.destination = static_cast<u32>(cursor);
-            if (chain.destination == chain.source)
-            {
-                continue; // a machine feeding itself is not a chain
-            }
-            chains.push_back(std::move(chain));
         }
         return chains;
     }

@@ -1,0 +1,46 @@
+{
+  "id": 110,
+  "type": "Structural",
+  "name": "CW-1 Power Cable",
+  "dryMassKg": 12,
+  "costCredits": 0,
+  "volumeM3": 0.05,
+  "crashToleranceMps": 4,
+  "breakingForceN": 8000,
+  "dragCoefficientArea": 0.05,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "building": {
+    "category": "cable",
+    "footprintM": [1, 1],
+    "powerKw": 0,
+    "inventoryVolumeM3": 0,
+    "maxSlopeTangent": 1,
+    "minOreDensity": 0
+  },
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.054999999701976776, 1, 0.054999999701976776],
+      "color": [0.14000000059604645, 0.14000000059604645, 0.1599999964237213],
+      "emissive": 0,
+      "specular": 0.3499999940395355,
+      "gloss": 0.44999998807907104,
+      "segments": 6,
+      "visible": true,
+      "collider": true
+    }
+  ],
+  "nodes": [],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [0.054999999701976776, 0.054999999701976776, 1]
+    }
+  ]
+}
