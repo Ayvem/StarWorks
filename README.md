@@ -12,7 +12,31 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F3: Generic production and energy
+## Current state — F5: The factory builds the rockets, and the map flies them
+
+**A rocket is manufactured now.** Draw a design in the hangar, press SAVE, and it becomes a `.swship` file on disk — the same contract as `.swpart` and `.swrecipe`: stable ids, a loader that refuses garbage, a catalogue read at startup. Walk to the **VB-1 Vehicle Assembly Building**, press `E`, and every saved design is listed with what it costs in metal. Order one, feed the hall iron and copper on its eight side conveyors, and it builds the hull, crates it, and ships it down a belt to the **LP-1 launch pad**, where it stands up as a real vessel with the pad's own fuel already in its tanks.
+
+**What it costs comes from what it is made of.** Electrical parts are mostly copper — 55 % for a battery, 60 % for a solar wing, 25 % for an engine's pumps and harness — and structure is steel with a loom run through it. Iron is computed as the REMAINDER, never as an independent number, which is what makes iron + copper equal the part's dry mass to the last gram whatever anyone does to the fractions later. That is also the first reason the copper chain exists at all.
+
+The starting outpost ships with the whole loop standing: the hall, the pad 120 m east where new vessels have always appeared, the belt between them, a second power pole because a 120 m span cannot reach the launch complex in one hop, and enough metal for the first hull. **A pad holds one rocket** — the next crate waits on the belt, and the panel says so, rather than unpacking a second vessel inside the first and letting the collision solver throw one of them off the deck.
+
+**And the map became a flight planner.**
+
+Trajectories run **until something happens to them** — an impact, an encounter, an escape, or a full revolution that meets none of them — instead of stopping after a fixed six days, which on a heliocentric transfer was one and a half degrees of arc. They are drawn as a **continuous line** whose end therefore means something, one pixel wide at every zoom the map allows. Two measurements paid for that: a single chord of Terra's orbit was being drawn **274 pixels thick** where it passed the camera, and sampled evenly in time a Terra-to-Luna transfer put one 107° chord across the periapsis, drawing the line **802 km below the planet's surface**. Both are gone; the arc is now sampled by anomaly and split by depth.
+
+**Click a body to target it.** The plan then answers what a transfer is actually about: how close you pass, when, and **where the body will have moved to** by then — marked on its own orbit ring, with your position at that moment and the gap between them. A maneuver node can be **dragged along its orbit with the mouse**, its step is a ladder on the modifier keys (`Ctrl` ×0.1 up to `Ctrl+Shift` ×1000, moving the node's time by the same factor), a **NODE** autopilot button holds the nose on the burn — which is almost never prograde — and **WARP TO NODE** skips the wait, stopping one minute short. Warp itself now reaches ×10 000 000, for the transfers that take a year.
+
+The burn readout **counts down to zero** while the engine is lit. It did not: the target was recomputed each frame from the trajectory you were currently on, so it moved with the ship and sat at the full delta-v from the first second of the burn to the last. It is measured against the frozen coasting plan now, which also stops gravity — a kilometre per second over a two-minute burn in low orbit — from being counted as thrust.
+
+## Previously — F3c–F3g: Solid objects, and a body of your own
+
+**Parts author their own collision hull.** What a part looks like and what it bumps into used to be the same list of primitives, which conflates two jobs: geometry wants cones and forty segments, collision wants as few boxes as will do. A `.swpart` now declares its hull as axis-aligned boxes, edited in Part Studio, shown in game with `F2` — and a part that declares none still falls back to its collider shapes, so every file written before this loads unchanged.
+
+Those boxes are what you cannot walk through: buildings, rocket parts, the ground. They are also what `E` asks about — a ray from the eye against the hulls, instead of the nearest centre inside 18 m, which lost a solar field you were standing on to a silo behind your shoulder. **And the player has a body**: EV-1 is an ordinary prop, so the suit is redrawn in Part Studio like everything else and its ground clearance comes from its own hitbox rather than a constant in the game.
+
+Two bugs from that work are worth keeping visible. Walking into a building **fired the player a hundred metres**, because the solver removed the velocity component into the wall — and on a planet that velocity carries 30 km/s of orbital motion. Collisions resolve position only now, and the regression test uses Terra's real carrier velocity. And the hitbox overlay swam hundreds of metres off the buildings it belonged to: **the 595 m rule** — anything positioned relative to a body on a moving planet must use the RENDERED pose, not the tick pose — for the fourth and fifth time. It has its own line in `docs/Architecture.md` now.
+
+## Previously — F3: Generic production and energy
 
 **A factory runs on the sun that is actually in the sky.** Solar output is the star's real elevation over that exact patch of ground, zero below the horizon and zero in eclipse — so a lunar site charges its banks by day, lives off them after dusk, stops honestly when they are flat, and starts again at dawn. Fourteen days is longer than any bank you can build, and that is the point: siting, storage and priorities are the game.
 
@@ -166,6 +190,8 @@ cmake --build --preset linux-debug -j
 
 ## Running the tests
 
+135 tests, no window and no Vulkan device required — matter conservation across every recipe, warp exactness, orbital mechanics, collision, HUD layout, the `.swpart` / `.swrecipe` / `.swship` files as shipped.
+
 ```powershell
 ctest --test-dir build/windows -C Debug --output-on-failure   # Windows
 ctest --test-dir build/linux-debug --output-on-failure        # Linux
@@ -173,7 +199,9 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 ## Controls
 
-**Ship (default mode):** `W`/`S` main engine forward/retro, `A`/`D` yaw, `↑`/`↓` pitch, `Q`/`E` roll, `X` kill rotation, `Shift`/`Ctrl` throttle up/down. `Tab` switches between pilot and free camera. `G` goes EVA (capsule: `W`/`S` walk, `A`/`D` turn — grounded walking on any body, ballistic otherwise). `V` toggles the HUD speed between orbital and surface-relative. The artificial horizon (bottom center) shows attitude vs the local horizon plus prograde/retrograde markers; the chase camera auto-levels on the horizon when you are low and suborbital.
+**Ship (default mode):** `W`/`S` main engine forward/retro, `A`/`D` yaw, `↑`/`↓` pitch, `Q`/`E` roll, `X` kill rotation, `Shift`/`Ctrl` throttle up/down. `Tab` switches between pilot and free camera. `G` goes EVA. `V` toggles the HUD speed between orbital and surface-relative. The artificial horizon (bottom center) shows attitude vs the local horizon plus prograde/retrograde markers; the chase camera auto-levels on the horizon when you are low and suborbital.
+
+**On foot (EVA, `G`):** first person. `W`/`S` walk, `A`/`D` SIDESTEP (the mouse turns you — the suit faces where you look), `Space` jumps. `F` opens the **building catalogue**: pick one, look at the ground, left-click to place it, mouse wheel to spin it, `R` to raze what you are looking at. Belts and cables are laid the same way and with the same two clicks — pick the machine that ships, then the one that receives. `E` at a machine opens its **front plate**: state, its share of the grid, what is in the bin, and the jobs its category can run (or, at a VAB, the saved designs it can build). `F2` shows the collision hulls.
 
 **Free camera:** hold the right mouse button to look around, `WASD` to move, `Q`/`E` down/up, `Shift` to boost, mouse wheel to change speed.
 
@@ -185,13 +213,13 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 **Chase camera:** hold the right mouse button to orbit around the craft, mouse wheel to zoom, `C` to reset behind it.
 
-**Hangar (VAB):** `B` opens/closes (sim paused; separate view). Right-drag orbits, wheel zooms. Click the palette to take a part IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design (built on the launch pad), LOAD cycles the world's vessels into the editor, BUILD makes it real. `P` in flight switches the piloted vessel. `Space` (or `Z`) fires the decoupler (staging); on foot, `Space` jumps.
+**Hangar (VAB):** `B` opens/closes (sim paused; separate view). Right-drag orbits, wheel zooms. Click the palette to take a part IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design, LOAD cycles the world's vessels into the editor, **SAVE** writes it as a `.swship` and registers it so a VAB can build it, and BUILD is the test shortcut that puts it straight on the pad. `P` in flight switches the piloted vessel. `Space` (or `Z`) fires the decoupler (staging); on foot, `Space` jumps.
 
 **Part Studio (`PartStudio.exe`):** the part authoring tool. Right-drag orbits, left-click selects a primitive or node, `G`/`R`/`S` move/rotate/scale with `X`/`Y`/`Z` axis constraint (`Shift` = fine, grid-snapped), `K` toggles the orange collision overlay, `DEL` removes. Buttons add primitives (box/cylinder/cone/sphere/tube), duplicate, set colors/emissive/segments, flag visible/collider, add stack/radial nodes (X/Y/Z sets a node's direction, SNAP SURF projects it onto the hull). SAVE writes the `.swpart` into the build AND the source `Assets/Parts/` — the game loads it at next launch.
 
-**Time warp:** ×2 and ×5 are PHYSICS warp — everything stays simulated and the engines still work. Above ×5 the world rides analytic rails and engines cut out.
+**Time warp:** `.` faster / `,` slower, ×0 up to ×10,000,000 and altitude-limited — the top two rungs need you to be clear of Terra's sphere of influence, because a million times real time moves a craft 30 000 km per rendered frame. ×2 and ×5 are PHYSICS warp: everything stays simulated and the engines still work. Above ×5 the world rides analytic rails and engines cut out. `,` at ×1 stops time — pausing is the bottom rung of the same ladder, not a key of its own.
 
-**Time warp:** `.` faster / `,` slower (×0 → ×10,000,000, altitude-limited; engines only work at ×1). `,` at ×1 stops time — pausing is the bottom rung of the same ladder, not a key of its own. `F5` saves, `F9` loads. `Esc` quits.
+**Files:** `F5` saves, `F9` loads, `Esc` quits.
 
 ## Useful flags
 
