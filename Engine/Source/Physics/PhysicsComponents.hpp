@@ -26,6 +26,13 @@ namespace sw::phys
         /// Effective drag coefficient x area / mass (m^2/kg): atmosphere
         /// deceleration = 0.5 * rho * v^2 * ballistic. ~0.002 for a ship.
         f64 ballisticFactor = 0.002;
+        /// BODY-FRAME SPIN, rad/s. It lives here and not on the game's
+        /// ship because it is rigid-body state, and because the thing that
+        /// most wants to change it is the ENGINE: aerodynamic moments are
+        /// computed down here, and a weathercocking rocket that could not
+        /// reach its own angular velocity would be a torque with nowhere to
+        /// go. Attitude control writes it too; the two simply add.
+        Vec3 angularVelocity{0.0f};
         /// Set by SurfaceInteractionSystem while resting on a body surface.
         u32 isGrounded = 0;
     };

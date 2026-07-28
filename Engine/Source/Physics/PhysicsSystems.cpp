@@ -1,5 +1,7 @@
 #include "Physics/PhysicsSystems.hpp"
 
+#include "Physics/Aerodynamics.hpp"
+
 #include "Core/Log.hpp"
 #include "Physics/HullCollision.hpp"
 #include "ECS/World.hpp"
@@ -160,6 +162,17 @@ namespace sw::phys
                 // to its waist before GroundHullComponent existed.
                 const auto* hull = world.tryGetComponent<GroundHullComponent>(entity);
 
+                // WHO OWNS THE DRAG. A part-built vessel carries an
+                // AeroStateComponent, and the aerodynamics system has
+                // already given it real forces from its parts' tables —
+                // attitude-dependent, with moments. Applying the old
+                // isotropic ballistic factor on top would charge it for the
+                // same air twice. Everything else (the EVA suit, a crate, an
+                // asteroid) still uses the simple model, which is the right
+                // answer for a body with no parts to look up.
+                const bool tabulatedAero =
+                    world.tryGetComponent<aero::AeroStateComponent>(entity) != nullptr;
+
                 for (const Surface& surface : m_surfaces)
                 {
                     const WorldVec3 radial = transform.position - surface.center;
@@ -238,7 +251,7 @@ namespace sw::phys
                     // ---- atmosphere: quadratic drag, exponential density --
                     // (pressure altitude is measured from SEA level).
                     const f64 seaAltitude = distance - surface.radius;
-                    if (surface.hasAtmosphere &&
+                    if (surface.hasAtmosphere && !tabulatedAero &&
                         seaAltitude < surface.atmosphere.topAltitude)
                     {
                         const f64 density =

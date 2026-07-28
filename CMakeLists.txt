@@ -90,6 +90,7 @@ include(Shaders)
 add_subdirectory(Engine)
 add_subdirectory(Game)
 add_subdirectory(Tools/PartStudio)
+add_subdirectory(Tools/AeroForge)
 
 if(SW_BUILD_TESTS)
     enable_testing()

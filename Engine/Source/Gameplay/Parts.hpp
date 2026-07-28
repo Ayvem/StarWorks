@@ -216,8 +216,19 @@ namespace sw::parts
         f64 breakingForceN = 2.0e5;     // joint strength (future structural sim)
 
         // ---- aerodynamics ------------------------------------------------------
-        f64 dragCoefficientArea = 0.8;  // Cd * A, m^2 (feeds atmospheric drag)
-        f64 liftCoefficient = 0.0;      // wings; used by the future aero pass
+        /// THE FALLBACK, and only that, since F6. A part with a solved
+        /// `.aero.json` beside it is flown from the table — direction by
+        /// direction, with moments — and never touches this number. What it
+        /// still buys is a vessel of parts nobody has run the forge on: the
+        /// old isotropic model, one Cd*A summed over the stack, which is a
+        /// worse answer than the table and a much better one than nothing.
+        f64 dragCoefficientArea = 0.8;  // Cd * A, m^2
+        /// DEAD, and left in place for the files. Lift is no longer a number
+        /// somebody types next to a wing: it comes out of the geometry, in
+        /// the forge, from the shape of the surface and the angle it meets
+        /// the air at. Kept so that every .swpart ever written still loads,
+        /// and as a marker of what the aero pass replaced.
+        f64 liftCoefficient = 0.0;
 
         // ---- function-specific -------------------------------------------------
         f64 thrustNewtons = 0.0;        // engines
@@ -371,6 +382,20 @@ namespace sw::parts
         f64 dragCoefficientArea = 0.0;
         f64 solarChargeRateKw = 0.0;
         u32 partCount = 0;
+        /// WHERE THE VESSEL BALANCES, in its own frame, and how hard it is
+        /// to turn about each of its own axes.
+        ///
+        /// Both are recomputed every tick, and that is the point: they move
+        /// as the tanks drain. A rocket whose centre of mass creeps forward
+        /// as it burns grows MORE stable on the way up; one that staged
+        /// badly can find its fins ahead of its balance point and flip.
+        /// Neither is expressible with a mass and a drag number, and both
+        /// fall out of keeping these two fields honest.
+        Vec3 centreOfMass{0.0f};
+        Vec3 inertiaKgM2{1.0f}; // diagonal, about the centre of mass
+        /// Half extents of the vessel's hull, vessel frame. Aerodynamic
+        /// damping needs a length, and this is the honest one.
+        Vec3 halfExtents{0.5f};
     };
 
     // ---- joints ------------------------------------------------------------------

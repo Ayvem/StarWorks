@@ -23,7 +23,7 @@ Modularity with minimal dependencies; no God objects; strong cohesion inside a m
 | `RenderGraph` | planned | pass scheduling, automatic barriers, transient resources |
 | `Assets` | active | MeshData/Vertex, procedural primitives, glTF import (cgltf); streaming later |
 | `ECS` | active | archetype ECS: generation-checked entity handles, contiguous SoA columns, access-declared systems, parallel stage scheduler |
-| `Physics` | active | Kepler conics (elliptic + hyperbolic, primary-relative), f64 Newtonian gravity integration, simulation bubble (rails↔dynamic, SOI-based primaries); rigid bodies/docking/assembly later |
+| `Physics` | active | Kepler conics (elliptic + hyperbolic, primary-relative), f64 Newtonian gravity integration, simulation bubble (rails↔dynamic, SOI-based primaries), AERODYNAMICS (tabulated per-part force/moment, atmosphere + wind + Mach, occlusion, damping); rigid bodies/docking later |
 | `Simulation` | active | fixed-rate lanes (Physics 50 Hz, Logistics 10, Automation 5, Economy 2, World 1), pause/time-scale, catch-up bounds, interpolation alpha |
 | `Resources` | active | resource catalogue with real mass/volume per unit (ores, metals, water, gases) |
 | `Factory` | active | volume-bounded inventories, DATA-DRIVEN recipes (`.swrecipe`) + one generic production executor, buildings/sites/power books, matter conservation |
@@ -34,7 +34,7 @@ Modularity with minimal dependencies; no God objects; strong cohesion inside a m
 | (game layer) | active | pilotable ship (thrust/RCS via ThrustSystem), chase camera, star-map view with constant-screen-size beacons |
 | `Serialization` | active | bounds-checked binary writer/reader (throws on corruption) |
 | `Save` | active | schema-named world snapshots, entity index+generation preserved, simulation clocks |
-| `Tools` / `Editor` | planned | offline cookers, in-engine inspection |
+| `Tools` / `Editor` | active | Part Studio (`.swpart` authoring), **AeroForge** (offline wind tunnel: geometry → `.aero.json`), GLSL parity checker, planet preview renderer |
 
 Dependency direction (only downward):
 `Game → {Scene, Renderer, Input, Core} → {Platform, Math, Core}`. `Platform` knows nothing about `Renderer`; `Input` knows nothing about GLFW; `Scene` knows nothing about Vulkan.
@@ -725,5 +725,47 @@ One vector now feeds the readout, the navball marker and the autopilot, so the t
 
 **A WARP TO NODE button**, in the map and in the cockpit, stopping one minute short. The rung is chosen so a real second never advances more than half the time left, so the approach decelerates by itself and lands at x1 — the overshoot a fixed ladder plus human reaction time cannot avoid.
 
+### F6 — real aerodynamics (done)
+The old model was one number per vessel: `ballisticFactor`, the sum of a hand-typed `Cd*A` over the parts, divided by mass. It could not distinguish a rocket flying nose-first from the same rocket flying sideways, it produced **no torque**, so no fin ever stabilised anything, and `PartDefinition::liftCoefficient` had carried the comment "used by the future aero pass" since Milestone 16. This is that pass.
+
+**The split is the design.** The expensive work happens OFFLINE, once per part, and the game only reads a table. `Tools/AeroForge` solves each `.swpart` over 342 wind directions and writes a `.aero.json` beside it — force and moment per direction, divided by the dynamic pressure, so the entries are an area (m²) and a volume (m³) and one table is valid at every speed and altitude. **Force and moment, never acceleration:** an acceleration depends on the whole vehicle's mass, a force does not, so the same fin produces the same newtons on a probe and on a booster and the table belongs to the PART.
+
+**The solver is a rasteriser, and that is why self-occlusion is free.** Looking along the wind, the elements that receive air are exactly the ones a depth buffer keeps — no ray casting, no visibility pass. Two buffers per direction (frontmost and rearmost), and three terms integrated per element:
+
+* **impact pressure**, `Cp = Cp_max·cos²θ`. Dividing the true area by the same cosine leaves ONE factor of it, so the term never blows up on a surface lying along the flow. This is what makes a cone cheap and a flat plate expensive, out of geometry alone.
+* **base suction**, the same law with a negative coefficient on the rearmost elements. A blunt tail collects all of it, a boat-tail almost none.
+* **skin friction**, flat-plate shear along the local tangent over the wetted area.
+
+Validated in `AeroTests` against published figures: flat plate **1.20** (measured 1.17), sphere **0.60** (0.47 subcritical / 0.92 hypersonic), 14° cone **0.27** (0.25 with base drag), and a body twice as long is not twice as draggy nose-on.
+
+**A probe found the theory's boundary before a player could.** Solved with impact pressure alone, a fin at 10° produced **a thirtieth** of the force it should, and a full set of tail fins still let the rocket flip: measured `+0.80 rad/s²` DIVERGENT with fins at the tail. The reason is not a bug — Newtonian theory counts only the momentum surrendered normal to the surface, which is right behind a detached shock and wrong for a thin surface at a shallow angle, where nearly all the force is circulation, and impact theory has no far side.
+
+So the forge carries the **linear (potential-flow) term** as well: `Cp = k·sin(d)`, compression on the windward face and suction on the leeward one, both pushing the surface the same way, and its area factor cancels the cosine COMPLETELY — which is why it survives to shallow angles where the impact term has already vanished. A plate collects it on both faces and lifts like a wing.
+
+**Which parts get it is a per-part decision, made from proportions.** Applying the linear term everywhere would treble every rocket's drag: a nose cone's flank is inclined 15° to the flow and is not a lifting surface. So the forge measures the part's bounding extents and calls it a WING when the thinnest is under a fifth of the longest, a BODY otherwise — the classic component build-up split, printed by `--report` so it is inspectable. Of the shipped catalogue exactly two are wings: the AV-F1 fin and the SP-2 solar panel. The taper out of the linear term at high incidence **is the stall**, and `AeroTests` asserts the shape of it: near-linear growth to ~12°, then a fall.
+
+**At runtime it is addition.** `VesselAerodynamicsSystem` (Physics lane, after thrust, before the ground) finds the atmosphere, the altitude, the density, the co-rotating air and its wind; makes one dynamic pressure corrected by a transonic Mach curve; then per part reads the table in the part's own frame, scales it by **exposure** — nine rays against the other parts' boxes — rotates force and moment into the vessel frame, shifts the moment onto the centre of mass, and sums. Measured: five tanks nose to tail cost **1.20×** one tank, not 5×; **19 µs per tick** for a seven-part vessel.
+
+**Nothing in the engine knows what a fin is for.** Same vehicle, fins moved: tail **−1.87 rad/s²** into the wind, nose **+4.05 rad/s²** away from it, and an 8° disturbance decays from a 16.8° overshoot instead of ringing — because `aero::dampingMoment` uses the SAME lever arm that produced the restoring moment, so a stable vehicle is damped and an unstable one is neither.
+
+Three supporting changes, each of which was load-bearing:
+
+* **Angular velocity moved from the game's `ShipComponent` down to `phys::DynamicBodyComponent`.** It is rigid-body state, and the thing that most wants to write it now lives in the engine. The RCS rate clamp had to change with it: it caps what the PILOT commands against the rate the vehicle ALREADY had, because the air is under no obligation to respect an RCS rating — clamping the total would have made a rocket quietly stop flipping at 0.8 rad/s.
+* **`VesselComponent` gained centre of mass, diagonal inertia and hull extents**, recomputed every tick from the parts AND their fuel. A rocket therefore grows more stable as its tanks drain, which is not expressible with a mass and a drag number.
+* **A vehicle turns about its balance point.** `ThrustSystem` shifts the position by exactly as much as the rotation moved the centre of mass. On a 20 m rocket, turning about the root part instead swings the tail ten metres.
+
+The centre of pressure is averaged over the force ACROSS the wind, not the total — weighting by everything puts it on the nose of every vehicle ever built, and a measurably stable rocket then reads as though it should tumble. The HUD shows Q / Mach / AoA and the **stability margin in calibres**, because that is the number a player can fix. A decoupled stage inherits its own `AeroStateComponent` and tumbles away under its own aerodynamics. Parts with no table fall back to the isotropic model — the right answer for a part nobody has run the forge on.
+
+### F6b — the autopilot, after the air (done)
+Two faults the aerodynamics made impossible to live with.
+
+**`SAS` was a fourth spelling of OFF.** Button 0 set `m_sasMode = 0`, which is `kOff`; the only thing that ever countered rotation was the `X` key, held. That is fine when nothing is trying to turn you and useless the moment something is — an atmosphere does not get bored. `SasComponent::kStability` is now a real mode: it takes the spin vector down by `angularAccel * dt` per tick and holds at zero. The bound is the point. Measured: a 0.42 rad/s tumble stops in **0.84 s** against a theoretical 0.83 s at 0.50 rad/s²; against a 1.20 rad/s² aerodynamic moment the rate still grows, at **0.70 rad/s²** rather than 1.20. A mode that simply wrote zero would have made the whole aerodynamics pass stop mattering the moment the player pressed a button.
+
+Every autopilot button toggles now, so there is no button whose only job is to mean "none of the others", and `T` cycles OFF → SAS → PGD → RTG → NODE.
+
+**`PGD`/`RTG` ignored the reference frame.** `V` already switched the speed readout and the navball's own prograde markers between orbital and surface-relative; `SasSystem` only ever subtracted the primary's TRANSLATION, never its spin. Measured on a descent at 5 km with 20 m/s over the ground: the orbital and surface retrogrades are **100.8° apart**. Pressing RTG on final approach therefore held the nose a hundred degrees off the marker the pilot was flying to — which is the whole of "landings are practically impossible", and not a tuning problem.
+
+`SasComponent::surfaceRelative` is written by the game each frame from the same flag, alongside `targetDirection`, so one toggle drives the readout, the markers and the autopilot and they cannot disagree. The active frame is printed above the button row, because two buttons that mean different things depending on a toggle elsewhere on the screen need to say which.
+
 ### Milestone 32+ — candidates (remaining)
-F4 exploitation UI, F6 part fabrication and real conveyor transport. Also: impact-driven joint breakage (fields ready), real aerodynamics (wind + per-wing lift), placeholder cleanup, multiplayer groundwork.
+F4 exploitation UI, part fabrication and real conveyor transport. Also: impact-driven joint breakage (fields ready), per-Mach aero tables (the format has room; the runtime call site would not change), reentry heating driven by the same dynamic pressure, control surfaces that deflect, placeholder cleanup, multiplayer groundwork.

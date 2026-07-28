@@ -5,6 +5,7 @@
 #include "Core/Log.hpp"
 #include "ECS/World.hpp"
 #include "Gameplay/PartGeometry.hpp"
+#include "Physics/Aerodynamics.hpp"
 #include "Physics/PhysicsComponents.hpp"
 
 #include <algorithm>
@@ -677,6 +678,15 @@ namespace sw::parts
         body.velocity += WorldVec3(rootTransform->rotation * Vec3{0.0f, 0.0f, 1.5f});
         world.addComponent(newRoot, body);
         world.addComponent(newRoot, VesselComponent{});
+        // A DISCARDED STAGE STILL FLIES. It inherits the aerodynamic slot
+        // for the same reason it inherits a velocity: it is a vehicle now,
+        // with its own balance point and its own fins or lack of them, and
+        // watching a spent booster tumble away is the whole reward for
+        // having modelled moments at all.
+        if (world.tryGetComponent<aero::AeroStateComponent>(vessel) != nullptr)
+        {
+            world.addComponent(newRoot, aero::AeroStateComponent{});
+        }
 
         for (const ecs::Entity part : partsToDetach)
         {
@@ -859,9 +869,22 @@ namespace sw::parts
         // stage separates, the remaining hull shrinks with it.
         std::unordered_map<ecs::Entity, std::pair<Vec3, Vec3>> hulls;
 
+        /// One part reduced to what the balance and the spin care about.
+        /// Collected here rather than folded straight into a running sum
+        /// because the moment of inertia is taken about the CENTRE OF MASS,
+        /// and the centre of mass is not known until the last part has been
+        /// weighed.
+        struct MassPoint
+        {
+            f64 massKg = 0.0;
+            Vec3 position{0.0f};
+            Vec3 halfExtents{0.5f};
+        };
+        std::unordered_map<ecs::Entity, std::vector<MassPoint>> massPoints;
+
         // Accumulate every part into its vessel.
-        world.forEach<PartComponent>([&world, &hulls](ecs::Entity entity,
-                                                      PartComponent& part) {
+        world.forEach<PartComponent>([&world, &hulls, &massPoints](ecs::Entity entity,
+                                                                   PartComponent& part) {
             auto* vessel = world.tryGetComponent<VesselComponent>(part.vessel);
             const PartDefinition* definition = findDefinition(part.definitionId);
             if (vessel == nullptr || definition == nullptr)
@@ -887,6 +910,7 @@ namespace sw::parts
             }
 
             // Carried resources weigh the vessel down (fuel above all).
+            f64 partMassKg = definition->dryMassKg;
             if (const auto* inventory =
                     world.tryGetComponent<factory::InventoryComponent>(entity))
             {
@@ -894,18 +918,38 @@ namespace sw::parts
                 {
                     if (slot.resource != res::Resource::Count)
                     {
-                        vessel->totalMassKg +=
+                        const f64 carried =
                             slot.units * res::definition(slot.resource).massPerUnitKg;
+                        vessel->totalMassKg += carried;
+                        partMassKg += carried;
                     }
                 }
             }
+
+            // ...and it weighs it down SOMEWHERE. A tank draining at the
+            // tail moves the balance point forward; the fuel has to be
+            // where the tank is for that to happen at all.
+            constexpr f32 kHugeLocal = 1.0e9f;
+            Vec3 partMin{kHugeLocal, kHugeLocal, kHugeLocal};
+            Vec3 partMax{-kHugeLocal, -kHugeLocal, -kHugeLocal};
+            expandPartHullBounds(*definition, part.localPosition, part.localRotation,
+                                 partMin, partMax);
+            MassPoint point{};
+            point.massKg = partMassKg;
+            point.position = part.localPosition;
+            if (partMin.x <= partMax.x)
+            {
+                point.halfExtents = (partMax - partMin) * 0.5f;
+            }
+            massPoints[part.vessel].push_back(point);
         });
 
         // Push the aggregate into the vessel's rigid body.
         std::vector<std::pair<ecs::Entity, phys::GroundHullComponent>> pendingHulls;
         world.forEach<VesselComponent, phys::DynamicBodyComponent>(
-            [&hulls, &pendingHulls](ecs::Entity entity, VesselComponent& vessel,
-                                    phys::DynamicBodyComponent& body) {
+            [&hulls, &massPoints, &pendingHulls](ecs::Entity entity,
+                                                 VesselComponent& vessel,
+                                                 phys::DynamicBodyComponent& body) {
                 if (vessel.partCount == 0)
                 {
                     return; // not part-built (EVA capsule, asteroid...)
@@ -914,6 +958,43 @@ namespace sw::parts
                 body.mass = vessel.totalMassKg;
                 body.ballisticFactor =
                     vessel.dragCoefficientArea / std::max(vessel.totalMassKg, 1.0);
+
+                // ---- balance and spin -------------------------------------
+                if (const auto points = massPoints.find(entity);
+                    points != massPoints.end() && !points->second.empty())
+                {
+                    f64 total = 0.0;
+                    glm::dvec3 weighted{0.0};
+                    for (const MassPoint& point : points->second)
+                    {
+                        total += point.massKg;
+                        weighted += glm::dvec3(point.position) * point.massKg;
+                    }
+                    if (total > 1.0e-6)
+                    {
+                        vessel.centreOfMass = Vec3(weighted / total);
+                    }
+                    // Parallel axes: each part's own inertia about its own
+                    // centre, plus its mass times how far off the vessel's
+                    // axis it sits. Diagonal only — a rocket's principal
+                    // axes are its own, near enough, and the products of
+                    // inertia of a symmetric stack are zero anyway.
+                    glm::dvec3 inertia{0.0};
+                    for (const MassPoint& point : points->second)
+                    {
+                        const glm::dvec3 own(aero::boxInertia(point.massKg,
+                                                              point.halfExtents));
+                        const glm::dvec3 offset(point.position - vessel.centreOfMass);
+                        inertia += own + point.massKg *
+                                             glm::dvec3(offset.y * offset.y +
+                                                            offset.z * offset.z,
+                                                        offset.x * offset.x +
+                                                            offset.z * offset.z,
+                                                        offset.x * offset.x +
+                                                            offset.y * offset.y);
+                    }
+                    vessel.inertiaKgM2 = Vec3(glm::max(inertia, glm::dvec3(1.0)));
+                }
 
                 const auto found = hulls.find(entity);
                 if (found == hulls.end() ||
@@ -924,6 +1005,7 @@ namespace sw::parts
                 phys::GroundHullComponent hull{};
                 hull.centre = (found->second.first + found->second.second) * 0.5f;
                 hull.halfExtents = (found->second.second - found->second.first) * 0.5f;
+                vessel.halfExtents = hull.halfExtents;
                 pendingHulls.emplace_back(entity, hull);
             });
 

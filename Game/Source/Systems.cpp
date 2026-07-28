@@ -139,26 +139,26 @@ namespace game
             });
     }
 
-    void SasSystem::update(sw::ecs::World& world, sw::f32 /*deltaSeconds*/)
+    void SasSystem::update(sw::ecs::World& world, sw::f32 deltaSeconds)
     {
         // Snapshot gravity sources for SOI-primary velocity lookup.
         struct BodyInfo
         {
             sw::WorldVec3 center;
             sw::WorldVec3 velocity;
+            /// The body's SPIN. Without it there is no surface frame, and
+            /// without a surface frame the retrograde the autopilot flies
+            /// and the retrograde the navball draws are different vectors.
+            sw::WorldVec3 angularVelocity;
             sw::f64 soiRadius;
         };
         std::vector<BodyInfo> bodies;
         world.forEach<TransformComponent, sw::phys::GravitySourceComponent>(
             [&](sw::ecs::Entity, TransformComponent& transform,
                 sw::phys::GravitySourceComponent& source) {
-                bodies.push_back(
-                    {transform.position, source.worldVelocity, source.soiRadius});
+                bodies.push_back({transform.position, source.worldVelocity,
+                                  source.angularVelocity, source.soiRadius});
             });
-        if (bodies.empty())
-        {
-            return;
-        }
 
         world.forEach<TransformComponent, sw::phys::DynamicBodyComponent, ShipComponent,
                       ShipControlsComponent, SasComponent>(
@@ -170,6 +170,46 @@ namespace game
                     controls.killRotation != 0)
                 {
                     return; // off, or the pilot is flying by hand
+                }
+
+                // ---- STABILITY: point nowhere, just stop turning ----------
+                //
+                // First, and before anything looks for a planet, because
+                // holding still is the one thing that means the same in deep
+                // space as it does in an atmosphere.
+                //
+                // It spends the RCS's own authority and not a unit more —
+                // `angularAccel * dt` per tick, taken straight off the spin
+                // vector. That bound is the whole honesty of the mode: it
+                // settles a wobble in a second or two, and against a real
+                // aerodynamic tumble it loses, visibly, which is exactly
+                // what a set of attitude thrusters does. A mode that simply
+                // wrote zero would make the atmosphere stop mattering.
+                if (sas.mode == SasComponent::kStability)
+                {
+                    const sw::f32 rate = glm::length(body.angularVelocity);
+                    if (rate < 1.0e-5f)
+                    {
+                        body.angularVelocity = sw::Vec3(0.0f);
+                        return;
+                    }
+                    const sw::f32 authority =
+                        std::max(ship.angularAccel, 0.0f) * deltaSeconds;
+                    if (authority >= rate)
+                    {
+                        body.angularVelocity = sw::Vec3(0.0f);
+                    }
+                    else
+                    {
+                        body.angularVelocity -=
+                            (body.angularVelocity / rate) * authority;
+                    }
+                    return;
+                }
+
+                if (bodies.empty())
+                {
+                    return;
                 }
 
                 const BodyInfo* primary = nullptr;
@@ -196,15 +236,30 @@ namespace game
                     const sw::f32 length = glm::length(sas.targetDirection);
                     if (length < 1.0e-6f)
                     {
-                        ship.angularVelocity *= 0.85f;
+                        body.angularVelocity *= 0.85f;
                         return;
                     }
                     target = sas.targetDirection / length;
                 }
                 else
                 {
-                    const sw::WorldVec3 relativeVelocity =
-                        body.velocity - primary->velocity;
+                    // THE SAME FRAME THE NAVBALL IS DRAWING IN.
+                    //
+                    // Orbital prograde is measured against the primary's
+                    // translation alone; SURFACE prograde also subtracts the
+                    // ground's motion under you, which on Terra's equator is
+                    // 465 m/s. Coming down, those two are not a refinement
+                    // apart — they can be tens of degrees apart, and holding
+                    // the orbital one while the marker on the navball shows
+                    // the other is what made a landing a fight against the
+                    // instrument instead of against gravity.
+                    sw::WorldVec3 reference = primary->velocity;
+                    if (sas.surfaceRelative != 0)
+                    {
+                        reference += glm::cross(primary->angularVelocity,
+                                                transform.position - primary->center);
+                    }
+                    const sw::WorldVec3 relativeVelocity = body.velocity - reference;
                     const sw::f64 speed = glm::length(relativeVelocity);
                     if (speed < 1.0)
                     {
@@ -228,13 +283,13 @@ namespace game
                 const sw::f32 angle = std::atan2(sinAngle, cosAngle);
                 if (sinAngle < 1.0e-5f || angle < 2.0e-3f)
                 {
-                    ship.angularVelocity *= 0.85f; // aligned: settle
+                    body.angularVelocity *= 0.85f; // aligned: settle
                     return;
                 }
                 const sw::Vec3 axisWorld = axis / sinAngle;
                 const sw::f32 rate = std::min(angle * 1.2f, ship.maxAngularSpeed);
                 // Body-frame command (ThrustSystem integrates body-frame).
-                ship.angularVelocity =
+                body.angularVelocity =
                     glm::inverse(transform.rotation) * (axisWorld * rate);
             });
     }
@@ -248,26 +303,57 @@ namespace game
                                    ShipComponent& ship,
                                    const ShipControlsComponent& controls) {
                 // ---- attitude (RCS): integrate body-frame angular velocity --
-                ship.angularVelocity += controls.rotationInput * ship.angularAccel *
+                //
+                // The spin now has TWO authors: this system and the
+                // atmosphere. So the rate limit has to tell them apart. It
+                // caps what the PILOT may command — a ship cannot out-turn
+                // its own thrusters — while leaving alone any rate the
+                // vehicle ALREADY had, because the air is under no
+                // obligation to respect an RCS rating. Clamping the total
+                // would have made a rocket flipping in the airstream
+                // quietly stop flipping the moment it passed 0.8 rad/s.
+                const sw::f32 inherited = glm::length(body.angularVelocity);
+                body.angularVelocity += controls.rotationInput * ship.angularAccel *
                                         deltaSeconds;
                 if (controls.killRotation != 0)
                 {
                     const sw::f32 decay =
                         std::max(0.0f, 1.0f - 3.0f * deltaSeconds);
-                    ship.angularVelocity *= decay;
+                    body.angularVelocity *= decay;
                 }
-                const sw::f32 angularSpeed = glm::length(ship.angularVelocity);
-                if (angularSpeed > ship.maxAngularSpeed)
+                const sw::f32 commanded = glm::length(body.angularVelocity);
+                const sw::f32 limit = std::max(ship.maxAngularSpeed, inherited);
+                if (commanded > limit)
                 {
-                    ship.angularVelocity *= ship.maxAngularSpeed / angularSpeed;
+                    body.angularVelocity *= limit / commanded;
                 }
+                const sw::f32 angularSpeed = glm::length(body.angularVelocity);
                 if (angularSpeed > 1.0e-6f)
                 {
-                    const sw::Vec3 axis = ship.angularVelocity / angularSpeed;
+                    const sw::Vec3 axis = body.angularVelocity / angularSpeed;
                     const sw::Quat step =
                         glm::angleAxis(angularSpeed * deltaSeconds, axis);
                     // Body-frame rotation: post-multiply.
+                    const sw::Quat before = transform.rotation;
                     transform.rotation = glm::normalize(transform.rotation * step);
+
+                    // A VEHICLE TURNS ABOUT ITS BALANCE POINT, not about
+                    // whichever part its builder happened to start from. The
+                    // transform's origin is the root part, so the position
+                    // is shifted by exactly as much as the rotation moved
+                    // the centre of mass — leaving that point where it was.
+                    // On a 20 m rocket, turning about the nose instead of
+                    // the middle swings the tail ten metres, and that is the
+                    // difference between a flip that looks like physics and
+                    // one that looks like a bug.
+                    if (const auto* vessel =
+                            world.tryGetComponent<sw::parts::VesselComponent>(entity);
+                        vessel != nullptr && vessel->partCount > 0)
+                    {
+                        transform.position +=
+                            sw::WorldVec3(before * vessel->centreOfMass) -
+                            sw::WorldVec3(transform.rotation * vessel->centreOfMass);
+                    }
                 }
 
                 // ---- throttle limiter (Shift/Ctrl held) ---------------------

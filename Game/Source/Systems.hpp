@@ -146,8 +146,8 @@ namespace game
         {
             return sw::ecs::SystemAccess{}
                 .write<ShipComponent>()
+                .write<sw::phys::DynamicBodyComponent>() // the craft's own spin
                 .read<TransformComponent>()
-                .read<sw::phys::DynamicBodyComponent>()
                 .read<sw::phys::GravitySourceComponent>()
                 .read<ShipControlsComponent>()
                 .read<SasComponent>();

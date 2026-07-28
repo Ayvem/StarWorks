@@ -12,7 +12,39 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F5: The factory builds the rockets, and the map flies them
+## Current state — F6: Real aerodynamics, and an autopilot that can fly it
+
+**The air knows which way round your rocket is.** Until now a whole vessel was one number — a ballistic factor, the sum of a Cd·A typed next to each part, divided by mass. It could not tell a rocket flying nose-first from the same rocket flying sideways, it produced no torque, so no fin ever stabilised anything, and every coefficient in it was somebody's guess. All of that is replaced, and the shape of the replacement is the whole idea: **the expensive work happens offline, once per part; the game only reads a table.**
+
+**`Tools/AeroForge` is a wind tunnel.** For each of 342 wind directions it integrates the pressure and the shear over the part's *real triangulated geometry* and records the resulting **force and moment**, divided by the dynamic pressure — so the entries are an area and a volume, valid at every speed and every altitude. The result is one `.aero.json` beside each `.swpart`, about 20 kB, regenerated with one command after any edit in Part Studio. It stores force and moment rather than acceleration on purpose: a fin bolted to a probe and to a three-hundred-tonne booster produces the same newtons for the same airflow, so the table belongs to the **part** and is right on every vessel that part is ever welded to.
+
+The solver is a **rasteriser**, which is what makes the self-shadowing free: looking along the wind, the surface elements that receive air are exactly the ones a depth buffer keeps. Three terms are integrated per visible element — impact pressure (`Cp = Cp_max·cos²θ`, which is what makes a cone cheap and a flat plate expensive, out of the geometry alone), base suction on the rear-facing elements the depth buffer sees last, and flat-plate skin friction. Measured against the textbook: a flat plate lands at **Cd 1.20** (published 1.17), a sphere at **0.60** (0.47 subcritical, 0.92 hypersonic), a 14° cone at **0.27** (0.25 with base drag).
+
+**A probe caught the theory's own boundary before a player could.** Solved with impact pressure alone, a fin at ten degrees produced a *thirtieth* of the force it should, and a rocket with a full set of tail fins still flipped — because Newtonian theory counts only the momentum given up normal to the surface, which is right for a blunt nose behind a detached shock and badly wrong for a thin surface at a shallow angle, where nearly all the force comes from circulation. So the forge carries the **linear (potential-flow) term** as well, and applies it where linear theory is the valid one: on surfaces lying nearly along the flow, front and back alike. Whether a part gets it is decided once, from its proportions — thinnest dimension under a fifth of its longest is a **wing**, everything else is a **body** — and the forge prints which is which. The transition out of the linear term at high incidence *is* the stall: a plate's force peaks near twelve degrees and falls away after.
+
+**In flight it is addition.** Every physics tick, for every part-built vessel in an atmosphere: work out the air (which body, how high, how dense, and the co-rotating wind it is moving through), turn that into one dynamic pressure corrected for the transonic rise, ask each part's table what it does in this flow direction *in its own frame*, scale it by **how much of that part the air can actually see** — a handful of rays against the other parts' boxes, so five tanks nose to tail cost **1.20×** one tank and not 5× — then rotate force and moment into the vessel frame, shift the moment onto the centre of mass, and add. Force over mass is an acceleration; moment over inertia is an angular one. Measured cost: **19 µs per tick** for a seven-part vessel, 0.1 % of a 20 ms budget.
+
+**Nothing in the engine knows what a fin is for.** A rocket weathercocks because the moments of its own parts add up that way. Measured on the same vehicle with the fins moved: tail fins give **−1.9 rad/s²** into the wind, the identical fins at the nose give **+4.1 rad/s²** away from it, and a rocket nudged 8° off its flight path oscillates and settles instead of ringing forever — because the aerodynamic damping uses the same lever arm that produced the restoring moment, so a vehicle that is stable is also damped and one that is not is neither. The centre of mass and the diagonal inertia are recomputed every tick from the parts and their fuel, so a rocket grows *more* stable as its tanks drain, and a vehicle now **turns about its balance point** instead of about whichever part its builder happened to start from.
+
+The HUD gained the two lines that make this playable: **Q / Mach / angle of attack**, and the **stability margin** in calibres — how far the centre of pressure sits behind the centre of mass — because that is the number a player can actually fix, by moving fins or moving mass. A discarded stage inherits its own aerodynamics and tumbles away on its own.
+
+Parts without a table are not broken, they are just old: they fall back to the isotropic model, which is what should happen to a part nobody has run the forge on yet.
+
+```powershell
+AeroForge Assets/Parts --report      # re-solve the catalogue, print the coefficients
+```
+
+### The autopilot had to grow up with it
+
+Air that can turn a rocket exposes an autopilot that cannot stop one, and both of the faults below were invisible until it could.
+
+**`SAS` was a fourth way of spelling OFF.** The button set the mode to "none of the others"; the only thing that ever countered rotation was the `X` key, held down. That is fine when nothing is trying to turn you and useless the moment something is — an atmosphere does not get bored. It is a real mode now: it drives the rotation rate to zero and keeps it there, spending the RCS's own authority and **not a unit more**. That bound is the whole honesty of it. Measured: a 0.42 rad/s tumble stopped in **0.84 s** against a theoretical 0.83 s at 0.50 rad/s²; against a 1.20 rad/s² aerodynamic moment it **loses**, the rate still growing at 0.70 rad/s² instead of 1.20 — which is exactly what a set of attitude thrusters does. A mode that simply wrote zero would have cancelled the entire aerodynamics pass at the press of a button.
+
+**`PGD`/`RTG` ignored the frame the navball was drawing in.** `V` already switched the speed readout and the prograde markers between orbital and surface-relative; the autopilot did not, and quietly stayed orbital. Measured on a descent at 5 km with 20 m/s over the ground, the two retrogrades are **100.8° apart** — Terra's surface is doing 465 m/s under a craft that has almost stopped — so pressing RTG on final approach held the nose nearly sideways to the marker the pilot was aiming at. That is the whole of "landings are practically impossible", and it was never a tuning problem. One flag now feeds the readout, the markers and the autopilot, so they cannot disagree, and the active frame is printed above the button row.
+
+Every autopilot button toggles now — clicking the lit one switches it off — and `T` cycles OFF → SAS → PGD → RTG → NODE.
+
+## Previously — F5: The factory builds the rockets, and the map flies them
 
 **A rocket is manufactured now.** Draw a design in the hangar, press SAVE, and it becomes a `.swship` file on disk — the same contract as `.swpart` and `.swrecipe`: stable ids, a loader that refuses garbage, a catalogue read at startup. Walk to the **VB-1 Vehicle Assembly Building**, press `E`, and every saved design is listed with what it costs in metal. Order one, feed the hall iron and copper on its eight side conveyors, and it builds the hull, crates it, and ships it down a belt to the **LP-1 launch pad**, where it stands up as a real vessel with the pad's own fuel already in its tanks.
 
@@ -190,7 +222,7 @@ cmake --build --preset linux-debug -j
 
 ## Running the tests
 
-135 tests, no window and no Vulkan device required — matter conservation across every recipe, warp exactness, orbital mechanics, collision, HUD layout, the `.swpart` / `.swrecipe` / `.swship` files as shipped.
+157 tests, no window and no Vulkan device required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
 
 ```powershell
 ctest --test-dir build/windows -C Debug --output-on-failure   # Windows
@@ -199,7 +231,9 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 ## Controls
 
-**Ship (default mode):** `W`/`S` main engine forward/retro, `A`/`D` yaw, `↑`/`↓` pitch, `Q`/`E` roll, `X` kill rotation, `Shift`/`Ctrl` throttle up/down. `Tab` switches between pilot and free camera. `G` goes EVA. `V` toggles the HUD speed between orbital and surface-relative. The artificial horizon (bottom center) shows attitude vs the local horizon plus prograde/retrograde markers; the chase camera auto-levels on the horizon when you are low and suborbital.
+**Ship (default mode):** `W`/`S` main engine forward/retro, `A`/`D` yaw, `↑`/`↓` pitch, `Q`/`E` roll, `X` kill rotation while held, `Shift`/`Ctrl` throttle up/down. `Tab` switches between pilot and free camera. `G` goes EVA. `V` toggles the reference frame between orbital and **surface-relative** — the speed readout, the navball's prograde/retrograde markers AND the autopilot all follow it, and the active frame is printed above the autopilot buttons. The artificial horizon (bottom center) shows attitude vs the local horizon; the chase camera auto-levels on the horizon when you are low and suborbital.
+
+**Autopilot (`T` cycles, or click):** `SAS` holds the craft STILL — it drives the rotation rate to zero and keeps fighting, with the RCS's own authority and no more, so it settles a wobble in under a second and honestly loses to a real aerodynamic tumble. `PGD` / `RTG` point along the velocity **in whichever frame `V` has selected**; on a landing the orbital and surface retrogrades are around 100° apart, so this is the difference between flying the navball and fighting it. `NODE` holds the burn vector. Every button toggles: clicking the lit one switches the autopilot off, and any rotation input pauses it while you fly by hand.
 
 **On foot (EVA, `G`):** first person. `W`/`S` walk, `A`/`D` SIDESTEP (the mouse turns you — the suit faces where you look), `Space` jumps. `F` opens the **building catalogue**: pick one, look at the ground, left-click to place it, mouse wheel to spin it, `R` to raze what you are looking at. Belts and cables are laid the same way and with the same two clicks — pick the machine that ships, then the one that receives. `E` at a machine opens its **front plate**: state, its share of the grid, what is in the bin, and the jobs its category can run (or, at a VAB, the saved designs it can build). `F2` shows the collision hulls.
 
@@ -224,6 +258,16 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 ## Useful flags
 
 `--frames N` exits after N frames (soak testing); `--log-file path.log` mirrors the log to a file; `--cpu` prefers a software (CPU) Vulkan device over hardware GPUs (and implies `--quality low`); `--quality low|medium|high` sets the shading tier — it drives the planet shader's octave budget, terrain self-shadowing, cloud shadows and the number of atmospheric scattering steps.
+
+## Aerodynamic tables
+
+Every vessel part carries a `.aero.json` beside its `.swpart`, solved offline. Re-run the forge after editing a part's geometry in Part Studio — nothing else needs to change, and a part whose table is missing simply falls back to the old isotropic drag.
+
+```bash
+build/linux-release/bin/AeroForge Assets/Parts --report
+```
+
+`--report` prints, per part, whether the forge classified it as a **wing** or a **body**, the area it presents nose-on and side-on, the drag coefficient referred to each, and the cross-flow coefficient at 15° of incidence — the numbers to check against a textbook. `--resolution N` sets the depth buffer (the integration element, default 192), `--theta`/`--phi` the direction grid, `--part <id>` re-solves one part, `--all` includes buildings.
 
 ## Planetary rendering tools
 

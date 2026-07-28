@@ -218,6 +218,8 @@ namespace game
         /// Owned by the Physics lane; kept for its per-tick pair counts,
         /// which the HUD shows so a base that has become expensive says so.
         sw::phys::HullCollisionSystem* m_hullCollision = nullptr;
+        /// Owned by the Physics lane; kept so the HUD can read the air.
+        sw::aero::VesselAerodynamicsSystem* m_aerodynamics = nullptr;
         /// Turns a definition's authored hitboxes into the solid shape an
         /// entity carries. Conveyor decks and cables get none — you step
         /// over a belt, you do not climb it.

@@ -12,6 +12,20 @@ namespace game
 {
     namespace
     {
+        /// The autopilot mode, for the log and the HUD. One place, so a mode
+        /// added later cannot be printed as "RETROGRADE" by a stale ternary.
+        [[nodiscard]] const char* sasModeName(sw::u32 mode)
+        {
+            switch (mode)
+            {
+            case SasComponent::kStability: return "STABILITY";
+            case SasComponent::kPrograde: return "PROGRADE";
+            case SasComponent::kRetrograde: return "RETROGRADE";
+            case SasComponent::kNode: return "NODE";
+            default: return "OFF";
+            }
+        }
+
         // ---- real-world dimensions and gravity (meters, m^3/s^2) --------------
         // The hierarchy: Sol -> Terra (-> Luna) / Mars. All values real.
         constexpr sw::f64 kMuSol = 1.32712440018e20;
@@ -737,6 +751,11 @@ namespace game
         // fallback before any mesh or vessel is built. Part Studio edits
         // these same files.
         sw::parts::loadCatalog(sw::FileSystem::executableDirectory() / "Assets" / "Parts");
+        // DATA-DRIVEN AERODYNAMICS (F6): every part's `.aero.json` sidecar,
+        // solved offline by Tools/AeroForge over the same geometry. A part
+        // with no table simply produces no aerodynamic force — which is why
+        // buildings do not need one.
+        sw::aero::loadTables(sw::FileSystem::executableDirectory() / "Assets" / "Parts");
         // DATA-DRIVEN INDUSTRY (F1): the production chains are .swrecipe
         // files on the same contract — stable ids, a built-in fallback, and
         // a loader that refuses any recipe which would create matter.
@@ -791,6 +810,15 @@ namespace game
         physics.addSystem(std::make_unique<sw::phys::GravityIntegrationSystem>());
         physics.addSystem(std::make_unique<SasSystem>()); // before Thrust: it commands
         physics.addSystem(std::make_unique<ThrustSystem>());
+        // AERODYNAMICS, after thrust and before the ground. Thrust first,
+        // because a rocket's own acceleration is part of the flow it meets
+        // this tick; the ground last, because whatever the air did to a
+        // vehicle about to land must not survive the touchdown.
+        {
+            auto aerodynamics = std::make_unique<sw::aero::VesselAerodynamicsSystem>();
+            m_aerodynamics = aerodynamics.get();
+            physics.addSystem(std::move(aerodynamics));
+        }
         sw::phys::SurfaceInteractionSystem::Config surfaceConfig{};
         physics.addSystem(
             std::make_unique<sw::phys::SurfaceInteractionSystem>(surfaceConfig));
@@ -1644,6 +1672,10 @@ namespace game
             m_world.addComponent(root, ShipControlsComponent{});
             m_world.addComponent(root, SasComponent{});
             m_world.addComponent(root, sw::parts::VesselComponent{});
+            // The air's answer, refreshed every tick. Its PRESENCE is
+            // also the switch that turns the old isotropic drag off for
+            // this vessel: a part-built craft is flown by its tables.
+            m_world.addComponent(root, sw::aero::AeroStateComponent{});
 
             const sw::f64 radius = glm::length(transform.position - terraPos0);
             const sw::f64 speed = sw::phys::kepler::circularOrbitSpeed(kMuTerra, radius);
@@ -1805,8 +1837,10 @@ namespace game
         m_saveSchema.registerComponent<sw::TransformComponent>("sw.Transform", 1);
         m_saveSchema.registerComponent<sw::PreviousTransformComponent>(
             "sw.PreviousTransform", 1);
+        // v2: + the body-frame angular velocity, which moved down here from
+        // the game's ship when the atmosphere became able to spin things.
         m_saveSchema.registerComponent<sw::phys::DynamicBodyComponent>("phys.DynamicBody",
-                                                                       1);
+                                                                       2);
         m_saveSchema.registerComponent<sw::phys::GroundHullComponent>("phys.GroundHull",
                                                                       1);
         // v2: primary-relative orbit + primary handle + dynamic payload.
@@ -1823,9 +1857,16 @@ namespace game
         m_saveSchema.registerComponent<sw::planet::TerrainComponent>("planet.Terrain", 3);
         m_saveSchema.registerComponent<sw::planet::DepositComponent>("planet.Deposits",
                                                                     1);
-        m_saveSchema.registerComponent<SasComponent>("game.Sas", 1);
+        // v2: + surfaceRelative, and kStability joined the modes.
+        m_saveSchema.registerComponent<SasComponent>("game.Sas", 2);
         m_saveSchema.registerComponent<sw::parts::PartComponent>("parts.Part", 1);
-        m_saveSchema.registerComponent<sw::parts::VesselComponent>("parts.Vessel", 1);
+        // v2: + centre of mass, inertia and hull extents — what the
+        // aerodynamics needs to turn a moment into a rotation.
+        m_saveSchema.registerComponent<sw::parts::VesselComponent>("parts.Vessel", 2);
+        // F6 — the air's answer. Recomputed every tick, so it is saved only
+        // to keep the component ON the entity across a reload: a vessel that
+        // came back without one would silently fall back to isotropic drag.
+        m_saveSchema.registerComponent<sw::aero::AeroStateComponent>("aero.State", 1);
         m_saveSchema.registerComponent<sw::parts::JointComponent>("parts.Joint", 1);
         m_saveSchema.registerComponent<sw::factory::InventoryComponent>("factory.Inventory",
                                                                         1);
@@ -1862,7 +1903,8 @@ namespace game
         m_saveSchema.registerComponent<CloudLayerComponent>("game.CloudLayer", 1);
         m_saveSchema.registerComponent<CelestialLodComponent>("game.CelestialLod",
                                                               2); // v2: surfaceStyle
-        m_saveSchema.registerComponent<ShipComponent>("game.Ship", 1);
+        // v2: angular velocity moved to phys.DynamicBody.
+        m_saveSchema.registerComponent<ShipComponent>("game.Ship", 2);
         // v2: + strafeAxis (the EVA sidestep).
         m_saveSchema.registerComponent<ShipControlsComponent>("game.ShipControls", 2);
         m_saveSchema.registerComponent<CapsuleComponent>("game.Capsule", 1);
@@ -3501,12 +3543,25 @@ namespace game
             }
         }
 
-        // ---- SAS: T cycles OFF -> PGD -> RTG -> NODE; buttons too -------------
+        // ---- SAS: T cycles OFF -> SAS -> PGD -> RTG -> NODE; buttons too ------
         // NODE is skipped when there is no node: cycling onto a mode that
         // cannot point anywhere would look like the key had stopped working.
         if (input().wasKeyPressed(sw::KeyCode::T))
         {
-            m_sasMode = (m_sasMode + 1) % (m_nodeActive ? 4u : 3u);
+            const sw::u32 ring[5] = {SasComponent::kOff, SasComponent::kStability,
+                                     SasComponent::kPrograde, SasComponent::kRetrograde,
+                                     SasComponent::kNode};
+            const sw::u32 count = m_nodeActive ? 5u : 4u;
+            sw::u32 index = 0;
+            for (sw::u32 i = 0; i < count; ++i)
+            {
+                if (ring[i] == m_sasMode)
+                {
+                    index = i;
+                    break;
+                }
+            }
+            m_sasMode = ring[(index + 1) % count];
         }
         if (input().wasKeyPressed(sw::KeyCode::P) && !m_editorMode)
         {
@@ -3554,6 +3609,11 @@ namespace game
                 m_sasMode = SasComponent::kOff; // the node it held is gone
             }
             sas->mode = m_sasMode;
+            // ONE TOGGLE, THREE INSTRUMENTS. The speed readout, the navball's
+            // prograde marker and the autopilot all read the same flag, so
+            // pressing V cannot leave the autopilot flying toward a direction
+            // the marker is no longer drawing.
+            sas->surfaceRelative = m_speedSurfaceRelative ? 1u : 0u;
             // The burn still to fly, handed down every frame. It is a WORLD
             // vector and it shrinks as the burn is flown, so the autopilot
             // keeps the nose on the part of the burn that is left rather
@@ -3638,6 +3698,14 @@ namespace game
 
         m_bubbleSystem->setFocus(
             m_world.getComponent<TransformComponent>(controlledEntity()).position);
+
+        // The wind is a closed form in simulation time — handing the system
+        // the clock rather than letting it read one is what keeps two runs
+        // of the same launch identical, at any time scale.
+        if (m_aerodynamics != nullptr)
+        {
+            m_aerodynamics->setTimeSeconds(m_physicsLane->presentSeconds());
+        }
 
         m_simulation.advance(m_world, deltaSeconds, &threadPool());
         m_commands.playback(m_world);
@@ -3979,6 +4047,42 @@ namespace game
         hudText(std::format("ALT {} {:.1f} KM", primaryName, altitude / 1000.0), kX, y,
                 kLine, main);
         y += kLine * 1.3f;
+
+        // ---- the air, while there is any -----------------------------------------
+        //
+        // Three numbers and a verdict. Dynamic pressure is what the airframe
+        // feels and what a gravity turn is flown around; Mach is where the
+        // drag lives; and the STABILITY MARGIN — how far the centre of
+        // pressure sits behind the centre of mass, in vehicle diameters — is
+        // the one number that says whether this rocket will fly straight or
+        // swap ends. Positive is stable. It is shown because it is the thing
+        // the player can actually fix, by moving fins or moving mass.
+        const sw::ecs::Entity flown = controlledEntity();
+        const auto* vesselFlown = m_world.tryGetComponent<sw::parts::VesselComponent>(flown);
+        if (const auto* air = m_world.tryGetComponent<sw::aero::AeroStateComponent>(flown);
+            air != nullptr && vesselFlown != nullptr && air->inAtmosphere != 0)
+        {
+            const sw::Vec4 warn{1.0f, 0.55f, 0.2f, 1.0f};
+            const sw::f64 pressureKpa = air->dynamicPressurePa / 1000.0;
+            hudText(std::format("Q {:.0f} KPA  M {:.2f}  AOA {:.0f}", pressureKpa,
+                                air->machNumber,
+                                air->angleOfAttackRad * 180.0 / 3.14159265358979),
+                    kX, y, kLine, (pressureKpa > 45.0) ? warn : main);
+            y += kLine * 1.15f;
+
+            // +Z is the tail, so a pressure centre BEHIND the balance point
+            // has the larger z. The margin is quoted in calibres — vehicle
+            // widths — because that is the form the number is meaningful in:
+            // one calibre of margin flies, a tenth of one is a coin toss.
+            const sw::f32 calibre =
+                std::max(0.5f, 2.0f * std::max(vesselFlown->halfExtents.x, 0.25f));
+            const sw::f32 margin =
+                (air->centreOfPressure.z - air->centreOfMass.z) / calibre;
+            hudText(std::format("DRAG {:.0f} KN  MGN {:+.2f}{}", air->dragN / 1000.0,
+                                margin, (margin > 0.05f) ? "" : " UNSTABLE"),
+                    kX, y, kLine, (margin > 0.05f) ? main : warn);
+            y += kLine * 1.3f;
+        }
 
         // ---- current orbit around the primary: APO / PER / period ----------------
         auto formatEta = [](sw::f64 seconds) {
@@ -5034,6 +5138,10 @@ namespace game
             m_world.addComponent(root, ShipControlsComponent{});
             m_world.addComponent(root, SasComponent{});
             m_world.addComponent(root, sw::parts::VesselComponent{});
+            // The air's answer, refreshed every tick. Its PRESENCE is
+            // also the switch that turns the old isotropic drag off for
+            // this vessel: a part-built craft is flown by its tables.
+            m_world.addComponent(root, sw::aero::AeroStateComponent{});
             sw::phys::DynamicBodyComponent body{};
             body.velocity = gravity.worldVelocity +
                             glm::cross(gravity.angularVelocity, radial);
@@ -5880,12 +5988,19 @@ namespace game
         // change is normal, a circularisation is prograde only by accident
         // — and flying one by eye means chasing a marker across the navball
         // with the throttle already open. It greys out with no node up.
+        // SAS is a MODE now, not the absence of one: it holds the craft
+        // still. Every button toggles — clicking the lit one switches the
+        // autopilot off — so there is no longer a button whose only job is
+        // to mean "none of the others".
         const char* labels[4] = {"SAS", "PGD", "RTG", "NODE"};
-        for (sw::u32 id = 0; id < 4; ++id)
+        const sw::u32 modes[4] = {SasComponent::kStability, SasComponent::kPrograde,
+                                  SasComponent::kRetrograde, SasComponent::kNode};
+        for (sw::u32 slot = 0; slot < 4; ++slot)
         {
+            const sw::u32 id = modes[slot];
             const sw::f32 x1 = x0 + kWidth;
             const bool available = (id != SasComponent::kNode) || m_nodeActive;
-            const bool active = (id == 0) ? (m_sasMode == 0) : (m_sasMode == id);
+            const bool active = (m_sasMode == id);
             const sw::Vec4 background =
                 active      ? sw::Vec4{0.15f, 0.55f, 0.30f, 0.85f}
                 : available ? sw::Vec4{0.16f, 0.22f, 0.30f, 0.65f}
@@ -5902,7 +6017,7 @@ namespace game
             panel.tint = background;
             m_drawItems.push_back(panel);
 
-            hudText(labels[id], x0 + 0.022f, y0 + 0.015f, 0.036f,
+            hudText(labels[slot], x0 + 0.022f, y0 + 0.015f, 0.036f,
                     active      ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f}
                     : available ? sw::Vec4{0.7f, 0.8f, 0.9f, 0.9f}
                                 : sw::Vec4{0.42f, 0.48f, 0.56f, 0.8f});
@@ -5913,6 +6028,16 @@ namespace game
             }
             x0 = x1 + kGap;
         }
+
+        // WHICH PROGRADE. Under the row, because the two buttons above it
+        // mean different directions depending on a toggle three metres away
+        // on the other side of the screen — and on the way down they are
+        // tens of degrees apart. `V` swaps it, the same key that swaps the
+        // speed readout and the navball markers.
+        hudText(std::format("{} FRAME (V)", m_speedSurfaceRelative ? "SRF" : "ORB"),
+                -0.97f, y0 - 0.045f, 0.032f,
+                m_speedSurfaceRelative ? sw::Vec4{0.55f, 0.85f, 0.65f, 0.9f}
+                                       : sw::Vec4{0.6f, 0.72f, 0.9f, 0.9f});
     }
 
 
@@ -8619,13 +8744,11 @@ namespace game
                     }
                     return;
                 }
-                // SAS button = off; PGD/RTG toggle their mode.
-                if (button.id == 0) { m_sasMode = 0; }
-                else { m_sasMode = (m_sasMode == button.id) ? 0 : button.id; }
-                SW_LOG_INFO("Game", "SAS mode: {}",
-                            m_sasMode == 0 ? "OFF"
-                                           : (m_sasMode == 1 ? "PROGRADE"
-                                                             : "RETROGRADE"));
+                // EVERY autopilot button toggles: clicking the lit one puts
+                // the autopilot back to OFF. There is no longer a button
+                // that only means "none of the others" — SAS is a mode.
+                m_sasMode = (m_sasMode == button.id) ? SasComponent::kOff : button.id;
+                SW_LOG_INFO("Game", "SAS mode: {}", sasModeName(m_sasMode));
                 break;
             }
         }

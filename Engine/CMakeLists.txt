@@ -82,13 +82,19 @@ add_library(StarWorksEngine STATIC
     # --- Gameplay (parts & vessels) ----------------------------------------------
     Source/Gameplay/Parts.cpp
     Source/Gameplay/Construction.hpp
+    Source/Gameplay/AeroForge.cpp
+    Source/Gameplay/AeroForge.hpp
     Source/Gameplay/Blueprint.cpp
     Source/Gameplay/Blueprint.hpp
     Source/Gameplay/PartGeometry.cpp
     Source/Gameplay/PartGeometry.hpp
     Source/Gameplay/Parts.hpp
+    Source/Gameplay/VesselAerodynamics.cpp
+    Source/Gameplay/VesselAerodynamics.hpp
 
     # --- Physics ---------------------------------------------------------------
+    Source/Physics/Aerodynamics.cpp
+    Source/Physics/Aerodynamics.hpp
     Source/Physics/Kepler.cpp
     Source/Physics/Kepler.hpp
     Source/Physics/HullCollision.hpp

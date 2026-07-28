@@ -63,7 +63,29 @@ namespace game
         /// flying a node by eye means chasing a marker across the navball
         /// with the throttle already open.
         static constexpr sw::u32 kNode = 3;
+        /// HOLD STILL. The only mode that points at nothing: it drives the
+        /// craft's rotation rate to ZERO and keeps it there.
+        ///
+        /// It is a mode rather than the absence of one because that is what
+        /// a pilot actually wants from a button marked SAS — something that
+        /// stays on and keeps fighting. The `X` key already killed rotation
+        /// while held, which is no use at all when what is turning you is
+        /// the atmosphere and it is not going to stop. This holds against
+        /// it, with the RCS's own authority and no more, so it settles a
+        /// wobble and loses to a real tumble — which is the honest answer.
+        static constexpr sw::u32 kStability = 4;
         sw::u32 mode = kOff;
+        /// WHICH VELOCITY PROGRADE MEANS, written by the game layer each
+        /// frame from the same toggle that drives the HUD's speed readout
+        /// and the navball markers: 1 = surface-relative, 0 = orbital.
+        ///
+        /// Not a detail. On a landing the two point in visibly different
+        /// directions — Terra's ground is doing 465 m/s under a craft that
+        /// has almost stopped — so an autopilot that only ever knew the
+        /// orbital frame would hold the nose in a direction the navball's
+        /// own retrograde marker disagreed with, and a retro-burn onto the
+        /// pad became a fight against the instrument.
+        sw::u32 surfaceRelative = 0;
         /// Where kNode points, as a unit WORLD vector, written by the game
         /// layer each frame — the burn still to fly. The system cannot work
         /// it out for itself: the flight plan lives in the game, not in the
@@ -105,7 +127,6 @@ namespace game
         sw::f64 mainThrustNewtons = 4.0e5;   // ~400 kN main engine
         sw::f32 angularAccel = 0.5f;          // rad/s^2 from RCS
         sw::f32 maxAngularSpeed = 0.8f;       // rad/s
-        sw::Vec3 angularVelocity{0.0f};       // body frame, integrated state
         /// Throttle limiter [0,1] applied to the main engine (Shift/Ctrl).
         sw::f32 throttle = 1.0f;
     };
