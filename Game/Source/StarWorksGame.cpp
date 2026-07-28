@@ -47,8 +47,11 @@ namespace game
         constexpr sw::f32 kMarkerScreenFraction = 0.016f;
         constexpr sw::f64 kMapMinHeight = 2.0e7;
         constexpr sw::f64 kMapMaxHeight = 8.0e11;
-        constexpr sw::u32 kTrajectorySamples = 72;
-        constexpr sw::u32 kPredictionDisplaySamples = 160; // dots per patch
+        // Line segments, not dots: a chord every degree and a half reads as
+        // a smooth curve at any zoom the map allows, and the flight plan
+        // gets more of them because it is the line being read.
+        constexpr sw::u32 kTrajectorySamples = 240;
+        constexpr sw::u32 kPredictionDisplaySamples = 320;
         /// Patch colors: current conic, then each successive patch (KSP
         /// style — the eye follows the hand-offs by color).
         constexpr sw::Vec4 kPatchColors[] = {
@@ -130,9 +133,30 @@ namespace game
         }
 
         // ---- time warp -----------------------------------------------------------
-        constexpr sw::f32 kWarpLadder[] = {1.0f,    2.0f,     5.0f,     10.0f,   50.0f,
-                                           100.0f, 1000.0f, 10000.0f, 100000.0f};
+        // The top two rungs are for LEAVING: at x100 000 a Mars transfer is
+        // still three real hours, and nobody sits through that. A million
+        // makes it eleven minutes, ten million makes it one — and both are
+        // exact, because above physics warp every orbit is analytic and the
+        // rate-based lanes bulk-consume whatever interval they are handed.
+        constexpr sw::f32 kWarpLadder[] = {1.0f,      2.0f,      5.0f,       10.0f,
+                                           50.0f,     100.0f,    1000.0f,    10000.0f,
+                                           100000.0f, 1000000.0f, 10000000.0f};
         constexpr sw::u32 kWarpSteps = static_cast<sw::u32>(std::size(kWarpLadder));
+
+        /// The warp rate as a pilot reads it. "1E+07" is a number a compiler
+        /// prints; X10M is a number a person reads.
+        [[nodiscard]] std::string warpText(sw::f32 rate)
+        {
+            if (rate >= 1.0e6f)
+            {
+                return std::format("{:.0f}M", rate / 1.0e6f);
+            }
+            if (rate >= 1.0e3f)
+            {
+                return std::format("{:.0f}K", rate / 1.0e3f);
+            }
+            return std::format("{:.0f}", rate);
+        }
 
         /// PHYSICS WARP: the world stays fully simulated (drag, thrust,
         /// collisions) up to this time scale; beyond it everything rides
@@ -148,7 +172,14 @@ namespace game
             if (altitudeMeters < 1.0e6) { return 100.0f; }
             if (altitudeMeters < 5.0e6) { return 1000.0f; }
             if (altitudeMeters < 2.0e7) { return 10000.0f; }
-            return 100000.0f;
+            // ...and the two interplanetary rungs, gated on being genuinely
+            // FAR from everything. A million times real time moves a craft
+            // 30 000 km per rendered frame at Terra's orbital speed: close
+            // to a body that is a jump straight through its sphere of
+            // influence, and out here it is a comfortable cruise.
+            if (altitudeMeters < 1.0e8) { return 100000.0f; }
+            if (altitudeMeters < 1.0e9) { return 1000000.0f; } // beyond Terra's SOI
+            return 10000000.0f;
         }
 
         /// Sphere LOD resolutions, most to least detailed (rings, segments).
@@ -1117,6 +1148,11 @@ namespace game
                                                   {0.9f, 0.6f, 0.2f, 1.0f})));
         }
         m_markerMeshIndex = registerMesh(renderer().createMesh(buildMarkerMesh()));
+        // The trajectory line's own segment: a unit box, stretched along +Z
+        // between two samples of a conic and thickened with distance so it
+        // stays one pixel wide however far out the map is zoomed.
+        m_orbitLineMeshIndex = registerMesh(renderer().createMesh(
+            sw::PrimitiveFactory::makeBox({0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f, 1.0f})));
 
         // Sun position and eclipse occluders are camera-relative and set
         // every frame in onRender.
@@ -2527,24 +2563,211 @@ namespace game
             return;
         }
 
-        sw::f64 step = 1.0;
-        if (input().isKeyDown(sw::KeyCode::LeftShift)) { step *= 10.0; }
-        if (input().isKeyDown(sw::KeyCode::LeftControl)) { step *= 0.1; }
+        // Both sides of the keyboard: a player holding right shift is asking
+        // for the same thing as one holding left shift.
+        const bool shift = input().isKeyDown(sw::KeyCode::LeftShift) ||
+                           input().isKeyDown(sw::KeyCode::RightShift);
+        const bool control = input().isKeyDown(sw::KeyCode::LeftControl) ||
+                             input().isKeyDown(sw::KeyCode::RightControl);
+        const bool alt = input().isKeyDown(sw::KeyCode::LeftAlt) ||
+                         input().isKeyDown(sw::KeyCode::RightAlt);
+        const sw::space::ManeuverStep step = sw::space::maneuverStep(shift, control, alt);
 
         bool edited = false;
         auto adjust = [&](sw::KeyCode plus, sw::KeyCode minus, sw::f64& value,
-                          sw::f64 scale) {
-            if (input().wasKeyPressed(plus)) { value += step * scale; edited = true; }
-            if (input().wasKeyPressed(minus)) { value -= step * scale; edited = true; }
+                          sw::f64 amount) {
+            if (input().wasKeyPressed(plus)) { value += amount; edited = true; }
+            if (input().wasKeyPressed(minus)) { value -= amount; edited = true; }
         };
-        adjust(sw::KeyCode::L, sw::KeyCode::J, m_nodeTime, 10.0);  // 10 s per tap
-        adjust(sw::KeyCode::I, sw::KeyCode::K, m_nodePrograde, 1.0);
-        adjust(sw::KeyCode::O, sw::KeyCode::U, m_nodeNormal, 1.0);
-        adjust(sw::KeyCode::Y, sw::KeyCode::H, m_nodeRadial, 1.0);
+        adjust(sw::KeyCode::L, sw::KeyCode::J, m_nodeTime, step.seconds);
+        adjust(sw::KeyCode::I, sw::KeyCode::K, m_nodePrograde, step.deltaVMps);
+        adjust(sw::KeyCode::O, sw::KeyCode::U, m_nodeNormal, step.deltaVMps);
+        adjust(sw::KeyCode::Y, sw::KeyCode::H, m_nodeRadial, step.deltaVMps);
         m_nodeTime = std::max(m_nodeTime, m_physicsLane->presentSeconds() + 5.0);
         if (edited)
         {
             m_lastPredictionSeconds = -1.0e9; // instant visual feedback
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // PICKING A TARGET OFF THE MAP
+    //
+    // Click a body and it is the target; click it again and it is not. A
+    // click on empty space changes nothing — losing a target because you
+    // clicked to look at something else would be a small betrayal every
+    // time it happened.
+    //
+    // The hit test is against the body's CENTRE on screen, not its drawn
+    // disc: at map zoom most bodies are a few pixels across, and asking the
+    // player to hit a four-pixel sphere is asking them to hunt.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::updateTargetPick()
+    {
+        if (!m_mapView || m_editorMode || m_nodeDragging ||
+            !input().wasMouseButtonPressed(sw::MouseButton::Left))
+        {
+            return;
+        }
+        sw::f32 cursorX = 0.0f;
+        sw::f32 cursorY = 0.0f;
+        if (!hudCursor(cursorX, cursorY))
+        {
+            return;
+        }
+        for (const HudButton& button : m_hudButtons)
+        {
+            if (cursorX >= button.x0 && cursorX <= button.x1 && cursorY >= button.y0 &&
+                cursorY <= button.y1)
+            {
+                return; // a panel has first claim on the click
+            }
+        }
+
+        const sw::Vec2 cursor{cursorX, cursorY};
+        const sw::f64 time = m_physicsLane->presentSeconds();
+        const sw::Mat4 viewProjection = m_mapCamera.viewProjectionCameraRelative();
+        const sw::WorldVec3 cameraPosition = m_mapCamera.position();
+        constexpr sw::f32 kPickRadiusNdc = 0.06f;
+
+        sw::i32 picked = -1;
+        sw::f32 pickedDistance = kPickRadiusNdc;
+        for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
+        {
+            const sw::WorldVec3 world =
+                m_celestialIndex.positionAt(static_cast<sw::i32>(i), time);
+            const sw::ui::MarkerPlacement placement = sw::ui::placeScreenMarker(
+                viewProjection, sw::Vec3(world - cameraPosition), m_mapCamera.right(),
+                m_mapCamera.up(), m_mapCamera.forward());
+            if (placement.offScreen)
+            {
+                continue; // clamped to the border: that is a pointer, not a body
+            }
+            const sw::f32 distance = glm::length(placement.ndc - cursor);
+            if (distance < pickedDistance)
+            {
+                pickedDistance = distance;
+                picked = static_cast<sw::i32>(i);
+            }
+        }
+        if (picked < 0)
+        {
+            return; // empty space: keep whatever was targeted
+        }
+
+        m_targetIndex = (picked == m_targetIndex) ? -1 : picked;
+        m_approach = {};
+        m_nodeApproach = {};
+        m_lastPredictionSeconds = -1.0e9; // answer the new question now
+        if (m_targetIndex >= 0)
+        {
+            SW_LOG_INFO("Game", "TARGET: {}",
+                        m_celestialIndex.body(static_cast<sw::usize>(m_targetIndex)).name);
+        }
+        else
+        {
+            SW_LOG_INFO("Game", "TARGET cleared");
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // DRAGGING THE NODE ALONG ITS ORBIT
+    //
+    // The keys move the node in fixed steps; the mouse moves it where you
+    // point. Grab the violet marker and the node's TIME follows the pixel
+    // under the cursor — the burn slides round the orbit and the planned
+    // trajectory redraws under your hand, which is the only way to answer
+    // "where on this orbit should I burn?" by looking rather than counting.
+    //
+    // It runs AFTER the camera, next to the ground cursor, for the reason
+    // that rule exists: a pick is a ray from THIS frame's eye, and doing it
+    // in the key handler aims it one frame behind the map you can see.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::updateNodeDrag()
+    {
+        if (!m_mapView || !m_nodeActive || m_editorMode)
+        {
+            m_nodeDragging = false;
+            return;
+        }
+        sw::f32 cursorX = 0.0f;
+        sw::f32 cursorY = 0.0f;
+        if (!hudCursor(cursorX, cursorY))
+        {
+            m_nodeDragging = false;
+            return;
+        }
+        const sw::Vec2 cursor{cursorX, cursorY};
+
+        if (!input().isMouseButtonDown(sw::MouseButton::Left))
+        {
+            m_nodeDragging = false;
+        }
+
+        const sw::f64 time = m_physicsLane->presentSeconds();
+        const sw::Mat4 viewProjection = m_mapCamera.viewProjectionCameraRelative();
+        const sw::WorldVec3 cameraPosition = m_mapCamera.position();
+
+        // ---- grabbing it ----------------------------------------------------
+        if (!m_nodeDragging && input().wasMouseButtonPressed(sw::MouseButton::Left) &&
+            m_nodePrimaryIndex >= 0)
+        {
+            // Not if a HUD button is under the cursor: the panel gets first
+            // claim on a click, or the map's own buttons would be unusable
+            // whenever a node happened to be near them.
+            bool overButton = false;
+            for (const HudButton& button : m_hudButtons)
+            {
+                overButton = overButton ||
+                             (cursorX >= button.x0 && cursorX <= button.x1 &&
+                              cursorY >= button.y0 && cursorY <= button.y1);
+            }
+            const sw::WorldVec3 nodeWorld =
+                m_celestialIndex.positionAt(m_nodePrimaryIndex, time) +
+                m_nodeRelativePosition;
+            const sw::ui::MarkerPlacement placement = sw::ui::placeScreenMarker(
+                viewProjection, sw::Vec3(nodeWorld - cameraPosition),
+                m_mapCamera.right(), m_mapCamera.up(), m_mapCamera.forward());
+            // The marker is about 0.05 NDC across; twice that is a target a
+            // hand can hit without hunting for it.
+            constexpr sw::f32 kGrabRadiusNdc = 0.05f;
+            if (!overButton && !placement.offScreen &&
+                glm::length(placement.ndc - cursor) < kGrabRadiusNdc)
+            {
+                m_nodeDragging = true;
+            }
+        }
+
+        // ---- and moving it --------------------------------------------------
+        if (!m_nodeDragging)
+        {
+            return;
+        }
+        sw::f64 pickedTime = 0.0;
+        sw::f32 pickedDistance = 0.0f;
+        if (!sw::space::timeNearestScreenPoint(m_celestialIndex, m_prediction,
+                                               viewProjection, cameraPosition, time,
+                                               cursor, kPredictionDisplaySamples,
+                                               pickedTime, pickedDistance))
+        {
+            return;
+        }
+        // The node is stuck to its LINE, not to the cursor. Drag the mouse
+        // off into empty space and the nearest sample is still somewhere on
+        // the plan — possibly half an orbit away — so a pick that lands
+        // nowhere near the pointer is ignored rather than obeyed.
+        constexpr sw::f32 kMaxPickNdc = 0.30f;
+        if (pickedDistance > kMaxPickNdc)
+        {
+            return;
+        }
+        // The same floor the keys respect: a burn cannot be scheduled in the
+        // past, and one five seconds out is already unflyable.
+        const sw::f64 clamped = std::max(pickedTime, time + 5.0);
+        if (std::abs(clamped - m_nodeTime) > 1.0e-6)
+        {
+            m_nodeTime = clamped;
+            m_lastPredictionSeconds = -1.0e9; // redraw the plan under the hand
         }
     }
 
@@ -2571,19 +2794,34 @@ namespace game
         {
             m_prediction.clear();
             m_nodePrediction.clear();
+            m_approach = {};
+            m_nodeApproach = {};
             return;
         }
 
         const sw::f64 startTime = m_physicsLane->presentSeconds();
-        sw::space::PredictionSettings settings{};
-        if (m_nodeActive)
-        {
-            // Pre-burn plan stops AT the node; the node plan takes over.
-            settings.horizonSeconds = std::max(m_nodeTime - startTime, 1.0);
-        }
+        // THE PRE-BURN PLAN IS DRAWN WHOLE, node or no node.
+        //
+        // It used to stop AT the node, on the reasoning that the post-burn
+        // path takes over there. But the node is DRAGGED along that line
+        // now, and a line that ends at the thing you are dragging gives you
+        // nowhere to drag it to. Drawing both — the current orbit entire,
+        // the planned one branching off the marker — is also what KSP does,
+        // and for the same reason.
+        const sw::space::PredictionSettings settings{};
         sw::space::predictTrajectory(m_celestialIndex, transform.position,
                                      controlledVelocity(), startTime, settings,
                                      m_prediction);
+
+        // ---- how close does this plan pass the target? ---------------------
+        m_approach = {};
+        m_nodeApproach = {};
+        if (m_targetIndex >= 0 &&
+            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        {
+            m_approach = sw::space::closestApproachToBody(m_celestialIndex, m_prediction,
+                                                          m_targetIndex);
+        }
 
         // ---- the planned burn: dv applied in the orbital frame at the node ----
         m_nodePrediction.clear();
@@ -2631,7 +2869,40 @@ namespace game
 
         const sw::WorldVec3 dv = prograde * m_nodePrograde + normal * m_nodeNormal +
                                  radialOut * m_nodeRadial;
-        m_nodePostBurnVelocity = nodeVelocity + dv;
+
+        // ---- THE LOCK ------------------------------------------------------
+        // Close to the node, freeze the plan: the coasting trajectory as it
+        // was BEFORE the burn, and the dv vector in world terms. From here
+        // the burn is flown against a target that does not move with the
+        // ship, which is the only way the remaining dv can reach zero.
+        // Editing the node re-takes the lock; drifting out of the window
+        // drops it.
+        const bool inWindow = (m_nodeTime - startTime) <= kBurnLockSeconds;
+        const bool lockMatches = m_burnLocked && m_burnNodeTime == m_nodeTime &&
+                                 m_burnPrograde == m_nodePrograde &&
+                                 m_burnNormal == m_nodeNormal &&
+                                 m_burnRadial == m_nodeRadial;
+        if (inWindow && !lockMatches)
+        {
+            m_burnLocked = true;
+            m_burnCoast = m_prediction; // the path NOT taken, from here on
+            m_burnDvWorld = dv;
+            m_burnNodeTime = m_nodeTime;
+            m_burnPrograde = m_nodePrograde;
+            m_burnNormal = m_nodeNormal;
+            m_burnRadial = m_nodeRadial;
+        }
+        else if (!inWindow)
+        {
+            m_burnLocked = false;
+        }
+
+        // What is LEFT of the burn is what the planned trajectory should be
+        // drawn from: as the player flies it, the plan converges onto the
+        // orbit they are actually achieving instead of drifting away from it.
+        const sw::WorldVec3 remaining =
+            m_burnLocked ? remainingBurnVector() : dv;
+        m_nodePostBurnVelocity = nodeVelocity + remaining;
         m_nodePrimaryIndex = nodePrimary;
         m_nodeRelativePosition = relativePosition;
 
@@ -2639,6 +2910,39 @@ namespace game
         sw::space::predictTrajectory(m_celestialIndex, nodePosition,
                                      m_nodePostBurnVelocity, m_nodeTime, nodeSettings,
                                      m_nodePrediction);
+        if (m_targetIndex >= 0)
+        {
+            // What the PLANNED burn would achieve, which is the number the
+            // player is actually dialling the node for.
+            m_nodeApproach = sw::space::closestApproachToBody(
+                m_celestialIndex, m_nodePrediction, m_targetIndex);
+        }
+    }
+
+    // THE BURN STILL TO FLY.
+    //
+    // Locked: the planned dv minus what has actually been applied, where
+    // "applied" is measured against the COASTING velocity from the frozen
+    // pre-burn plan. That subtraction is what makes the number honest —
+    // gravity changes the ship's velocity by a kilometre per second over a
+    // two-minute burn in low orbit, and counting that as thrust would have
+    // the readout hit zero while the engine still had work to do.
+    //
+    // Unlocked (the node is minutes away): there is nothing to count down
+    // yet, so it is simply the planned burn.
+    sw::WorldVec3 StarWorksGame::remainingBurnVector()
+    {
+        if (!m_nodeActive)
+        {
+            return sw::WorldVec3{0.0};
+        }
+        if (m_burnLocked)
+        {
+            return sw::space::remainingBurn(m_celestialIndex, m_burnCoast, m_burnDvWorld,
+                                            controlledVelocity(),
+                                            m_physicsLane->presentSeconds());
+        }
+        return m_nodePostBurnVelocity - controlledVelocity();
     }
 
     void StarWorksGame::toggleEva()
@@ -2691,15 +2995,111 @@ namespace game
                                             : "Back aboard: controlling ship");
     }
 
+    // STAGING: fire the ship's next decoupler, nose-most last.
+    void StarWorksGame::fireNextDecoupler()
+    {
+        sw::ecs::Entity decoupler{};
+        m_world.forEach<sw::parts::PartComponent>(
+            [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
+                if (part.vessel != m_shipEntity || !decoupler.isNull())
+                {
+                    return;
+                }
+                const auto* definition = sw::parts::findDefinition(part.definitionId);
+                if (definition != nullptr &&
+                    definition->type == sw::parts::PartType::Decoupler)
+                {
+                    decoupler = entity;
+                }
+            });
+        if (decoupler.isNull())
+        {
+            return;
+        }
+        const sw::ecs::Entity separated = sw::parts::decoupleAt(m_world, decoupler);
+        if (!separated.isNull())
+        {
+            // splitVessel already gave it Transform/Previous/body.
+            m_world.addComponent(separated, BoundsComponent{0.1f});
+            m_world.addComponent(separated,
+                                 MapMarkerComponent{{0.6f, 0.6f, 0.6f, 1.0f}});
+            SW_LOG_INFO("Game", "STAGING: decoupler fired, stage separated");
+        }
+    }
+
     void StarWorksGame::updateWarp()
     {
-        if (input().wasKeyPressed(sw::KeyCode::Period) && m_warpIndex + 1 < kWarpSteps)
+        // X0 IS A WARP RATE. Stopping time is the bottom of the same ladder
+        // every other rate lives on, so it is reached the same way: step
+        // down from x1 and time stops; step up and it starts again, at x1.
+        // Nothing else on the keyboard can pause the game by accident.
+        // ---- WARPING TO THE NODE -------------------------------------------
+        // The rung is chosen so one real second never advances more than
+        // half the time that is left: the approach slows down of its own
+        // accord and the last rung is x1, which is what stops the overshoot
+        // a fixed ladder plus a human reaction time cannot avoid.
+        if (m_warpToSeconds > 0.0)
         {
-            ++m_warpIndex;
+            if (!m_nodeActive)
+            {
+                m_warpToSeconds = 0.0; // the node it was aiming at is gone
+                m_warpIndex = 0;
+            }
+            else
+            {
+                const sw::f64 remaining =
+                    m_warpToSeconds - m_physicsLane->presentSeconds();
+                if (remaining <= 0.0)
+                {
+                    m_warpToSeconds = 0.0;
+                    m_warpIndex = 0;
+                    SW_LOG_INFO("Game", "Warp to node: arrived");
+                }
+                else
+                {
+                    sw::u32 want = 0;
+                    for (sw::u32 i = 0; i < kWarpSteps; ++i)
+                    {
+                        if (static_cast<sw::f64>(kWarpLadder[i]) <= remaining * 0.5)
+                        {
+                            want = i;
+                        }
+                    }
+                    m_warpIndex = want;
+                }
+            }
         }
-        if (input().wasKeyPressed(sw::KeyCode::Comma) && m_warpIndex > 0)
+        // Any manual warp key takes the controls back.
+        if (m_warpToSeconds > 0.0 && (input().wasKeyPressed(sw::KeyCode::Period) ||
+                                      input().wasKeyPressed(sw::KeyCode::Comma)))
         {
-            --m_warpIndex;
+            m_warpToSeconds = 0.0;
+            SW_LOG_INFO("Game", "Warp to node cancelled");
+        }
+
+        if (input().wasKeyPressed(sw::KeyCode::Period))
+        {
+            if (m_simulation.isPaused())
+            {
+                m_simulation.setPaused(false); // x0 -> x1
+                SW_LOG_INFO("Game", "Simulation resumed");
+            }
+            else if (m_warpIndex + 1 < kWarpSteps)
+            {
+                ++m_warpIndex;
+            }
+        }
+        if (input().wasKeyPressed(sw::KeyCode::Comma) && !m_simulation.isPaused())
+        {
+            if (m_warpIndex > 0)
+            {
+                --m_warpIndex;
+            }
+            else
+            {
+                m_simulation.setPaused(true); // x1 -> x0
+                SW_LOG_INFO("Game", "Simulation paused (warp x0)");
+            }
         }
 
         const sw::WorldVec3 focusPosition =
@@ -2734,6 +3134,12 @@ namespace game
 
     void StarWorksGame::updateShipControls()
     {
+        // The jump edge is TAKEN here, whether or not it can be used: a
+        // request that survives a trip through the map screen would fire the
+        // moment the player came back, which is not what they pressed.
+        const bool jumpRequested = m_jumpRequested;
+        m_jumpRequested = false;
+
         // Idle both control blocks, then feed the controlled one.
         auto& shipControls = m_world.getComponent<ShipControlsComponent>(m_shipEntity);
         shipControls = {};
@@ -2780,6 +3186,14 @@ namespace game
         if (input().isKeyDown(sw::KeyCode::Q)) { controls.rotationInput.z += 1.0f; }
         if (input().isKeyDown(sw::KeyCode::E)) { controls.rotationInput.z -= 1.0f; }
         controls.killRotation = input().isKeyDown(sw::KeyCode::X) ? 1u : 0u;
+        // JUMP, on foot only. The walker system consumes it on the first
+        // tick that sees it and leaves the ground, so a held key does not
+        // hover and a slow frame running four physics ticks does not jump
+        // four times.
+        if (walking && jumpRequested)
+        {
+            controls.jump = 1u;
+        }
         // Throttle limiter (ship only; the capsule ignores it).
         if (input().isKeyDown(sw::KeyCode::LeftShift)) { controls.throttleDelta += 1.0f; }
         if (input().isKeyDown(sw::KeyCode::LeftControl))
@@ -3009,10 +3423,23 @@ namespace game
             }
             SW_LOG_INFO("Game", "{}", m_shipMode ? "Chase camera" : "Free camera");
         }
-        if (input().wasKeyPressed(sw::KeyCode::Space))
+        // SPACE is the ACTION key, not the pause key.
+        //
+        // Pausing is a warp rate — x0 — and it belongs on the warp control
+        // with every other rate: press the warp-down key at x1 and time
+        // stops. Space was doing the one thing a pilot's thumb should never
+        // do by accident, on the key every game in the genre uses to stage.
+        // On foot it jumps; in a rocket it fires the next decoupler.
+        if (input().wasKeyPressed(sw::KeyCode::Space) && !m_editorMode && !m_mapView)
         {
-            m_simulation.setPaused(!m_simulation.isPaused());
-            SW_LOG_INFO("Game", "Simulation {}", m_simulation.isPaused() ? "paused" : "resumed");
+            if (m_evaMode)
+            {
+                m_jumpRequested = true; // consumed by updateShipControls
+            }
+            else
+            {
+                fireNextDecoupler();
+            }
         }
         if (m_mapView)
         {
@@ -3029,37 +3456,11 @@ namespace game
         {
             updateEditor();
         }
+        // Z stays as the second name for the same action — the muscle
+        // memory of everyone who has flown this build so far.
         if (input().wasKeyPressed(sw::KeyCode::Z) && !m_editorMode && !m_mapView)
         {
-            // Staging: fire the first decoupler on the ship (nose-most last).
-            sw::ecs::Entity decoupler{};
-            m_world.forEach<sw::parts::PartComponent>(
-                [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
-                    if (part.vessel != m_shipEntity || !decoupler.isNull())
-                    {
-                        return;
-                    }
-                    const auto* definition =
-                        sw::parts::findDefinition(part.definitionId);
-                    if (definition != nullptr &&
-                        definition->type == sw::parts::PartType::Decoupler)
-                    {
-                        decoupler = entity;
-                    }
-                });
-            if (!decoupler.isNull())
-            {
-                const sw::ecs::Entity separated =
-                    sw::parts::decoupleAt(m_world, decoupler);
-                if (!separated.isNull())
-                {
-                    // splitVessel already gave it Transform/Previous/body.
-                    m_world.addComponent(separated, BoundsComponent{0.1f});
-                    m_world.addComponent(
-                        separated, MapMarkerComponent{{0.6f, 0.6f, 0.6f, 1.0f}});
-                    SW_LOG_INFO("Game", "STAGING: decoupler fired, stage separated");
-                }
-            }
+            fireNextDecoupler();
         }
 
         // ---- docking: ports of different vessels, close and slow ---------------
@@ -3100,10 +3501,12 @@ namespace game
             }
         }
 
-        // ---- SAS: T cycles OFF -> PGD -> RTG; clickable buttons too -----------
+        // ---- SAS: T cycles OFF -> PGD -> RTG -> NODE; buttons too -------------
+        // NODE is skipped when there is no node: cycling onto a mode that
+        // cannot point anywhere would look like the key had stopped working.
         if (input().wasKeyPressed(sw::KeyCode::T))
         {
-            m_sasMode = (m_sasMode + 1) % 3;
+            m_sasMode = (m_sasMode + 1) % (m_nodeActive ? 4u : 3u);
         }
         if (input().wasKeyPressed(sw::KeyCode::P) && !m_editorMode)
         {
@@ -3146,7 +3549,16 @@ namespace game
         handleHudClicks();
         if (auto* sas = m_world.tryGetComponent<SasComponent>(m_shipEntity))
         {
+            if (m_sasMode == SasComponent::kNode && !m_nodeActive)
+            {
+                m_sasMode = SasComponent::kOff; // the node it held is gone
+            }
             sas->mode = m_sasMode;
+            // The burn still to fly, handed down every frame. It is a WORLD
+            // vector and it shrinks as the burn is flown, so the autopilot
+            // keeps the nose on the part of the burn that is left rather
+            // than on the direction the whole burn started in.
+            sas->targetDirection = sw::Vec3(remainingBurnVector());
         }
 
         // --- save / load ----------------------------------------------------------
@@ -3252,6 +3664,11 @@ namespace game
         // tick pose. Running it up with the key handling put a whole frame
         // between where you were looking and where the ghost landed.
         updateBuildCursor();
+        // ...and the maneuver node's mouse grab, which is a pick against the
+        // map exactly as it is being drawn this frame — and the target
+        // pick, which is the same kind of question asked of the bodies.
+        updateNodeDrag();
+        updateTargetPick();
         // ...and E, for the same reason: it is a ray from THIS frame's eye.
         if (m_configRequested)
         {
@@ -3568,6 +3985,19 @@ namespace game
             return (seconds >= 3600.0) ? std::format("{:.1f} H", seconds / 3600.0)
                                        : std::format("{:.0f} S", seconds);
         };
+        // A closest approach can be eight hundred metres or eight hundred
+        // million kilometres, and both have to be readable at a glance.
+        auto formatDistance = [](sw::f64 metres) {
+            if (metres >= 1.0e9)
+            {
+                return std::format("{:.3f} GM", metres / 1.0e9);
+            }
+            if (metres >= 1000.0)
+            {
+                return std::format("{:.1f} KM", metres / 1000.0);
+            }
+            return std::format("{:.0f} M", metres);
+        };
         const auto* controlledBody =
             m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(controlledEntity());
         const bool grounded = controlledBody != nullptr && controlledBody->isGrounded != 0;
@@ -3625,8 +4055,10 @@ namespace game
 
         // ---- throttle + warp -----------------------------------------------------------
         const auto& ship = m_world.getComponent<ShipComponent>(m_shipEntity);
-        hudText(std::format("THR {:.0f}%  WARP X{:g}", ship.throttle * 100.0f,
-                            kWarpLadder[m_warpIndex]),
+        hudText(std::format("THR {:.0f}%  WARP X{}", ship.throttle * 100.0f,
+                            m_simulation.isPaused()
+                                ? std::string("0")
+                                : warpText(kWarpLadder[m_warpIndex])),
                 kX, y, kLine, dim);
         y += kLine * 1.3f;
 
@@ -3687,18 +4119,56 @@ namespace game
             y += kLine * 1.3f;
         }
 
+        // ---- the target, and the closest approach to it -----------------------
+        if (m_targetIndex >= 0 &&
+            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        {
+            const auto& target =
+                m_celestialIndex.body(static_cast<sw::usize>(m_targetIndex));
+            constexpr sw::Vec4 kTargetColor{1.0f, 0.55f, 0.88f, 0.95f};
+            const sw::f64 distanceNow =
+                glm::length(m_celestialIndex.positionAt(m_targetIndex, time) - position);
+            hudText(std::format("TGT {}  {}", target.name, formatDistance(distanceNow)),
+                    kX, y, kLine, kTargetColor);
+            y += kLine * 1.3f;
+
+            auto approachLine = [&](const sw::space::ClosestApproach& approach,
+                                    const char* label, const sw::Vec4& color) {
+                if (!approach.valid)
+                {
+                    return;
+                }
+                // ALTITUDE, not centre distance, once the pass is close
+                // enough to be about the surface: 380 km above Luna and
+                // 2 117 km from its centre are the same fact, and only one
+                // of them tells you whether you hit it.
+                const sw::f64 altitude = approach.distanceM - target.bodyRadius;
+                const bool hits = altitude <= 0.0;
+                hudText(std::format("{} {}  T-{}  REL {:.0f} M/S", label,
+                                    hits ? std::string("IMPACT")
+                                         : formatDistance(approach.distanceM),
+                                    formatEta(std::max(approach.timeSeconds - time, 0.0)),
+                                    approach.relativeSpeedMps),
+                        kX, y, kLine, hits ? sw::Vec4{1.0f, 0.35f, 0.3f, 0.95f} : color);
+                y += kLine * 1.3f;
+            };
+            approachLine(m_approach, "APPROACH", kTargetColor);
+            approachLine(m_nodeApproach, "AFTER BURN",
+                         sw::Vec4{0.85f, 0.75f, 1.0f, 0.95f});
+        }
+
         // ---- maneuver node status --------------------------------------------
         if (m_nodeActive)
         {
-            // Far from the node: show the PLANNED dv. Within 30 s (or past
-            // it): the LIVE remaining vector — burn until it hits zero.
+            // Far from the node: show the PLANNED dv. Once the plan is
+            // LOCKED — two minutes out — the LIVE remaining vector, which
+            // now genuinely counts down as the engine burns.
             const sw::f64 timeToNode = m_nodeTime - time;
             const sw::f64 plannedDv =
                 std::sqrt(m_nodePrograde * m_nodePrograde +
                           m_nodeNormal * m_nodeNormal + m_nodeRadial * m_nodeRadial);
-            const sw::f64 remainingDv =
-                glm::length(m_nodePostBurnVelocity - controlledVelocity());
-            const bool burnWindow = timeToNode < 30.0;
+            const sw::f64 remainingDv = glm::length(remainingBurnVector());
+            const bool burnWindow = m_burnLocked;
             const sw::Vec4 nodeColor{0.8f, 0.55f, 1.0f, 0.95f};
             hudText(std::format("NODE T-{} DV {:.1f} M/S{}",
                                 formatEta(std::max(timeToNode, 0.0)),
@@ -3711,6 +4181,32 @@ namespace game
                 hudText(std::format("PGD {:+.1f} NRM {:+.1f} RAD {:+.1f}",
                                     m_nodePrograde, m_nodeNormal, m_nodeRadial),
                         kX, y, kLine, nodeColor);
+                y += kLine * 1.3f;
+                // WHICH STEP IS ARMED. A ladder the player cannot see is a
+                // ladder they have to remember; this line changes under
+                // their thumb as they hold the modifier, which is the only
+                // documentation a control like this needs.
+                const bool shift = input().isKeyDown(sw::KeyCode::LeftShift) ||
+                                   input().isKeyDown(sw::KeyCode::RightShift);
+                const bool control = input().isKeyDown(sw::KeyCode::LeftControl) ||
+                                     input().isKeyDown(sw::KeyCode::RightControl);
+                const bool alt = input().isKeyDown(sw::KeyCode::LeftAlt) ||
+                                 input().isKeyDown(sw::KeyCode::RightAlt);
+                const sw::space::ManeuverStep step =
+                    sw::space::maneuverStep(shift, control, alt);
+                const char* held = (control && shift) ? "CTRL+SHIFT"
+                                   : alt              ? "ALT"
+                                   : shift            ? "SHIFT"
+                                   : control          ? "CTRL"
+                                                      : "-";
+                hudText(std::format("STEP {:g} M/S  {:g} S   [{}]  {}", step.deltaVMps,
+                                    step.seconds, held,
+                                    m_nodeDragging ? "SLIDING" : "DRAG TO SLIDE"),
+                        kX, y, kLine,
+                        m_nodeDragging ? sw::Vec4{1.0f, 0.85f, 0.45f, 0.95f}
+                        : (step.deltaVMps > 1.0)
+                            ? sw::Vec4{1.0f, 0.78f, 0.30f, 0.95f}
+                            : nodeColor);
                 y += kLine * 1.3f;
             }
         }
@@ -3829,10 +4325,15 @@ namespace game
         {
             collectNavball();
             collectSasButtons();
+            // ...and the warp-to-node button in the cockpit too: the burn is
+            // planned on the map but it is FLOWN here, and being sent back
+            // to the map to skip four hours is a trip for nothing.
+            collectWarpToNodeButton();
         }
         else if (m_mapView && !m_editorMode)
         {
             collectMapButtons();
+            collectWarpToNodeButton(); // appends: collectMapButtons clears
         }
         // (Hangar UI is not collected here: the hangar renders through its
         // own path — collectHangarItems -> collectEditorUi.)
@@ -4812,6 +5313,66 @@ namespace game
     // parts, joints, a vessel. The factory layer's contract is that it moves
     // matter and nothing else.
     // ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // IS SOMETHING STANDING ON THE PAD?
+    //
+    // Asked of the VESSELS, not of the hulls: a rocket is a root entity with
+    // a swarm of parts hanging off it, and testing the root against the
+    // deck's own footprint is one distance per vessel — cheap enough to ask
+    // every frame, and it answers the question a launch director would ask.
+    //
+    // The radius comes from the pad's own deck boxes, so a wider LP-1
+    // redrawn in Part Studio guards a wider deck. The vertical reach is
+    // deliberately generous: a rocket fifty metres up is still ON the pad as
+    // far as dropping another one there is concerned.
+    // ------------------------------------------------------------------------
+    bool StarWorksGame::padIsOccupied(sw::ecs::Entity pad)
+    {
+        const auto* padTransform = m_world.tryGetComponent<TransformComponent>(pad);
+        if (padTransform == nullptr)
+        {
+            return false;
+        }
+        sw::f64 deckRadius = 12.0;
+        if (const auto* building =
+                m_world.tryGetComponent<sw::factory::BuildingComponent>(pad))
+        {
+            if (const auto* definition =
+                    sw::parts::findDefinition(building->definitionId))
+            {
+                for (const sw::parts::HitBox& box :
+                     sw::parts::effectiveHull(*definition))
+                {
+                    if (std::abs(box.center.x) <= std::abs(box.halfExtents.x) &&
+                        std::abs(box.center.z) <= std::abs(box.halfExtents.z))
+                    {
+                        deckRadius = std::max(
+                            deckRadius, static_cast<sw::f64>(std::max(
+                                            std::abs(box.halfExtents.x),
+                                            std::abs(box.halfExtents.z))));
+                    }
+                }
+            }
+        }
+        // ...plus the height a launching rocket has to clear before the pad
+        // counts as free again.
+        constexpr sw::f64 kClearanceM = 60.0;
+        const sw::f64 reach = deckRadius + kClearanceM;
+
+        bool occupied = false;
+        m_world.forEach<sw::parts::VesselComponent, TransformComponent>(
+            [&](sw::ecs::Entity, sw::parts::VesselComponent&,
+                TransformComponent& transform) {
+                if (occupied)
+                {
+                    return;
+                }
+                occupied = glm::length(transform.position - padTransform->position) <
+                           reach;
+            });
+        return occupied;
+    }
+
     void StarWorksGame::updateLaunchPads()
     {
         std::vector<sw::ecs::Entity> pads;
@@ -4828,6 +5389,18 @@ namespace game
 
         for (const sw::ecs::Entity pad : pads)
         {
+            // IS THERE ALREADY A ROCKET ON IT?
+            //
+            // A pad holds one vehicle. Unpacking a second one on top of the
+            // first put two rockets in the same cubic metre — which the hull
+            // solver then resolved by throwing one of them off the pad. The
+            // crate simply waits: it is on the pad's own belt, it is not
+            // going anywhere, and the panel says the deck is occupied.
+            if (padIsOccupied(pad))
+            {
+                continue;
+            }
+
             // WHICH design is in the crate. The belt that brought it names
             // its source, and the source is the hall that built it.
             std::string name;
@@ -5303,14 +5876,20 @@ namespace game
         const sw::f32 y0 = 0.87f;
         sw::f32 x0 = -0.97f;
 
-        const char* labels[3] = {"SAS", "PGD", "RTG"};
-        for (sw::u32 id = 0; id < 3; ++id)
+        // NODE is the fourth: a burn is almost never prograde — a plane
+        // change is normal, a circularisation is prograde only by accident
+        // — and flying one by eye means chasing a marker across the navball
+        // with the throttle already open. It greys out with no node up.
+        const char* labels[4] = {"SAS", "PGD", "RTG", "NODE"};
+        for (sw::u32 id = 0; id < 4; ++id)
         {
             const sw::f32 x1 = x0 + kWidth;
+            const bool available = (id != SasComponent::kNode) || m_nodeActive;
             const bool active = (id == 0) ? (m_sasMode == 0) : (m_sasMode == id);
             const sw::Vec4 background =
-                active ? sw::Vec4{0.15f, 0.55f, 0.30f, 0.85f}
-                       : sw::Vec4{0.16f, 0.22f, 0.30f, 0.65f};
+                active      ? sw::Vec4{0.15f, 0.55f, 0.30f, 0.85f}
+                : available ? sw::Vec4{0.16f, 0.22f, 0.30f, 0.65f}
+                            : sw::Vec4{0.12f, 0.14f, 0.18f, 0.55f};
 
             sw::DrawItem panel{};
             panel.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
@@ -5324,10 +5903,14 @@ namespace game
             m_drawItems.push_back(panel);
 
             hudText(labels[id], x0 + 0.022f, y0 + 0.015f, 0.036f,
-                    active ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f}
-                           : sw::Vec4{0.7f, 0.8f, 0.9f, 0.9f});
+                    active      ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f}
+                    : available ? sw::Vec4{0.7f, 0.8f, 0.9f, 0.9f}
+                                : sw::Vec4{0.42f, 0.48f, 0.56f, 0.8f});
 
-            m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, id});
+            if (available)
+            {
+                m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, id});
+            }
             x0 = x1 + kGap;
         }
     }
@@ -7405,11 +7988,14 @@ namespace game
         constexpr sw::f32 kRowGap = 0.008f;
         constexpr sw::f32 kPad = 0.018f;
         constexpr sw::f32 kHeaderH = 0.086f;
-        // A hall's stats block carries one line no other machine has — what
-        // is on the slipway — so it is taller by exactly that line. Leaving
-        // it at 0.168 drew the order OUTSIDE its own background, which is
-        // the same class of fault as the RECIPE label through the STOP row.
-        const sw::f32 kStatsH = hall ? 0.208f : 0.168f;
+        // A hall and a pad each carry one line no other machine has — what
+        // is on the slipway, and whether the deck is clear — so their stats
+        // block is taller by exactly that line. Leaving it at 0.168 drew
+        // that line OUTSIDE its own background, which is the same class of
+        // fault as the RECIPE label through the STOP row.
+        const bool extraStatsLine =
+            hall || building->category == sw::factory::BuildingCategory::Pad;
+        const sw::f32 kStatsH = extraStatsLine ? 0.208f : 0.168f;
         constexpr sw::f32 kFooterH = 0.098f;
 
         sw::f32 cursorX = -2.0f;
@@ -7566,6 +8152,27 @@ namespace game
                                     assembly->copperNeededKg, assembly->completed),
                         kLeft + kPad + 0.014f, rowY, 0.028f, hud::kText);
             }
+        }
+
+        // ---- THE DECK, at a pad ---------------------------------------------
+        // The one thing a pad can tell you that no other building can: why
+        // the crate sitting in its bin has not become a rocket.
+        if (building->category == sw::factory::BuildingCategory::Pad)
+        {
+            rowY += 0.032f;
+            const sw::f64 crates =
+                (inventory != nullptr)
+                    ? sw::factory::inventoryCount(*inventory, sw::res::Resource::Vehicle)
+                    : 0.0;
+            const bool occupied = padIsOccupied(m_configTarget);
+            hudText(occupied ? std::format("DECK OCCUPIED   {:.0f} WAITING   LAUNCH OR "
+                                           "MOVE THE VESSEL",
+                                           crates)
+                    : (crates >= 1.0)
+                        ? std::format("DECK CLEAR   {:.0f} WAITING   ROLLING OUT", crates)
+                        : std::string("DECK CLEAR   NOTHING WAITING"),
+                    kLeft + kPad + 0.014f, rowY, 0.028f,
+                    occupied ? hud::kWarn : hud::kOk);
         }
 
         // ---- THE JOB LIST ----------------------------------------------------
@@ -7824,6 +8431,45 @@ namespace game
         m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, 300u});
     }
 
+    // WARP TO THE NODE. A burn planned four hours out is four hours of
+    // holding the warp key and watching for the moment to let go — and
+    // overshooting by one rung of the ladder costs the whole orbit. This
+    // stops one minute short, which is where a pilot wants to be anyway:
+    // aligned, throttle hand ready, nothing to do but wait a little.
+    void StarWorksGame::collectWarpToNodeButton()
+    {
+        if (!m_nodeActive)
+        {
+            return;
+        }
+        constexpr sw::f32 kHeight = 0.062f;
+        // Wide enough for the LONGER of the two labels: a button whose text
+        // runs off its own edge when you press it is a button that looks
+        // broken at the exact moment you used it.
+        constexpr sw::f32 kWidth = 0.40f;
+        const sw::f32 x0 = -0.97f;
+        const sw::f32 y0 = 0.78f;
+        const sw::f32 x1 = x0 + kWidth;
+        const bool running = m_warpToSeconds > 0.0;
+
+        sw::DrawItem panel{};
+        panel.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
+        panel.transform =
+            glm::translate(sw::Mat4{1.0f},
+                           {(x0 + x1) * 0.5f, y0 + kHeight * 0.5f, 0.0f}) *
+            glm::scale(sw::Mat4{1.0f}, {kWidth * 0.5f, kHeight * 0.5f, 1.0f});
+        panel.screenSpace = true;
+        panel.tint = running ? sw::Vec4{0.60f, 0.42f, 0.12f, 0.85f}
+                             : sw::Vec4{0.16f, 0.22f, 0.30f, 0.65f};
+        m_drawItems.push_back(panel);
+
+        hudText(running ? "WARPING   CLICK TO STOP" : "WARP TO NODE -1 MIN",
+                x0 + 0.020f, y0 + 0.016f, 0.034f,
+                running ? sw::Vec4{1.0f, 0.92f, 0.75f, 1.0f}
+                        : sw::Vec4{0.7f, 0.8f, 0.9f, 0.95f});
+        m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, 301u});
+    }
+
     void StarWorksGame::handleHudClicks()
     {
         if (!input().wasMouseButtonPressed(sw::MouseButton::Left))
@@ -7900,6 +8546,22 @@ namespace game
                 if (button.id == 300) // map: fly the next vessel
                 {
                     cyclePilotedVessel();
+                    return;
+                }
+                if (button.id == 301) // map: warp to one minute before the node
+                {
+                    if (m_warpToSeconds > 0.0)
+                    {
+                        m_warpToSeconds = 0.0;
+                        m_warpIndex = 0;
+                        SW_LOG_INFO("Game", "Warp to node cancelled");
+                    }
+                    else if (m_nodeActive)
+                    {
+                        m_warpToSeconds = m_nodeTime - 60.0;
+                        m_simulation.setPaused(false);
+                        SW_LOG_INFO("Game", "Warping to T-60 s on the node");
+                    }
                     return;
                 }
                 if (m_mapView)
@@ -8165,8 +8827,10 @@ namespace game
         // ---- maneuver burn marker: point the nose at it, burn, watch DV --
         if (m_nodeActive)
         {
-            const sw::WorldVec3 burnVector =
-                m_nodePostBurnVelocity - controlledVelocity();
+            // The SAME vector the readout counts down and the SAS points
+            // at: one answer to "where do I aim and how much is left",
+            // never three that can disagree.
+            const sw::WorldVec3 burnVector = remainingBurnVector();
             const sw::f64 burnLength = glm::length(burnVector);
             if (burnLength > 0.05)
             {
@@ -8213,30 +8877,139 @@ namespace game
             m_drawItems.push_back(item);
         };
 
-        // Samples a conic around a primary's CURRENT world position over
-        // [t0, t1] — KSP map convention: patches are drawn in the frame of
-        // where their primary is NOW.
-        auto plotConic = [&](const sw::phys::KeplerOrbit& orbit,
-                             const sw::WorldVec3& primaryPosition, const sw::Vec4& color,
-                             sw::f64 t0, sw::f64 t1, sw::u32 samples) {
-            for (sw::u32 sample = 0; sample < samples; ++sample)
+        // ONE STRAIGHT PIECE OF LINE between two world points.
+        //
+        // A dotted trajectory hides the one thing the map is for: you
+        // cannot tell a plan that ENDS from a plan whose dots have spread
+        // out, and at map zoom they always spread out. A stretched box
+        // between consecutive samples costs the same draw item and gives a
+        // line whose end means something.
+        // A LINE IS A BOX, AND A BOX HAS ONE WIDTH.
+        //
+        // That is the whole difficulty. The width has to follow distance, or
+        // the line changes thickness as you zoom; but ONE box spanning a
+        // chord of Terra's own orbit is four million kilometres long, and
+        // when the camera sits on that orbit — which it does, because the
+        // camera is at Terra — one end of the box is billions of kilometres
+        // away and the other end is in your eye. Sized for the far end it is
+        // three thousand kilometres wide where it passes you, which is the
+        // grey band across the planet.
+        //
+        // So a piece is SPLIT until its near and far ends are within a
+        // factor of two of each other, and each piece is then sized from its
+        // own closest approach. Almost every chord passes first try; only the
+        // handful actually near the camera subdivide, so the cost is a few
+        // extra boxes rather than a uniformly denser line.
+        auto plotLine = [&](const sw::WorldVec3& a, const sw::WorldVec3& b,
+                            const sw::Vec4& color, sw::f32 widthMultiplier) {
+            struct Piece
             {
-                const sw::f64 ts =
-                    t0 + (t1 - t0) * static_cast<sw::f64>(sample) / samples;
-                sw::WorldVec3 relativePoint{};
-                sw::phys::kepler::evaluate(orbit, ts, relativePoint);
-                plotDot(primaryPosition + relativePoint, color, 1.0f);
+                sw::Vec3 a;
+                sw::Vec3 b;
+                sw::u32 depth;
+            };
+            constexpr sw::u32 kMaxSplitDepth = 5; // at most 32 pieces per chord
+            Piece pending[2 * kMaxSplitDepth + 2];
+            sw::u32 count = 0;
+            pending[count++] = {sw::Vec3(a - cameraPosition),
+                                sw::Vec3(b - cameraPosition), 0u};
+
+            while (count > 0)
+            {
+                const Piece piece = pending[--count];
+                const sw::Vec3 delta = piece.b - piece.a;
+                const sw::f32 length = glm::length(delta);
+                if (!(length > 1.0e-4f))
+                {
+                    continue;
+                }
+
+                // Closest approach of THIS piece to the eye, and its far end.
+                const sw::f32 t = glm::clamp(
+                    -glm::dot(piece.a, delta) / glm::dot(delta, delta), 0.0f, 1.0f);
+                // (Not called `near`/`far`: those are macros in the Windows
+                // headers this also builds against.)
+                const sw::f32 closest = glm::length(piece.a + delta * t);
+                const sw::f32 furthest =
+                    std::max(glm::length(piece.a), glm::length(piece.b));
+                if (piece.depth < kMaxSplitDepth &&
+                    furthest > 2.0f * std::max(closest, 1.0f) &&
+                    count + 2u <= static_cast<sw::u32>(std::size(pending)))
+                {
+                    const sw::Vec3 middle = piece.a + delta * 0.5f;
+                    pending[count++] = {piece.a, middle, piece.depth + 1};
+                    pending[count++] = {middle, piece.b, piece.depth + 1};
+                    continue;
+                }
+
+                // 0.10 of the marker's own screen fraction is about 1.7
+                // pixels at 1080p — a line, not a hairline that aliases into
+                // dashes. Measured at the CLOSEST point, which is where a
+                // width that is wrong is most obvious.
+                const sw::f32 width = closest * markerFactor * 0.10f * widthMultiplier;
+                const sw::Vec3 centre = (piece.a + piece.b) * 0.5f;
+                const sw::Vec3 forward = delta / length;
+                const sw::Vec3 reference = (std::abs(forward.y) < 0.99f)
+                                               ? sw::Vec3{0.0f, 1.0f, 0.0f}
+                                               : sw::Vec3{1.0f, 0.0f, 0.0f};
+                const sw::Vec3 right = glm::normalize(glm::cross(reference, forward));
+                const sw::Vec3 up = glm::cross(forward, right);
+
+                sw::DrawItem item{};
+                item.mesh = &m_meshes[m_orbitLineMeshIndex];
+                item.transform =
+                    glm::translate(sw::Mat4{1.0f}, centre) *
+                    glm::mat4_cast(glm::quat_cast(sw::Mat3{right, up, forward})) *
+                    // A hair longer than the gap so consecutive pieces
+                    // overlap rather than leaving a seam on a tight curve.
+                    glm::scale(sw::Mat4{1.0f}, sw::Vec3{width, width, length * 1.02f});
+                item.boundsCenter = centre;
+                item.boundsRadius = length * 0.51f + width;
+                item.tint = {color.r, color.g, color.b, 2.0f};
+                m_drawItems.push_back(item);
             }
         };
 
-        // Full closed orbit (elliptic only).
+        // Samples a conic around a primary's CURRENT world position over
+        // [t0, t1] — KSP map convention: patches are drawn in the frame of
+        // where their primary is NOW — and joins the samples up.
+        auto plotConic = [&](const sw::phys::KeplerOrbit& orbit,
+                             const sw::WorldVec3& primaryPosition, const sw::Vec4& color,
+                             sw::f64 t0, sw::f64 t1, sw::u32 samples,
+                             sw::f32 widthMultiplier) {
+            sw::WorldVec3 previous{};
+            bool havePrevious = false;
+            for (sw::u32 sample = 0; sample <= samples; ++sample)
+            {
+                // Spaced by ANOMALY, not by time — see the note on
+                // kepler::timeAtArcFraction. Samples spaced evenly in time
+                // leave one chord cutting thousands of kilometres off the
+                // periapsis of a transfer ellipse: a line drawn straight
+                // through the planet the arc goes round.
+                const sw::f64 ts = sw::phys::kepler::timeAtArcFraction(
+                    orbit, t0, t1, static_cast<sw::f64>(sample) / samples);
+                sw::WorldVec3 relativePoint{};
+                sw::phys::kepler::evaluate(orbit, ts, relativePoint);
+                const sw::WorldVec3 point = primaryPosition + relativePoint;
+                if (havePrevious)
+                {
+                    plotLine(previous, point, color, widthMultiplier);
+                }
+                previous = point;
+                havePrevious = true;
+            }
+        };
+
+        // Full closed orbit (elliptic only). One period exactly, so the
+        // last chord closes the ring.
         auto plotFullOrbit = [&](const sw::phys::KeplerOrbit& orbit,
                                  const sw::WorldVec3& primaryPosition,
                                  const sw::Vec4& color) {
             if (!orbit.isHyperbolic())
             {
                 plotConic(orbit, primaryPosition, color, time,
-                          time + sw::phys::kepler::period(orbit), kTrajectorySamples);
+                          time + sw::phys::kepler::period(orbit), kTrajectorySamples,
+                          0.6f);
             }
         };
 
@@ -8327,18 +9100,13 @@ namespace game
                 const sw::WorldVec3 primaryPosition =
                     m_celestialIndex.positionAt(segment.primaryIndex, time);
 
-                // A closed, event-free orbit draws one full revolution;
-                // every other patch draws exactly its [start, end] arc.
-                sw::f64 t1 = segment.endTime;
-                if (segment.endReason == sw::space::SegmentEnd::Horizon &&
-                    !segment.orbit.isHyperbolic())
-                {
-                    t1 = std::min(segment.endTime,
-                                  segment.startTime +
-                                      sw::phys::kepler::period(segment.orbit));
-                }
-                plotConic(segment.orbit, primaryPosition, color, segment.startTime, t1,
-                          kPredictionDisplaySamples);
+                // Every patch draws exactly its [start, end] arc — and the
+                // predictor now ends a patch where something HAPPENS to it,
+                // so that arc is the whole story: a closed orbit comes back
+                // to its own start, a transfer runs to its encounter, an
+                // escape runs to the edge of the sphere of influence.
+                plotConic(segment.orbit, primaryPosition, color, segment.startTime,
+                          segment.endTime, kPredictionDisplaySamples, 1.0f);
 
                 // Event marker at the patch hand-off point.
                 sw::Vec4 eventColor{};
@@ -8374,9 +9142,54 @@ namespace game
         // drawn around its primary's CURRENT position like every patch.
         if (m_nodeActive && m_nodePrimaryIndex >= 0)
         {
+            // Bigger and hotter while it is being dragged: the one moment
+            // the player needs to be sure the map heard them.
             plotDot(m_celestialIndex.positionAt(m_nodePrimaryIndex, time) +
                         m_nodeRelativePosition,
-                    {0.75f, 0.4f, 1.0f, 1.0f}, 4.0f);
+                    m_nodeDragging ? sw::Vec4{1.0f, 0.85f, 0.45f, 1.0f}
+                                   : sw::Vec4{0.75f, 0.4f, 1.0f, 1.0f},
+                    m_nodeDragging ? 5.5f : 4.0f);
+        }
+
+        // ---- THE TARGET, AND WHERE IT WILL BE --------------------------------
+        //
+        // Three things, and the third is the one that makes a transfer
+        // possible to fly: the body you picked, WHERE IT WILL HAVE MOVED TO
+        // by closest approach, and where you will be when it does. Every
+        // one of them is placed in the frame the orbits are drawn in, so
+        // the future position sits on the ring rather than out in the world
+        // where the body will really be.
+        if (m_targetIndex >= 0 &&
+            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        {
+            constexpr sw::Vec4 kTargetColor{1.0f, 0.45f, 0.85f, 1.0f};
+            plotDot(m_celestialIndex.positionAt(m_targetIndex, time), kTargetColor, 5.0f);
+
+            auto framePosition = [&](sw::i32 primaryIndex,
+                                     const sw::WorldVec3& relative) {
+                return (primaryIndex >= 0)
+                           ? m_celestialIndex.positionAt(primaryIndex, time) + relative
+                           : relative;
+            };
+            for (const auto& [approach, marker] :
+                 {std::pair{&m_approach, false}, std::pair{&m_nodeApproach, true}})
+            {
+                if (!approach->valid)
+                {
+                    continue;
+                }
+                const sw::Vec4 color =
+                    marker ? sw::Vec4{0.85f, 0.75f, 1.0f, 1.0f} : kTargetColor;
+                const sw::WorldVec3 theirs = framePosition(
+                    approach->targetPrimaryIndex, approach->targetRelativePosition);
+                const sw::WorldVec3 ours =
+                    framePosition(approach->primaryIndex, approach->relativePosition);
+                plotDot(theirs, color, 3.5f);
+                plotDot(ours, color, 3.0f);
+                // The gap itself, drawn: the separation is the point, and a
+                // pair of dots leaves the eye to guess which two.
+                plotLine(ours, theirs, color * sw::Vec4{1.0f, 1.0f, 1.0f, 0.6f}, 0.7f);
+            }
         }
     }
 

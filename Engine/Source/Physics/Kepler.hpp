@@ -76,6 +76,22 @@ namespace sw::phys
         /// Apoapsis distance; +infinity for hyperbolic orbits.
         [[nodiscard]] f64 apoapsis(const KeplerOrbit& orbit);
 
+        /// THE TIME AT WHICH TO TAKE THE n-th SAMPLE OF A DRAWN ARC.
+        ///
+        /// `fraction` walks 0..1 across [t0, t1] — but not at a constant
+        /// rate in TIME. At a constant rate in ECCENTRIC anomaly, which is
+        /// very nearly constant in arc length, and that distinction is the
+        /// difference between a drawable orbit and a wrong one: on a Terra-
+        /// to-Luna transfer (e = 0.965) the craft crosses most of its
+        /// angular sweep in a few hours out of ten days, so samples spaced
+        /// evenly in time leave one chord that cuts 2 800 km off the
+        /// periapsis — a line drawn straight through the planet.
+        ///
+        /// Hyperbolic orbits are parameterised the same way, by hyperbolic
+        /// anomaly. A degenerate orbit falls back to linear in time.
+        [[nodiscard]] f64 timeAtArcFraction(const KeplerOrbit& orbit, f64 t0, f64 t1,
+                                            f64 fraction);
+
         /// Circular-orbit speed at radius r around a body of parameter mu.
         [[nodiscard]] inline f64 circularOrbitSpeed(f64 mu, f64 radius)
         {

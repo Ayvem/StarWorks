@@ -195,3 +195,69 @@ SW_TEST(DefaultLanesMatchTheDesign)
     SW_CHECK_EQ(simulation.findLane("Economy")->frequencyHz(), 2.0f);
     SW_CHECK_EQ(simulation.findLane("World")->frequencyHz(), 1.0f);
 }
+
+// ============================================================================
+// TEN MILLION TIMES REAL TIME.
+//
+// The two new warp rungs exist for one job: crossing to another planet
+// without sitting through three real hours of it. What has to survive that
+// is not the physics — above x5 nothing is integrated, every orbit is
+// analytic — but the BOOKS. The rate-based lanes must still consume exactly
+// the interval that passed, because a factory that loses an hour of its
+// backlog at warp is a factory that quietly destroys matter.
+//
+// One rendered frame at x10 000 000 is about two days of simulated time.
+// ============================================================================
+SW_TEST(ExtremeWarpLosesNoTimeInTheRateBasedLanes)
+{
+    class TimeSumSystem final : public sw::ecs::System
+    {
+    public:
+        explicit TimeSumSystem(sw::f64* sum) : m_sum(sum) {}
+        [[nodiscard]] std::string_view name() const override { return "TimeSumSystem"; }
+        [[nodiscard]] sw::ecs::SystemAccess access() const override
+        {
+            return sw::ecs::SystemAccess{}.write<TickProbe>();
+        }
+        void update(sw::ecs::World&, sw::f32 deltaSeconds) override
+        {
+            *m_sum += static_cast<sw::f64>(deltaSeconds);
+        }
+
+    private:
+        sw::f64* m_sum;
+    };
+
+    sw::ecs::World world;
+    Simulation simulation; // the real lane set
+    sw::f64 automationSeconds = 0.0;
+    sw::f64 logisticsSeconds = 0.0;
+    simulation.findLane("Automation")
+        ->scheduler()
+        .addSystem(std::make_unique<TimeSumSystem>(&automationSeconds));
+    simulation.findLane("Logistics")
+        ->scheduler()
+        .addSystem(std::make_unique<TimeSumSystem>(&logisticsSeconds));
+
+    // Rails warp: Physics is allowed to drop backlog (the whole world moves
+    // analytically and coherently), the rate-based lanes are not.
+    simulation.findLane("Physics")->setStrictCatchUp(false);
+    simulation.setTimeScale(1.0e7f);
+
+    constexpr sw::f32 kFrame = 1.0f / 60.0f;
+    constexpr int kFrames = 120; // two seconds of wall clock
+    for (int i = 0; i < kFrames; ++i)
+    {
+        simulation.advance(world, kFrame, nullptr);
+    }
+
+    const sw::f64 expected =
+        static_cast<sw::f64>(kFrames) * static_cast<sw::f64>(kFrame) * 1.0e7;
+    // 231 simulated DAYS in two seconds of wall clock, and both lanes have
+    // seen every second of it.
+    SW_CHECK(expected > 200.0 * 86400.0);
+    SW_CHECK(std::abs(automationSeconds - expected) / expected < 1.0e-6);
+    SW_CHECK(std::abs(logisticsSeconds - expected) / expected < 1.0e-6);
+    // The master clock agrees: the simulated time IS the warped time.
+    SW_CHECK(std::abs(simulation.simulatedSeconds() - expected) / expected < 1.0e-6);
+}

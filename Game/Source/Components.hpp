@@ -57,7 +57,19 @@ namespace game
         static constexpr sw::u32 kOff = 0;
         static constexpr sw::u32 kPrograde = 1;
         static constexpr sw::u32 kRetrograde = 2;
+        /// HOLD THE BURN. Points where the maneuver node says to point —
+        /// which is emphatically not prograde: a plane change is normal, a
+        /// circularisation at apoapsis is prograde only by coincidence, and
+        /// flying a node by eye means chasing a marker across the navball
+        /// with the throttle already open.
+        static constexpr sw::u32 kNode = 3;
         sw::u32 mode = kOff;
+        /// Where kNode points, as a unit WORLD vector, written by the game
+        /// layer each frame — the burn still to fly. The system cannot work
+        /// it out for itself: the flight plan lives in the game, not in the
+        /// physics. Zero means "no burn": the mode then holds still rather
+        /// than tumbling toward a direction nobody gave it.
+        sw::Vec3 targetDirection{0.0f};
     };
 
     /// A shell glued to a celestial body's CENTER (atmosphere, clouds) with
@@ -108,6 +120,10 @@ namespace game
         sw::f32 strafeAxis = 0.0f;
         sw::Vec3 rotationInput{0.0f}; // pitch (x), yaw (y), roll (z), -1..1
         sw::u32 killRotation = 0;    // bool
+        /// JUMP, this tick, on foot. An edge, not a hold: it is consumed by
+        /// the one physics tick that sees it, so holding the key does not
+        /// hover and a laggy frame does not launch you into orbit.
+        sw::u32 jump = 0;
         /// Throttle change rate [-1,1] (Shift = +, Ctrl = -).
         sw::f32 throttleDelta = 0.0f;
     };
@@ -124,6 +140,11 @@ namespace game
         sw::f32 headingRadians = 0.0f;
         sw::f32 walkSpeed = 4.0f;      // m/s on the ground
         sw::f32 turnSpeed = 1.8f;      // rad/s per unit of mouse look
+        /// How hard the legs push, m/s straight up from the surface. A
+        /// SPEED and not a height, because the height is the planet's
+        /// business: 4.5 m/s is a one-metre hop on Terra and a six-metre
+        /// float on Luna, from the same suit and the same key.
+        sw::f32 jumpSpeed = 4.5f;
     };
 
     /// A VISIBLE BELT between two buildings on a body's surface.

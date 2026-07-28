@@ -8,6 +8,7 @@
 
 #include <ECS/World.hpp>
 #include <Physics/PhysicsSystems.hpp>
+#include <Scene/Camera.hpp>
 #include <Scene/TransformComponents.hpp>
 #include <Simulation/Simulation.hpp>
 #include <Space/CelestialIndex.hpp>
@@ -15,6 +16,7 @@
 #include <Space/TrajectoryPrediction.hpp>
 
 #include <cmath>
+#include <tuple>
 
 using namespace sw;
 using namespace sw::space;
@@ -380,4 +382,502 @@ SW_TEST(RailsFollowTheirPrimaryAroundTheStar)
         fixture.world.getComponent<TransformComponent>(station);
     SW_CHECK(glm::length(stationTransform.position - (terraExpected + stationRelative)) <
              1.0);
+}
+
+// ============================================================================
+// A TRAJECTORY RUNS TO ITS END, NOT TO A CLOCK.
+//
+// The plan used to stop after a fixed six days. On a parking orbit that was
+// ninety-six revolutions of line drawn on top of itself; on a heliocentric
+// transfer it was one and a half degrees of arc — a stub hanging in space
+// that told a pilot nothing about where they were going. What ends a
+// trajectory is an EVENT: an impact, an encounter, an escape, or a full
+// revolution that meets none of them.
+// ============================================================================
+SW_TEST(TrajectoryRunsToAnEventOrARevolution)
+{
+    SystemFixture fixture;
+    CelestialIndex index;
+    index.rebuild(fixture.world);
+    const i32 solIndex = index.indexOf(fixture.sol);
+    const i32 terraIndex = index.indexOf(fixture.terra);
+
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(terraIndex, 0.0, terraPosition, &terraVelocity);
+
+    // ---- a parking orbit CLOSES, after exactly one revolution -----------
+    {
+        const f64 circular = phys::kepler::circularOrbitSpeed(kMuTerra, kLeoRadius);
+        std::vector<TrajectorySegment> segments;
+        predictTrajectory(index, terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0},
+                          terraVelocity + WorldVec3{0.0, 0.0, -circular}, 0.0,
+                          PredictionSettings{}, segments);
+
+        SW_CHECK_EQ(segments.size(), static_cast<usize>(1));
+        SW_CHECK(segments[0].endReason == SegmentEnd::Closed);
+        const f64 period = phys::kepler::period(segments[0].orbit);
+        SW_CHECK(period > 5000.0 && period < 6000.0); // ~92 min at 400 km
+        SW_CHECK(std::abs(segments[0].endTime - period) < 1.0);
+
+        // ...and the line joins up: the last point of the arc is the first.
+        WorldVec3 first{};
+        WorldVec3 last{};
+        phys::kepler::evaluate(segments[0].orbit, segments[0].startTime, first);
+        phys::kepler::evaluate(segments[0].orbit, segments[0].endTime, last);
+        SW_CHECK(glm::length(first - last) < 1.0);
+    }
+
+    // ---- a heliocentric orbit draws its WHOLE year, not six days --------
+    {
+        // A craft coasting beside Terra, outside every sphere of influence:
+        // its primary is Sol and its period is about a year.
+        const WorldVec3 position = terraPosition * 1.2;
+        const f64 speed = phys::kepler::circularOrbitSpeed(kMuSol,
+                                                           glm::length(position));
+        const WorldVec3 velocity =
+            glm::normalize(WorldVec3{-position.z, 0.0, position.x}) * speed;
+        std::vector<TrajectorySegment> segments;
+        predictTrajectory(index, position, velocity, 0.0, PredictionSettings{},
+                          segments);
+
+        SW_CHECK(!segments.empty());
+        SW_CHECK_EQ(segments[0].primaryIndex, solIndex);
+        SW_CHECK(segments[0].endReason == SegmentEnd::Closed);
+        const f64 period = phys::kepler::period(segments[0].orbit);
+        // 1.2 AU: a year and a third — 480 days. The old six-day horizon
+        // covered 1.2% of it, which is the bug this test exists for.
+        SW_CHECK(period > 300.0 * 86400.0);
+        SW_CHECK(std::abs(segments[0].endTime - period) < 60.0);
+        SW_CHECK(segments[0].endTime > 50.0 * (6.0 * 86400.0));
+    }
+
+    // ---- an escape still finds the edge of the sphere of influence ------
+    // The scan step is now derived from the hyperbola's own time scale
+    // rather than from the horizon, so this is the check that the finer
+    // resolution did not cost the coarse reach.
+    {
+        const f64 escape = std::sqrt(2.0 * kMuTerra / kLeoRadius);
+        std::vector<TrajectorySegment> segments;
+        predictTrajectory(index, terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0},
+                          terraVelocity + WorldVec3{0.0, 0.0, -1.4 * escape}, 0.0,
+                          PredictionSettings{}, segments);
+
+        SW_CHECK(segments.size() >= 2);
+        SW_CHECK(segments[0].endReason == SegmentEnd::SoiExit);
+        WorldVec3 exitRelative{};
+        phys::kepler::evaluate(segments[0].orbit, segments[0].endTime, exitRelative);
+        SW_CHECK(std::abs(glm::length(exitRelative) - kTerraSoi) / kTerraSoi < 1.0e-3);
+        // ...and what it escapes onto is a heliocentric orbit drawn whole.
+        SW_CHECK_EQ(segments[1].primaryIndex, solIndex);
+        SW_CHECK(segments[1].endReason == SegmentEnd::Closed ||
+                 segments[1].endReason == SegmentEnd::Encounter);
+    }
+
+    // ---- the horizon is still a HARD cap, which the node planner needs --
+    {
+        const f64 circular = phys::kepler::circularOrbitSpeed(kMuTerra, kLeoRadius);
+        PredictionSettings settings{};
+        settings.horizonSeconds = 600.0; // ten minutes, mid-revolution
+        std::vector<TrajectorySegment> segments;
+        predictTrajectory(index, terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0},
+                          terraVelocity + WorldVec3{0.0, 0.0, -circular}, 0.0, settings,
+                          segments);
+        SW_CHECK_EQ(segments.size(), static_cast<usize>(1));
+        SW_CHECK(segments[0].endReason == SegmentEnd::Horizon);
+        SW_CHECK(std::abs(segments[0].endTime - 600.0) < 1.0e-6);
+    }
+}
+
+// ============================================================================
+// THE MANEUVER STEP LADDER, AND THE TRAP IN IT.
+//
+// A node spans five orders of magnitude: a tenth of a metre per second to
+// trim a rendezvous, three and a half kilometres of it to leave for Mars.
+// The modifiers pick the rung — and Control means two different things
+// depending on whether Shift is with it, which is exactly the kind of rule
+// that gets written in the wrong order once and then hands a player 0.1 m/s
+// when they asked for 1000.
+// ============================================================================
+SW_TEST(ManeuverStepsClimbWithTheModifiers)
+{
+    // The rungs themselves.
+    SW_CHECK_EQ(maneuverStep(false, false, false).deltaVMps, 1.0);
+    SW_CHECK_EQ(maneuverStep(true, false, false).deltaVMps, 10.0);   // shift
+    SW_CHECK_EQ(maneuverStep(false, false, true).deltaVMps, 100.0);  // alt
+    SW_CHECK_EQ(maneuverStep(true, true, false).deltaVMps, 1000.0);  // ctrl+shift
+    SW_CHECK_EQ(maneuverStep(false, true, false).deltaVMps, 0.1);    // ctrl (fine)
+
+    // THE TRAP: control+shift is the COARSEST step, not the finest one.
+    // Tested for on its own because reading the flags in the obvious order
+    // gets this backwards.
+    SW_CHECK(maneuverStep(true, true, false).deltaVMps >
+             maneuverStep(false, true, false).deltaVMps * 9999.0);
+
+    // Time moves on the SAME ladder — ten seconds at the base rung, and a
+    // burn a hundred times bigger is planned a hundred times further out.
+    for (const auto& [shift, control, alt] : {std::tuple{false, false, false},
+                                              std::tuple{true, false, false},
+                                              std::tuple{false, false, true},
+                                              std::tuple{true, true, false},
+                                              std::tuple{false, true, false}})
+    {
+        const ManeuverStep step = maneuverStep(shift, control, alt);
+        SW_CHECK(std::abs(step.seconds - step.deltaVMps * 10.0) < 1.0e-12);
+        SW_CHECK(step.deltaVMps > 0.0);
+    }
+
+    // Monotone in the direction a player would expect: every modifier that
+    // means "bigger" is bigger than no modifier at all.
+    SW_CHECK(maneuverStep(true, false, false).deltaVMps >
+             maneuverStep(false, false, false).deltaVMps);
+    SW_CHECK(maneuverStep(false, false, true).deltaVMps >
+             maneuverStep(true, false, false).deltaVMps);
+    SW_CHECK(maneuverStep(true, true, false).deltaVMps >
+             maneuverStep(false, false, true).deltaVMps);
+
+    // ...and one tap of the coarsest rung is a real transfer burn: Terra
+    // escape from low orbit is about 3.2 km/s, so three taps and a bit.
+    const f64 escapeBurn = 3200.0;
+    SW_CHECK(maneuverStep(true, true, false).deltaVMps * 4.0 > escapeBurn);
+}
+
+// ============================================================================
+// PICKING A MOMENT OFF THE MAP.
+//
+// Dragging a maneuver node is one question asked every frame: which moment
+// of this trajectory is nearest the pixel under the cursor? Get it wrong by
+// half an orbit and the burn jumps to the far side of the planet under the
+// player's hand.
+//
+// The trap is the camera. A perspective divide with w < 0 does not fail —
+// it mirrors the point through the origin, so the half of the orbit BEHIND
+// the camera lands on screen looking perfectly plausible, on the wrong
+// side. This test puts the camera inside the orbit, where half the plan is
+// behind it, and checks the pick stays on the visible half.
+// ============================================================================
+SW_TEST(TheMapCanPickAMomentOffTheTrajectory)
+{
+    SystemFixture fixture;
+    CelestialIndex index;
+    index.rebuild(fixture.world);
+    const i32 terraIndex = index.indexOf(fixture.terra);
+
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(terraIndex, 0.0, terraPosition, &terraVelocity);
+
+    // A circular parking orbit, predicted whole (one closed revolution).
+    const f64 circular = phys::kepler::circularOrbitSpeed(kMuTerra, kLeoRadius);
+    std::vector<TrajectorySegment> plan;
+    predictTrajectory(index, terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0},
+                      terraVelocity + WorldVec3{0.0, 0.0, -circular}, 0.0,
+                      PredictionSettings{}, plan);
+    SW_CHECK(!plan.empty());
+    SW_CHECK(plan[0].endReason == SegmentEnd::Closed);
+    const f64 period = plan[0].endTime - plan[0].startTime;
+
+    // The real camera, with the real Vulkan-convention projection: looking
+    // straight down at Terra from well outside the orbit, as the map does.
+    Camera camera;
+    camera.setPerspective(1.047f, 1.0e5f, 2.0e12f); // 60 degrees
+    camera.setAspectRatio(16.0f / 9.0f);
+    const WorldVec3 eye = terraPosition + WorldVec3{0.0, 4.0e7, 0.0};
+    camera.setPosition(eye);
+    {
+        const Vec3 forward = Vec3(glm::normalize(terraPosition - eye));
+        const Vec3 right = glm::normalize(glm::cross(forward, Vec3{0, 0, 1}));
+        const Vec3 up = glm::cross(right, forward);
+        camera.setOrientation(glm::quat_cast(Mat3{right, up, -forward}));
+    }
+    const Mat4 viewProjection = camera.viewProjectionCameraRelative();
+
+    // Take a known moment, put it on screen, and ask for it back.
+    auto ndcOf = [&](f64 when) {
+        WorldVec3 relative{};
+        phys::kepler::evaluate(plan[0].orbit, when, relative);
+        const Vec3 cameraRelative =
+            Vec3((index.positionAt(terraIndex, 0.0) + relative) - camera.position());
+        const Vec4 clip = viewProjection * Vec4(cameraRelative, 1.0f);
+        SW_CHECK(clip.w > 0.0f);
+        return Vec2{clip.x / clip.w, clip.y / clip.w};
+    };
+
+    for (const f64 fraction : {0.13, 0.37, 0.62, 0.88})
+    {
+        const f64 wanted = plan[0].startTime + period * fraction;
+        f64 picked = 0.0;
+        f32 distance = 0.0f;
+        SW_CHECK(timeNearestScreenPoint(index, plan, viewProjection, camera.position(),
+                                        0.0, ndcOf(wanted), 320, picked, distance));
+        // Within one sample of the drawn line — that IS the resolution the
+        // player is pointing at.
+        SW_CHECK(std::abs(picked - wanted) < period / 160.0);
+        SW_CHECK(distance < 0.01f);
+    }
+
+    // ---- and now the trap: the camera INSIDE the orbit -------------------
+    // Half the plan is behind it. A point sampled from the near half must
+    // still win, and nothing from the far half may be handed back.
+    {
+        Camera inside;
+        inside.setPerspective(1.047f, 100.0f, 1.0e9f);
+        inside.setAspectRatio(16.0f / 9.0f);
+        inside.setPosition(terraPosition);
+        // Looking along +X, so the orbit's +X side is in front and the -X
+        // side is squarely behind.
+        inside.setOrientation(glm::quat_cast(
+            Mat3{Vec3{0, 0, -1}, Vec3{0, 1, 0}, Vec3{-1, 0, 0}}));
+        const Mat4 insideVp = inside.viewProjectionCameraRelative();
+
+        f64 picked = 0.0;
+        f32 distance = 0.0f;
+        // Aim at the middle of the screen: the visible arc crosses it.
+        SW_CHECK(timeNearestScreenPoint(index, plan, insideVp, inside.position(), 0.0,
+                                        Vec2{0.0f, 0.0f}, 320, picked, distance));
+        WorldVec3 relative{};
+        phys::kepler::evaluate(plan[0].orbit, picked, relative);
+        // Whatever it picked is IN FRONT of the camera, never the mirrored
+        // point from behind it.
+        SW_CHECK(glm::dot(relative, WorldVec3(inside.forward())) > 0.0);
+    }
+}
+
+// ============================================================================
+// HOW CLOSE DO I PASS, AND WHERE WILL IT BE BY THEN?
+//
+// The number that turns a trajectory into a transfer. Two plans that look
+// identical on a map — one passing 400 000 km from Luna, one passing 4 000
+// — differ by the entire mission, and the only way to tell them apart is to
+// minimise the separation of two analytic functions of time.
+//
+// The second half of the answer matters as much as the first: the body is
+// NOT where the map shows it now. A marker for the closest approach has to
+// say where the target will have MOVED TO, on the orbit ring the player is
+// looking at.
+// ============================================================================
+SW_TEST(ClosestApproachFindsTheRealMinimum)
+{
+    SystemFixture fixture;
+    CelestialIndex index;
+    index.rebuild(fixture.world);
+    const i32 terraIndex = index.indexOf(fixture.terra);
+    const i32 lunaIndex = index.indexOf(fixture.luna);
+
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(terraIndex, 0.0, terraPosition, &terraVelocity);
+
+    // An ordinary parking orbit, and Luna a long way off.
+    const f64 circular = phys::kepler::circularOrbitSpeed(kMuTerra, kLeoRadius);
+    std::vector<TrajectorySegment> plan;
+    predictTrajectory(index, terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0},
+                      terraVelocity + WorldVec3{0.0, 0.0, -circular}, 0.0,
+                      PredictionSettings{}, plan);
+    SW_CHECK(!plan.empty());
+
+    const ClosestApproach approach = closestApproachToBody(index, plan, lunaIndex);
+    SW_CHECK(approach.valid);
+
+    // ---- it IS the minimum, and it is self-consistent --------------------
+    auto separationAt = [&](f64 when) {
+        WorldVec3 relative{};
+        phys::kepler::evaluate(plan[0].orbit, when, relative);
+        const WorldVec3 ours = index.positionAt(plan[0].primaryIndex, when) + relative;
+        return glm::length(index.positionAt(lunaIndex, when) - ours);
+    };
+    SW_CHECK(std::abs(separationAt(approach.timeSeconds) - approach.distanceM) < 1.0);
+    const f64 span = plan[0].endTime - plan[0].startTime;
+    for (int i = 0; i <= 400; ++i)
+    {
+        const f64 when = plan[0].startTime + span * (static_cast<f64>(i) / 400.0);
+        // No sampled moment beats it by more than a metre.
+        SW_CHECK(separationAt(when) > approach.distanceM - 1.0);
+    }
+
+    // ...and the relative speed is the real one, not the orbital speed.
+    {
+        WorldVec3 relative{};
+        WorldVec3 relativeVelocity{};
+        phys::kepler::evaluate(plan[0].orbit, approach.timeSeconds, relative,
+                               &relativeVelocity);
+        WorldVec3 primaryPosition{};
+        WorldVec3 primaryVelocity{};
+        index.stateAt(plan[0].primaryIndex, approach.timeSeconds, primaryPosition,
+                      &primaryVelocity);
+        WorldVec3 lunaPosition{};
+        WorldVec3 lunaVelocity{};
+        index.stateAt(lunaIndex, approach.timeSeconds, lunaPosition, &lunaVelocity);
+        const f64 expected =
+            glm::length((primaryVelocity + relativeVelocity) - lunaVelocity);
+        SW_CHECK(std::abs(approach.relativeSpeedMps - expected) < 1.0e-6);
+    }
+
+    // ---- WHERE IT WILL BE, in the frame the map draws --------------------
+    // Luna's future position comes back relative to TERRA, so adding
+    // Terra's position NOW puts the marker on the ring that is on screen —
+    // not 7.8 million kilometres along Terra's own year, where Luna will
+    // really be.
+    SW_CHECK_EQ(approach.targetPrimaryIndex, terraIndex);
+    const f64 ringRadius = glm::length(approach.targetRelativePosition);
+    SW_CHECK(std::abs(ringRadius - kLunaSma) / kLunaSma < 1.0e-6);
+    // Our own marker is on OUR primary in the same way.
+    SW_CHECK_EQ(approach.primaryIndex, terraIndex);
+    SW_CHECK(std::abs(glm::length(approach.relativePosition) - kLeoRadius) / kLeoRadius <
+             1.0e-6);
+}
+
+SW_TEST(ClosestApproachSeesTheTransferHit)
+{
+    // The same aimed Hohmann as the encounter test: Luna is phased to
+    // arrive at the ship's apoapsis exactly when the ship does. A plan that
+    // reports a near-miss for THAT is a plan nobody could fly.
+    const f64 transferSma = 0.5 * (kLeoRadius + kLunaSma);
+    const f64 timeOfFlight =
+        kPi * std::sqrt(transferSma * transferSma * transferSma / kMuTerra);
+    const f64 lunaMeanMotion = std::sqrt(kMuTerra / (kLunaSma * kLunaSma * kLunaSma));
+    SystemFixture fixture(kPi - lunaMeanMotion * timeOfFlight);
+    CelestialIndex index;
+    index.rebuild(fixture.world);
+    const i32 terraIndex = index.indexOf(fixture.terra);
+    const i32 lunaIndex = index.indexOf(fixture.luna);
+
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(terraIndex, 0.0, terraPosition, &terraVelocity);
+    const f64 periapsisSpeed =
+        std::sqrt(kMuTerra * (2.0 / kLeoRadius - 1.0 / transferSma));
+
+    std::vector<TrajectorySegment> plan;
+    predictTrajectory(index, terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0},
+                      terraVelocity + WorldVec3{0.0, 0.0, -periapsisSpeed}, 0.0,
+                      PredictionSettings{}, plan);
+    SW_CHECK(plan.size() >= 2);
+
+    const ClosestApproach approach = closestApproachToBody(index, plan, lunaIndex);
+    SW_CHECK(approach.valid);
+    // Well inside Luna's sphere of influence, near the nominal arrival.
+    SW_CHECK(approach.distanceM < kLunaSoi);
+    SW_CHECK(approach.timeSeconds > 0.5 * timeOfFlight);
+    SW_CHECK(approach.timeSeconds < 1.5 * timeOfFlight);
+    // The closest point is on the patch INSIDE Luna's SOI, so the answer is
+    // measured from Luna itself — which is what makes an impact readable as
+    // an impact.
+    SW_CHECK_EQ(approach.primaryIndex, lunaIndex);
+    SW_CHECK(std::abs(glm::length(approach.relativePosition) - approach.distanceM) < 1.0);
+    // Approaching from a transfer, the relative speed is kilometres per
+    // second — this is a flyby, not a rendezvous.
+    SW_CHECK(approach.relativeSpeedMps > 500.0);
+}
+
+// ============================================================================
+// THE READOUT THAT TELLS YOU WHEN TO STOP BURNING.
+//
+// A maneuver's dv display has exactly one job: reach zero at the moment the
+// burn is complete. It did not — it sat at the full planned dv from the
+// first second of the burn to the last — and the reason is worth keeping a
+// test for, because the wrong formula is the obvious one.
+//
+// Recompute the target each frame from the CURRENT trajectory and it moves
+// with the ship: "my velocity at the node, on the orbit I am now on, plus
+// the planned dv" changes by exactly as much as the burn changed the ship.
+// The difference never shrinks.
+//
+// The fix measures against the COASTING velocity of the plan frozen before
+// ignition — which also subtracts gravity, worth a kilometre per second
+// over a two-minute burn in low orbit.
+// ============================================================================
+SW_TEST(TheBurnReadoutCountsDownToZero)
+{
+    SystemFixture fixture;
+    CelestialIndex index;
+    index.rebuild(fixture.world);
+    const i32 terraIndex = index.indexOf(fixture.terra);
+
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(terraIndex, 0.0, terraPosition, &terraVelocity);
+    WorldVec3 position = terraPosition + WorldVec3{kLeoRadius, 0.0, 0.0};
+    WorldVec3 velocity =
+        terraVelocity +
+        WorldVec3{0.0, 0.0, -phys::kepler::circularOrbitSpeed(kMuTerra, kLeoRadius)};
+
+    // The plan, frozen before ignition: coast, and 100 m/s prograde at T+60.
+    std::vector<TrajectorySegment> coast;
+    predictTrajectory(index, position, velocity, 0.0, PredictionSettings{}, coast);
+    constexpr f64 kNodeTime = 60.0;
+    constexpr f64 kPlannedDv = 100.0;
+    WorldVec3 nodePosition{};
+    WorldVec3 nodeVelocity{};
+    SW_CHECK(stateOnPrediction(index, coast, kNodeTime, nodePosition, nodeVelocity));
+    WorldVec3 primaryPosition{};
+    WorldVec3 primaryVelocity{};
+    index.stateAt(terraIndex, kNodeTime, primaryPosition, &primaryVelocity);
+    const WorldVec3 prograde =
+        glm::normalize(nodeVelocity - primaryVelocity);
+    const WorldVec3 plannedDv = prograde * kPlannedDv;
+
+    // Before ignition it reads the planned burn exactly — no drift while
+    // the ship coasts toward the node, which the naive formula also got
+    // wrong (it read 535 m/s for this very case).
+    SW_CHECK(std::abs(glm::length(remainingBurn(index, coast, plannedDv, velocity, 0.0)) -
+                      kPlannedDv) < 1.0e-6);
+
+    // ---- fly it: gravity, then gravity plus thrust -----------------------
+    constexpr f64 kDt = 0.02;   // the physics tick
+    constexpr f64 kAccel = 8.0; // m/s^2
+    f64 applied = 0.0;
+    f64 readingAtIgnition = 0.0;
+    f64 worstNaive = 0.0;
+    for (f64 t = 0.0; t < 74.0; t += kDt)
+    {
+        WorldVec3 radial = position - index.positionAt(terraIndex, t);
+        const f64 distance = glm::length(radial);
+        WorldVec3 acceleration = -radial * (kMuTerra / (distance * distance * distance));
+        const bool burning = (t >= kNodeTime) && (applied < kPlannedDv);
+        if (burning)
+        {
+            acceleration += prograde * kAccel;
+            applied += kAccel * kDt;
+        }
+        velocity += acceleration * kDt;
+        position += velocity * kDt;
+
+        if (burning)
+        {
+            if (readingAtIgnition == 0.0)
+            {
+                readingAtIgnition =
+                    glm::length(remainingBurn(index, coast, plannedDv, velocity, t));
+            }
+            // THE NAIVE FORMULA, computed alongside so the test fails if
+            // anyone ever "simplifies" back to it: recompute the plan from
+            // the current state and take the difference.
+            std::vector<TrajectorySegment> live;
+            predictTrajectory(index, position, velocity, t, PredictionSettings{}, live);
+            WorldVec3 livePosition{};
+            WorldVec3 liveVelocity{};
+            if (stateOnPrediction(index, live, std::max(kNodeTime, t), livePosition,
+                                  liveVelocity))
+            {
+                WorldVec3 p{};
+                WorldVec3 v{};
+                index.stateAt(terraIndex, std::max(kNodeTime, t), p, &v);
+                const WorldVec3 naiveTarget =
+                    liveVelocity + glm::normalize(liveVelocity - v) * kPlannedDv;
+                worstNaive =
+                    std::max(worstNaive, glm::length(naiveTarget - velocity));
+            }
+        }
+    }
+
+    // It started the burn at the full planned dv...
+    SW_CHECK(std::abs(readingAtIgnition - kPlannedDv) < 1.0);
+    // ...and finished at zero, having burned exactly the plan.
+    const f64 finalReading =
+        glm::length(remainingBurn(index, coast, plannedDv, velocity, 74.0));
+    SW_CHECK(finalReading < 1.0);
+    // The naive formula, meanwhile, never came down off the full dv — this
+    // is the bug, measured, so that it cannot come back unnoticed.
+    SW_CHECK(worstNaive > 0.99 * kPlannedDv);
 }

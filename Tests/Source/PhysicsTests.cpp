@@ -745,3 +745,165 @@ SW_TEST(ALandedBodyNeverSinksIntoASlope)
         SW_CHECK(base >= ground - 0.05); // 5 cm of tolerance, not 13 metres
     }
 }
+
+// ============================================================================
+// A DRAWN ORBIT IS SAMPLED BY ANOMALY, NOT BY TIME.
+//
+// A Terra-to-Luna transfer spends nine of its ten days near apoapsis and
+// crosses most of its angular sweep in a few hours at periapsis. Sample
+// that at a constant rate in TIME and the chords near periapsis cut 2 800
+// km off the arc — the map draws the trajectory straight through the planet
+// it is orbiting, at exactly the point a pilot is looking at it.
+//
+// The fix is one function, and this is the measurement that justifies it:
+// the same sample budget, the worst chord error, both ways.
+// ============================================================================
+SW_TEST(DrawnOrbitsAreSampledAlongTheArc)
+{
+    constexpr f64 kMuTerra = 3.986004418e14;
+    constexpr f64 kLeo = 6.771e6;
+    constexpr f64 kLunaSma = 3.844e8;
+
+    // The transfer ellipse: periapsis in low orbit, apoapsis at Luna.
+    const f64 sma = 0.5 * (kLeo + kLunaSma);
+    const f64 speed = std::sqrt(kMuTerra * (2.0 / kLeo - 1.0 / sma));
+    phys::KeplerOrbit orbit{};
+    SW_CHECK(phys::kepler::fromStateVectors(kMuTerra, WorldVec3{kLeo, 0.0, 0.0},
+                                            WorldVec3{0.0, 0.0, -speed}, 0.0, orbit));
+    SW_CHECK(orbit.eccentricity > 0.95);
+
+    const f64 period = phys::kepler::period(orbit);
+    constexpr u32 kSamples = 320;
+
+    auto worstChordError = [&](bool alongArc) {
+        f64 worst = 0.0;
+        WorldVec3 previous{};
+        f64 previousTime = 0.0;
+        for (u32 i = 0; i <= kSamples; ++i)
+        {
+            const f64 f = static_cast<f64>(i) / kSamples;
+            const f64 t = alongArc ? phys::kepler::timeAtArcFraction(orbit, 0.0, period, f)
+                                   : (period * f);
+            WorldVec3 point{};
+            phys::kepler::evaluate(orbit, t, point);
+            if (i > 0)
+            {
+                // The true point half way along this piece, against the
+                // straight line the map would draw for it.
+                const f64 midFraction = (static_cast<f64>(i) - 0.5) / kSamples;
+                const f64 midTime =
+                    alongArc
+                        ? phys::kepler::timeAtArcFraction(orbit, 0.0, period, midFraction)
+                        : (period * midFraction);
+                (void)previousTime;
+                WorldVec3 truePoint{};
+                phys::kepler::evaluate(orbit, midTime, truePoint);
+                const WorldVec3 chordMiddle = (previous + point) * 0.5;
+                worst = std::max(worst, glm::length(chordMiddle - truePoint));
+            }
+            previous = point;
+            previousTime = t;
+        }
+        return worst;
+    };
+
+    const f64 byTime = worstChordError(false);
+    const f64 byArc = worstChordError(true);
+
+    // Evenly in time: kilometres of error, at the radius where the planet
+    // is. Evenly along the arc: two orders of magnitude better, and well
+    // under the body's own radius.
+    SW_CHECK(byTime > 1.0e6);          // > 1000 km, straight through Terra
+    SW_CHECK(byArc < 0.02 * byTime);
+    SW_CHECK(byArc < 6.371e6 * 0.01);  // < 1% of Terra's radius
+
+    // ...and the parameterisation still spans exactly the interval asked
+    // for, or the arc would be drawn short.
+    SW_CHECK(std::abs(phys::kepler::timeAtArcFraction(orbit, 0.0, period, 0.0)) < 1.0e-6);
+    SW_CHECK(std::abs(phys::kepler::timeAtArcFraction(orbit, 0.0, period, 1.0) - period) <
+             1.0e-3);
+    // Monotone: a sample never walks backwards round the ellipse.
+    f64 last = -1.0;
+    for (u32 i = 0; i <= 64; ++i)
+    {
+        const f64 t =
+            phys::kepler::timeAtArcFraction(orbit, 0.0, period, static_cast<f64>(i) / 64);
+        SW_CHECK(t > last);
+        last = t;
+    }
+
+    // A hyperbola is parameterised the same way and stays monotone.
+    phys::KeplerOrbit escape{};
+    const f64 escapeSpeed = 1.4 * std::sqrt(2.0 * kMuTerra / kLeo);
+    SW_CHECK(phys::kepler::fromStateVectors(kMuTerra, WorldVec3{kLeo, 0.0, 0.0},
+                                            WorldVec3{0.0, 0.0, -escapeSpeed}, 0.0,
+                                            escape, /*allowHyperbolic=*/true));
+    SW_CHECK(escape.isHyperbolic());
+    last = -1.0;
+    for (u32 i = 0; i <= 64; ++i)
+    {
+        const f64 t = phys::kepler::timeAtArcFraction(escape, 0.0, 86400.0,
+                                                      static_cast<f64>(i) / 64);
+        SW_CHECK(t > last);
+        last = t;
+    }
+    SW_CHECK(std::abs(phys::kepler::timeAtArcFraction(escape, 0.0, 86400.0, 1.0) -
+                      86400.0) < 1.0e-3);
+}
+
+// ============================================================================
+// A JUMP KEEPS THE PLANET UNDER YOUR FEET.
+//
+// THE CARRIER-VELOCITY RULE, applied to the smallest possible action. A
+// suit standing on Terra is already moving at 30 km/s around the Sun and
+// 465 m/s with the spin. "Jump" means four and a half metres per second
+// UPWARD RELATIVE TO THE GROUND — and every other component of that
+// velocity has to come through untouched, or the player lands a kilometre
+// downrange of where they left.
+// ============================================================================
+SW_TEST(AJumpChangesOnlyTheSpeedAwayFromTheGround)
+{
+    // The real numbers: Terra's orbital motion plus its equatorial spin.
+    const WorldVec3 up{1.0, 0.0, 0.0};
+    const WorldVec3 surface{29780.0, 0.0, 465.0};
+    constexpr f64 kJump = 4.5;
+
+    // Standing still on the ground: velocity IS the surface velocity.
+    {
+        const WorldVec3 after = phys::surfaceJumpVelocity(surface, surface, up, kJump);
+        SW_CHECK(std::abs(glm::dot(after - surface, up) - kJump) < 1.0e-12);
+        // Nothing sideways changed — not a millimetre per second of it.
+        const WorldVec3 sideways = (after - surface) - up * glm::dot(after - surface, up);
+        SW_CHECK(glm::length(sideways) < 1.0e-12);
+    }
+
+    // Jumping AT A RUN keeps the run.
+    {
+        const WorldVec3 run{0.0, 3.0, 0.0}; // 3 m/s across the ground
+        const WorldVec3 after =
+            phys::surfaceJumpVelocity(surface + run, surface, up, kJump);
+        const WorldVec3 relative = after - surface;
+        SW_CHECK(std::abs(glm::dot(relative, up) - kJump) < 1.0e-12);
+        SW_CHECK(glm::length((relative - up * glm::dot(relative, up)) - run) < 1.0e-12);
+    }
+
+    // Already falling: the jump SETS the radial speed rather than adding to
+    // it, so a jump taken on the way down cannot be used to hover, and one
+    // taken on the way up cannot be stacked into an escape.
+    {
+        const WorldVec3 falling = surface - up * 12.0;
+        const WorldVec3 after = phys::surfaceJumpVelocity(falling, surface, up, kJump);
+        SW_CHECK(std::abs(glm::dot(after - surface, up) - kJump) < 1.0e-12);
+        const WorldVec3 rising = surface + up * 100.0;
+        const WorldVec3 again = phys::surfaceJumpVelocity(rising, surface, up, kJump);
+        SW_CHECK(std::abs(glm::dot(again - surface, up) - kJump) < 1.0e-12);
+    }
+
+    // And the height it actually reaches is the planet's business, not the
+    // suit's: the same 4.5 m/s is a one-metre hop on Terra and a six-metre
+    // float on Luna. v^2 / 2g.
+    const f64 terraHeight = kJump * kJump / (2.0 * 9.81);
+    const f64 lunaHeight = kJump * kJump / (2.0 * 1.62);
+    SW_CHECK(terraHeight > 0.9 && terraHeight < 1.1);
+    SW_CHECK(lunaHeight > 6.0 && lunaHeight < 6.5);
+}

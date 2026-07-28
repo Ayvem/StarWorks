@@ -9,6 +9,8 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1915" height="987" alt="image" src="https://github.com/user-attachments/assets/411c6ab4-092e-4daa-a664-a4ab2bd7a26c" />
 <img width="1914" height="986" alt="image" src="https://github.com/user-attachments/assets/73f442f4-453d-447d-bfa3-9539f0e5cba3" />
 <img width="1588" height="891" alt="image" src="https://github.com/user-attachments/assets/2451b716-d646-4fa3-beee-e75d8c3d7717" />
+<img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
+<img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
 ## Current state — F3: Generic production and energy
 
@@ -177,17 +179,19 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 **Star map:** `M` toggles the system view (real scale, beacon markers, patched-conics flight plan with encounter/impact/SOI-exit markers); mouse wheel zooms from LEO out to the whole Sol system. The map centers on your current SOI primary.
 
-**Maneuver nodes (in map view):** `N` create/delete, `J`/`L` node time −/+, `I`/`K` prograde +/−, `U`/`O` normal −/+, `Y`/`H` radial +/− (`Shift` ×10, `Ctrl` ×0.1). Fly the burn by pointing at the violet navball marker and burning until DV reaches zero.
+**Target (in map view):** left-click a body to target it, click it again to clear. The HUD then shows the CLOSEST APPROACH your plan makes to it — distance, time, relative speed — and the map marks **where that body will have moved to** by then, on its own orbit ring, with your own position at that moment and the gap between them. With a maneuver node up you get a second line for what the burn would achieve.
+
+**Maneuver nodes (in map view):** `N` create/delete, `J`/`L` node time −/+, `I`/`K` prograde +/−, `U`/`O` normal −/+, `Y`/`H` radial +/−. The step is a ladder on the modifiers, and it moves the node's time by the same factor: nothing = 1 m/s / 10 s, `Ctrl` = 0.1 m/s / 1 s, `Shift` = 10 m/s / 100 s, `Alt` = 100 m/s / 1 000 s, `Ctrl+Shift` = 1 000 m/s / 10 000 s. The armed step is on the HUD under the node's vector. Or **grab the violet marker with the left mouse button and drag it along the orbit** — the node's time follows the pixel under the cursor, and the planned trajectory redraws as you move. Fly the burn with the **NODE** SAS button (it holds the nose on the burn vector, which is almost never prograde) and the **WARP TO NODE -1 MIN** button, then burn until DV reaches zero — the readout counts down against the trajectory you would have coasted, so gravity is not mistaken for thrust.
 
 **Chase camera:** hold the right mouse button to orbit around the craft, mouse wheel to zoom, `C` to reset behind it.
 
-**Hangar (VAB):** `B` opens/closes (sim paused; separate view). Right-drag orbits, wheel zooms. Click the palette to take a part IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design (built on the launch pad), LOAD cycles the world's vessels into the editor, BUILD makes it real. `P` in flight switches the piloted vessel. `Z` fires the decoupler (staging).
+**Hangar (VAB):** `B` opens/closes (sim paused; separate view). Right-drag orbits, wheel zooms. Click the palette to take a part IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design (built on the launch pad), LOAD cycles the world's vessels into the editor, BUILD makes it real. `P` in flight switches the piloted vessel. `Space` (or `Z`) fires the decoupler (staging); on foot, `Space` jumps.
 
 **Part Studio (`PartStudio.exe`):** the part authoring tool. Right-drag orbits, left-click selects a primitive or node, `G`/`R`/`S` move/rotate/scale with `X`/`Y`/`Z` axis constraint (`Shift` = fine, grid-snapped), `K` toggles the orange collision overlay, `DEL` removes. Buttons add primitives (box/cylinder/cone/sphere/tube), duplicate, set colors/emissive/segments, flag visible/collider, add stack/radial nodes (X/Y/Z sets a node's direction, SNAP SURF projects it onto the hull). SAVE writes the `.swpart` into the build AND the source `Assets/Parts/` — the game loads it at next launch.
 
 **Time warp:** ×2 and ×5 are PHYSICS warp — everything stays simulated and the engines still work. Above ×5 the world rides analytic rails and engines cut out.
 
-**Time warp:** `.` faster / `,` slower (×1 → ×100,000, altitude-limited; engines only work at ×1). `Space` pauses. `F5` saves, `F9` loads. `Esc` quits.
+**Time warp:** `.` faster / `,` slower (×0 → ×10,000,000, altitude-limited; engines only work at ×1). `,` at ×1 stops time — pausing is the bottom rung of the same ladder, not a key of its own. `F5` saves, `F9` loads. `Esc` quits.
 
 ## Useful flags
 

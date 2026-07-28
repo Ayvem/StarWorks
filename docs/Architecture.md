@@ -661,5 +661,69 @@ Until now the factory made metal that nothing consumed, and the hangar made rock
 
 The starting outpost ships with the whole loop standing: a VB-1 at 75 m east, an LP-1 at 120 m (where the spawn place used to be computed), the 21 m belt between them, a second PL-1 because a 120 m span cannot reach the launch complex in one hop, and enough metal in the hall for the first hull. `BlueprintTests` weighs all of it — the bill against every part in the catalogue, the round trip through disk with its joints, the ledger across a hall that keeps building, the stall with no copper, the block with no room, and one crate riding a link from hall to pad.
 
+### F5a — one rocket per pad, trajectories that reach, and warp to ten million (done)
+Three things the launch loop needed the moment it worked.
+
+**A pad holds ONE rocket.** The second crate to arrive was unpacked on top of the first, which put two vessels in the same cubic metre and left the hull solver to resolve it — by throwing one of them off the pad. `padIsOccupied` asks the vessels, not the hulls: one distance per vessel against the deck's own footprint plus sixty metres of launch clearance, cheap enough to ask every frame. An occupied pad simply does not unpack; the crate sits on the belt, which is where a crate belongs, and the panel says `DECK OCCUPIED` rather than leaving the player to wonder.
+
+**A trajectory now ends where the physics ends it.** The prediction ran for a fixed six days. On a parking orbit that was ninety-six revolutions drawn on top of each other; on a heliocentric transfer it was one and a half degrees of arc — a stub hanging in space. A segment now runs until something HAPPENS to it: an impact, an encounter, an escape, or a full revolution that meets none of them (`SegmentEnd::Closed`, the line joining up). `horizonSeconds` survives as a hard cap for the one genuinely unbounded case and as the maneuver planner's way of asking for a plan that stops at the node. The scan step follows from the same idea — a fraction of the orbit's OWN period rather than of the horizon — so a 90-minute parking orbit and a two-year transfer are scanned at the same angular resolution. It is also four times cheaper than the old scan: 1.5 ms per refresh, measured.
+
+**...and it is a LINE.** Dots hide the one thing a map is for: you cannot tell a plan that ends from a plan whose dots have spread out, and at map zoom they always spread out. Each sample pair is now a stretched box — same draw item, batched by mesh, and the end of the line means something.
+
+That change immediately exposed a second fault, which a probe measured rather than a review guessing at: sampled evenly IN TIME, a Terra-to-Luna transfer (e = 0.965) puts one 107° chord across the periapsis, and the drawn line passes **802 km below Terra's surface**. Nine of its ten days are spent near apoapsis. `kepler::timeAtArcFraction` parameterises the arc by eccentric (or hyperbolic) anomaly instead, which is very nearly constant in arc length: the same 320 samples then keep the line 6 766 km from the centre against a true periapsis of 6 771 km, and the worst chord spans 8.5° instead of 107°. `PhysicsTests` measures both and holds the ratio.
+
+**Warp goes to x1 000 000 and x10 000 000.** At x100 000 a Mars transfer is still three real hours. The two new rungs are gated on altitude like every other — a million beyond 100 000 km, ten million beyond Terra's sphere of influence — because a million times real time moves a craft 30 000 km per rendered frame, which near a planet is a jump straight through it. What makes the rungs safe is that above physics warp nothing is integrated: every orbit is analytic and the rate-based lanes bulk-consume whatever interval they are handed. A test proved that and caught the bug that would have made both rungs do nothing: `Simulation::setTimeScale` clamped at 100 000, so the button would have worked and nothing would have happened.
+
+### F5b — a line one pixel wide, and space bar means jump (done)
+**The trajectory line was 274 pixels thick.** Not everywhere — only where it mattered. A line is drawn as a box stretched between two samples, and a box has ONE width; sized from the distance to its midpoint that is correct until a single chord spans a huge depth range. One chord of Terra's own orbit is four million kilometres long, and the camera sits ON that orbit, because the camera is at Terra. The box was sized for a midpoint two billion kilometres away — 3 618 km wide — and it passed 12 000 km from the eye. That is the grey band across the planet in the screenshot.
+
+A piece is now SPLIT until its near and far ends are within a factor of two of each other, and each piece is sized from its own closest approach. Measured across every orbit scale in the game and every zoom level the map allows: **1.73 pixels, everywhere**, for ten extra draw items on the one orbit that needs them. Almost every chord passes the test first try; only the handful genuinely near the camera subdivide.
+
+**Space bar is the action key.** It was pausing the simulation — the one thing a pilot's thumb should never do by accident, on the key every game in the genre uses to stage. It now fires the next decoupler in flight and JUMPS on foot; `Z` stays as the second name for staging. Pausing moved where it belongs: x0 is a warp rate, so `,` at x1 stops time and `.` starts it again. The HUD reads `WARP X0`.
+
+The jump is `phys::surfaceJumpVelocity`, in the engine, because it is THE CARRIER-VELOCITY RULE in three lines: a suit standing on Terra is already doing 30 km/s around the Sun and 465 m/s with the spin, and a jump changes exactly one component of that — the radial one, measured against the ground underneath. It SETS that component rather than adding to it, so a jump taken while already rising cannot be stacked. Four and a half metres per second is a one-metre hop on Terra and a six-metre float on Luna, from the same suit and the same key, because the height is the planet's business.
+
+### F5c — the maneuver step is a ladder (done)
+A node spans five orders of magnitude. Trimming a rendezvous is a tenth of a metre per second; leaving Terra for Mars is three and a half kilometres of it. With one step size and a x10 modifier, the second job was four hundred taps.
+
+`space::maneuverStep` is the whole change: **ctrl+shift x1000, alt x100, shift x10, nothing x1, ctrl x0.1**, and the node's TIME moves by the same factor — ten seconds at the base rung, because a burn a hundred times bigger is one you are planning a hundred times further out. One tap of the coarsest rung is a real transfer burn; four of them clear Terra escape from low orbit.
+
+It lives in the engine, and is tested, for one reason: **Control means two different things depending on whether Shift is with it.** Alone it is the FINE step; with Shift it is the coarsest one. Read the flags in the obvious order and a player reaching for a kilometre per second gets a tenth of one — so the combination is tested before either key on its own, and `SpaceTests` checks precisely that inversion rather than just the five rungs.
+
+The armed step is on the HUD, under the node's vector, and changes under the player's thumb as they hold the modifier. A ladder you cannot see is a ladder you have to memorise.
+
+### F5d — dragging the node with the mouse (done)
+The keys move the node in fixed steps. The mouse moves it where you point: grab the violet marker with the left button and the node's TIME follows the pixel under the cursor, the burn sliding round the orbit while the planned trajectory redraws under your hand. It is the only way to answer "where on this orbit should I burn?" by looking rather than by counting taps.
+
+**The pre-burn plan is drawn whole now.** It used to stop AT the node, on the reasoning that the post-burn path took over there — but a line that ends at the thing you are dragging gives you nowhere to drag it to. Drawing the current orbit entire and branching the planned one off the marker is also what KSP does, and for the same reason. It has a second virtue: the plan no longer depends on the node's time, so the drag cannot chase its own tail.
+
+`space::timeNearestScreenPoint` is the pick, in the engine and tested. It samples exactly as the map draws — spaced by anomaly, not by time — so the moment it returns belongs to the pixel the player is pointing at. **It skips everything with w ≤ 0.** That is the whole reason it is a tested function rather than four lines in the game: a perspective divide behind the camera does not fail, it mirrors the point through the origin, so the far half of the orbit lands on screen looking perfectly plausible and the burn jumps to the wrong side of the planet. `SpaceTests` puts the camera inside the orbit, where half the plan is behind it, and checks the pick stays on the visible half.
+
+Two rules make it feel like a grab rather than a teleport: the pick is refused if the nearest point is more than 0.30 NDC from the cursor — the node is stuck to its LINE, not to the pointer — and a HUD button under the cursor keeps first claim on the click. Measured over a full drag round a parking orbit: worst error 5.8 s against a drawn sample spacing of 17.3 s, and not one backwards jump.
+
+### F5e — a target, and where it will be (done)
+Click a body on the map and it is the target. The plan then answers the question a transfer is actually about: **how close do I pass, when, and where will the thing have moved to by then.**
+
+The last part is the one that makes a transfer flyable, and it is the part a naive implementation gets wrong twice over. First in the physics: the body is not where the map shows it now, so the separation is a minimisation of two analytic functions of time, not a distance to a fixed point. Second in the DRAWING: a rendezvous three days out happens 7.8 million kilometres along Terra's own orbit, so a marker at the target's true world position sits in empty space far off the side of a map centred on Terra now. `ClosestApproach` therefore returns positions RELATIVE TO A PRIMARY, exactly as the drawn orbits are, and the map adds that primary's current position — the marker lands on the ring the player is looking at.
+
+`space::closestApproachToBody` scans the plan for the smallest separation and then refines it by golden section. The coarse scan's only job is to find the right valley: measured across encounter phases from a 0.5 km grazing pass to a 130 000 km miss, **256 samples and 4096 return the same answer to the metre**, for sixteen times less work — 175 µs on a parking orbit against 6.4 ms. That measurement is the reason the default is 256 and not a comfortable-looking big number.
+
+It reads the patched plan correctly for free: on an intercept the plan splits at the sphere of influence and the inner patch's primary IS the target, so the minimum comes back measured from the body itself — which is what lets `IMPACT` be printed as `IMPACT` instead of as a distance to a centre. With a node up, a second approach is computed for the post-burn trajectory, so the player dials the burn while watching the number they are dialling it for.
+
+Targets are celestial bodies. Vessel-to-vessel rendezvous needs the other craft's own prediction and is not wired yet.
+
+### F5f — flying the burn (done)
+Three things the maneuver node needed once it could be planned properly, and one of them was a bug worth the measurement.
+
+**The remaining dv never came down.** The readout sat at the full planned burn from the first second of the engine to the last, which is the one thing a burn readout must not do — it exists to tell you when to stop. The cause is the obvious formula: the target was recomputed every refresh as "my velocity at the node, on my CURRENT trajectory, plus the planned dv", and burning changes the current trajectory, so the target moved with the ship and the difference stayed pinned. A probe put numbers on it: **100.0 m/s for the whole burn, and 535 m/s while merely coasting toward the node.**
+
+Near the node the plan is now FROZEN — the pre-burn trajectory and the dv vector, captured once — and what remains is the plan minus what has actually been applied. "Applied" is measured against the COASTING velocity from that frozen plan, which is what subtracts gravity's own contribution: a two-minute burn in low orbit picks up a kilometre per second of it, and counting that as thrust would have the readout reach zero with the burn half done. Same probe, same burn: **100 → 3.9 m/s, hitting zero exactly as the last metre per second goes in.** `space::remainingBurn` is the engine function, and `SpaceTests` flies a real 100 m/s burn through a real integrator — computing the naive formula alongside and asserting it stays pinned, so nobody can quietly simplify back to it.
+
+One vector now feeds the readout, the navball marker and the autopilot, so the three can never disagree.
+
+**A NODE button on the SAS row.** A burn is almost never prograde — a plane change is normal, a circularisation is prograde only by accident — so flying one by eye means chasing a marker across the navball with the throttle already open. The mode points at the remaining burn, which shrinks as it is flown, and greys out when there is no node.
+
+**A WARP TO NODE button**, in the map and in the cockpit, stopping one minute short. The rung is chosen so a real second never advances more than half the time left, so the approach decelerates by itself and lands at x1 — the overshoot a fixed ladder plus human reaction time cannot avoid.
+
 ### Milestone 32+ — candidates (remaining)
 F4 exploitation UI, F6 part fabrication and real conveyor transport. Also: impact-driven joint breakage (fields ready), real aerodynamics (wind + per-wing lift), placeholder cleanup, multiplayer groundwork.

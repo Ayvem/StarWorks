@@ -171,7 +171,16 @@ namespace sw::sim
 
     void Simulation::setTimeScale(f32 scale)
     {
-        const f32 clamped = std::clamp(scale, 0.0f, 100000.0f);
+        // The ceiling is INTERPLANETARY, not orbital. At x100 000 a Mars
+        // transfer is still three real hours; the warp ladder now goes to
+        // ten million so that it is a minute — and a limit that silently
+        // ignored the top of the ladder is the worst kind of bug, the one
+        // where the button works and nothing happens.
+        //
+        // What makes the number safe is that above physics warp nothing is
+        // integrated: every orbit is analytic, and the rate-based lanes
+        // bulk-consume whatever interval they are handed, exactly.
+        const f32 clamped = std::clamp(scale, 0.0f, 1.0e7f);
         if (clamped != m_timeScale)
         {
             m_timeScale = clamped;

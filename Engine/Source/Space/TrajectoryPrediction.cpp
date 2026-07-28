@@ -125,14 +125,64 @@ namespace sw::space
                 return;
             }
 
-            // ---- coarse forward scan for the first event -----------------
-            const f64 window = horizon - segmentStart;
-            const f64 step = window / static_cast<f64>(settings.samplesPerSegment);
-            segment.endTime = horizon;
-            segment.endReason = SegmentEnd::Horizon;
+            // ---- how far, and how finely, to scan ------------------------
+            //
+            // HOW FAR is the whole point of this function. A closed orbit
+            // says everything it has to say in one revolution: if nothing
+            // happens in that turn, nothing ever will, and the line joins
+            // up. An open one runs until it leaves — and only a hyperbola
+            // around a body with no sphere of influence to leave can run
+            // past the caller's horizon.
+            //
+            // HOW FINELY follows from the same idea. The step is a fraction
+            // of the orbit's OWN period, never of the horizon, so a lunar
+            // parking orbit and a Mars transfer are scanned at the same
+            // angular resolution. Sampling a two-year transfer at the step
+            // that suited six days is exactly what used to make the line
+            // stop in the middle of nowhere.
+            const f64 samplesPerRevolution =
+                static_cast<f64>(std::max(settings.samplesPerRevolution, 16u));
+            bool closes = false;
+            f64 windowEnd = horizon;
+            f64 step = 0.0;
+            if (!segment.orbit.isHyperbolic())
+            {
+                const f64 period = phys::kepler::period(segment.orbit);
+                if (period > 0.0)
+                {
+                    step = period / samplesPerRevolution;
+                    if (segmentStart + period <= horizon)
+                    {
+                        windowEnd = segmentStart + period;
+                        closes = true;
+                    }
+                }
+            }
+            else
+            {
+                // A hyperbola has no period; its natural clock is the same
+                // sqrt(|a|^3/mu) the mean motion is built from.
+                const f64 timeScale =
+                    (segment.orbit.meanMotion > 0.0) ? (1.0 / segment.orbit.meanMotion)
+                                                     : 0.0;
+                constexpr f64 kTwoPi = 6.283185307179586;
+                step = timeScale * (kTwoPi / samplesPerRevolution);
+            }
+            if (!(step > 0.0))
+            {
+                step = (windowEnd - segmentStart) / samplesPerRevolution;
+            }
+            u32 sampleCount = static_cast<u32>(
+                std::min<f64>(std::ceil((windowEnd - segmentStart) / step),
+                              static_cast<f64>(std::max(settings.maxSamplesPerSegment, 16u))));
+            sampleCount = std::max(sampleCount, 16u);
+            step = (windowEnd - segmentStart) / static_cast<f64>(sampleCount);
+
+            segment.endTime = windowEnd;
+            segment.endReason = closes ? SegmentEnd::Closed : SegmentEnd::Horizon;
 
             f64 previousTime = segmentStart;
-            for (u32 sample = 1; sample <= settings.samplesPerSegment; ++sample)
+            for (u32 sample = 1; sample <= sampleCount; ++sample)
             {
                 const f64 sampleTime = segmentStart + step * static_cast<f64>(sample);
                 const EventProbe probe =
@@ -160,6 +210,7 @@ namespace sw::space
             outSegments.push_back(segment);
 
             if (segment.endReason == SegmentEnd::Horizon ||
+                segment.endReason == SegmentEnd::Closed ||
                 segment.endReason == SegmentEnd::Impact)
             {
                 return;
@@ -199,6 +250,216 @@ namespace sw::space
             }
             segmentStart = eventTime;
         }
+    }
+
+    ClosestApproach closestApproachToBody(const CelestialIndex& index,
+                                          const std::vector<TrajectorySegment>& segments,
+                                          i32 targetIndex, u32 samplesPerSegment)
+    {
+        ClosestApproach result{};
+        if (targetIndex < 0 || static_cast<usize>(targetIndex) >= index.size())
+        {
+            return result;
+        }
+        const u32 samples = std::max(samplesPerSegment, 16u);
+
+        // Separation at an absolute time, on a given segment's conic.
+        auto separationAt = [&](const TrajectorySegment& segment, f64 time) {
+            WorldVec3 relative{};
+            phys::kepler::evaluate(segment.orbit, time, relative);
+            const WorldVec3 ours = index.positionAt(segment.primaryIndex, time) + relative;
+            return glm::length(index.positionAt(targetIndex, time) - ours);
+        };
+
+        const TrajectorySegment* bestSegment = nullptr;
+        f64 bestTime = 0.0;
+        f64 bestDistance = 0.0;
+        f64 bracketLow = 0.0;
+        f64 bracketHigh = 0.0;
+
+        for (const TrajectorySegment& segment : segments)
+        {
+            if (segment.primaryIndex < 0 || segment.endReason == SegmentEnd::Lost ||
+                segment.endTime <= segment.startTime)
+            {
+                continue;
+            }
+            f64 previousTime = segment.startTime;
+            for (u32 sample = 0; sample <= samples; ++sample)
+            {
+                const f64 time = phys::kepler::timeAtArcFraction(
+                    segment.orbit, segment.startTime, segment.endTime,
+                    static_cast<f64>(sample) / static_cast<f64>(samples));
+                const f64 distance = separationAt(segment, time);
+                if (bestSegment == nullptr || distance < bestDistance)
+                {
+                    bestSegment = &segment;
+                    bestTime = time;
+                    bestDistance = distance;
+                    // The bracket is the neighbouring samples: the minimum
+                    // cannot be outside them, and inside them the function
+                    // is smooth enough for a golden section.
+                    bracketLow = previousTime;
+                    bracketHigh = std::min(
+                        segment.endTime,
+                        phys::kepler::timeAtArcFraction(
+                            segment.orbit, segment.startTime, segment.endTime,
+                            static_cast<f64>(std::min(sample + 1, samples)) /
+                                static_cast<f64>(samples)));
+                }
+                previousTime = time;
+            }
+        }
+        if (bestSegment == nullptr)
+        {
+            return result;
+        }
+
+        // ---- refine: golden section on the bracket ------------------------
+        // A coarse scan lands within one sample of the minimum; the number
+        // the player reads is the minimum itself, so it is worth the sixty
+        // evaluations it takes to find it.
+        {
+            constexpr f64 kInvPhi = 0.6180339887498949;
+            f64 low = std::max(bracketLow, bestSegment->startTime);
+            f64 high = std::min(bracketHigh, bestSegment->endTime);
+            if (high > low)
+            {
+                f64 c = high - (high - low) * kInvPhi;
+                f64 d = low + (high - low) * kInvPhi;
+                f64 fc = separationAt(*bestSegment, c);
+                f64 fd = separationAt(*bestSegment, d);
+                for (int iteration = 0; iteration < 60 && (high - low) > 1.0e-3;
+                     ++iteration)
+                {
+                    if (fc < fd)
+                    {
+                        high = d;
+                        d = c;
+                        fd = fc;
+                        c = high - (high - low) * kInvPhi;
+                        fc = separationAt(*bestSegment, c);
+                    }
+                    else
+                    {
+                        low = c;
+                        c = d;
+                        fc = fd;
+                        d = low + (high - low) * kInvPhi;
+                        fd = separationAt(*bestSegment, d);
+                    }
+                }
+                const f64 refined = 0.5 * (low + high);
+                const f64 refinedDistance = separationAt(*bestSegment, refined);
+                if (refinedDistance < bestDistance)
+                {
+                    bestTime = refined;
+                    bestDistance = refinedDistance;
+                }
+            }
+        }
+
+        // ---- and what it looks like at that moment ------------------------
+        WorldVec3 relative{};
+        WorldVec3 relativeVelocity{};
+        phys::kepler::evaluate(bestSegment->orbit, bestTime, relative,
+                               &relativeVelocity);
+        WorldVec3 primaryPosition{};
+        WorldVec3 primaryVelocity{};
+        index.stateAt(bestSegment->primaryIndex, bestTime, primaryPosition,
+                      &primaryVelocity);
+        WorldVec3 targetPosition{};
+        WorldVec3 targetVelocity{};
+        index.stateAt(targetIndex, bestTime, targetPosition, &targetVelocity);
+
+        result.valid = true;
+        result.timeSeconds = bestTime;
+        result.distanceM = bestDistance;
+        result.relativeSpeedMps =
+            glm::length((primaryVelocity + relativeVelocity) - targetVelocity);
+        result.primaryIndex = bestSegment->primaryIndex;
+        result.relativePosition = relative;
+
+        // The target, in ITS OWN orbit's frame, so the marker lands on the
+        // ring the map has drawn rather than out in the world.
+        const CelestialIndex::Body& target = index.body(static_cast<usize>(targetIndex));
+        if (target.hasOrbit != 0 && target.parentIndex >= 0)
+        {
+            result.targetPrimaryIndex = target.parentIndex;
+            result.targetRelativePosition =
+                targetPosition - index.positionAt(target.parentIndex, bestTime);
+        }
+        else
+        {
+            result.targetPrimaryIndex = -1; // a static root: already absolute
+            result.targetRelativePosition = targetPosition;
+        }
+        return result;
+    }
+
+    WorldVec3 remainingBurn(const CelestialIndex& index,
+                            const std::vector<TrajectorySegment>& coast,
+                            const WorldVec3& plannedDv, const WorldVec3& currentVelocity,
+                            f64 nowSeconds)
+    {
+        WorldVec3 coastPosition{};
+        WorldVec3 coastVelocity{};
+        if (!stateOnPrediction(index, coast, nowSeconds, coastPosition, coastVelocity))
+        {
+            return plannedDv; // no frozen plan: nothing has been applied yet
+        }
+        return plannedDv - (currentVelocity - coastVelocity);
+    }
+
+    bool timeNearestScreenPoint(const CelestialIndex& index,
+                                const std::vector<TrajectorySegment>& segments,
+                                const Mat4& viewProjectionCameraRelative,
+                                const WorldVec3& cameraPosition, f64 renderTime,
+                                const Vec2& targetNdc, u32 samplesPerSegment,
+                                f64& outTime, f32& outDistanceNdc)
+    {
+        const u32 samples = std::max(samplesPerSegment, 8u);
+        bool found = false;
+        f32 best = 0.0f;
+        for (const TrajectorySegment& segment : segments)
+        {
+            if (segment.primaryIndex < 0 || segment.endReason == SegmentEnd::Lost ||
+                segment.endTime <= segment.startTime)
+            {
+                continue;
+            }
+            const WorldVec3 primaryPosition =
+                index.positionAt(segment.primaryIndex, renderTime);
+            for (u32 sample = 0; sample <= samples; ++sample)
+            {
+                const f64 time = phys::kepler::timeAtArcFraction(
+                    segment.orbit, segment.startTime, segment.endTime,
+                    static_cast<f64>(sample) / static_cast<f64>(samples));
+                WorldVec3 relative{};
+                phys::kepler::evaluate(segment.orbit, time, relative);
+                const Vec3 cameraRelative =
+                    Vec3((primaryPosition + relative) - cameraPosition);
+                const Vec4 clip =
+                    viewProjectionCameraRelative * Vec4(cameraRelative, 1.0f);
+                if (clip.w <= 0.0f)
+                {
+                    continue; // behind the camera: no honest screen position
+                }
+                const Vec2 ndc{clip.x / clip.w, clip.y / clip.w};
+                const f32 distance = glm::length(ndc - targetNdc);
+                if (!found || distance < best)
+                {
+                    found = true;
+                    best = distance;
+                    outTime = time;
+                }
+            }
+        }
+        if (found)
+        {
+            outDistanceNdc = best;
+        }
+        return found;
     }
 
     bool stateOnPrediction(const CelestialIndex& index,

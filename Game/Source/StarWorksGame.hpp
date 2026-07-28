@@ -60,6 +60,15 @@ namespace game
         void buildGlyphMeshes();
         void updateWarp();
         void updateShipControls();
+        /// The maneuver node, dragged along its own orbit with the mouse.
+        /// Runs after the map camera: a pick is a ray from THIS frame's eye.
+        void updateNodeDrag();
+        bool m_nodeDragging = false;
+        /// SPACE, and Z: fire the ship's next decoupler.
+        void fireNextDecoupler();
+        /// SPACE on foot: one jump, taken by the next physics tick. An edge
+        /// rather than a held state, so the key cannot hover.
+        bool m_jumpRequested = false;
         void toggleEva();
         void updateChaseCamera(sw::f32 deltaSeconds);
         void collectDrawItems(const sw::Camera& activeCamera, bool mapView);
@@ -76,6 +85,8 @@ namespace game
         void collectBuildMenu();
         /// Map view: the button that steps through the vessels you own.
         void collectMapButtons();
+        /// Map view: warp forward to one minute before the maneuver node.
+        void collectWarpToNodeButton();
         /// THE CONVEYOR NETWORK, derived from geometry.
         ///
         /// Belt segments are ordinary buildings — the player places them one
@@ -185,6 +196,13 @@ namespace game
         std::array<sw::u32, 128> m_glyphMeshIndex{};
         sw::u32 m_capsuleMeshIndex = 0;
         sw::u32 m_markerMeshIndex = 0;
+        /// ONE SEGMENT OF A TRAJECTORY LINE: a unit box stretched between
+        /// two samples of a conic. A row of dots reads as a dotted line at
+        /// any zoom, which is fine for a marker and useless for an orbit —
+        /// you cannot tell a trajectory that stops from one whose dots have
+        /// simply spread out. Drawn this way the line is continuous, and
+        /// where it ends is information.
+        sw::u32 m_orbitLineMeshIndex = 0;
         /// Belt deck and cargo crate: both are ordinary .swpart definitions
         /// (CV-1 and CR-1), so their look is edited in Part Studio like
         /// everything else. Cached mesh slots, resolved once at startup.
@@ -462,6 +480,9 @@ namespace game
         void orderVehicle(sw::ecs::Entity hall, const sw::parts::ShipBlueprint& design);
         /// The pads' own tick: unpack an arrived crate into a vessel.
         void updateLaunchPads();
+        /// True while a vessel is standing on (or lifting off) this pad. A
+        /// pad holds ONE rocket; the next crate waits on the belt.
+        [[nodiscard]] bool padIsOccupied(sw::ecs::Entity pad);
         /// A saved design as the hangar's working list. The joints come with
         /// it, so a vessel built from a file is jointed as it was drawn.
         [[nodiscard]] static std::vector<BlueprintPart> partsFromDesign(
@@ -559,7 +580,54 @@ namespace game
         sw::WorldVec3 m_nodePostBurnVelocity{0.0}; // world, at node time
         sw::i32 m_nodePrimaryIndex = -1;
         sw::WorldVec3 m_nodeRelativePosition{0.0}; // primary-relative, node time
+
+        // ---- FLYING the burn -------------------------------------------------
+        // The remaining dv has to COUNT DOWN while the engine is lit, or the
+        // readout that tells you when to stop tells you nothing.
+        //
+        // It did not, and the reason is worth writing down: the target was
+        // recomputed every refresh as "my velocity at the node, on my
+        // CURRENT trajectory, plus the planned dv". Burning changes the
+        // current trajectory, so the target moved with the ship and the
+        // difference stayed pinned at the full dv forever.
+        //
+        // So near the node the plan is FROZEN: the pre-burn trajectory and
+        // the dv vector are captured once, and what remains is the plan
+        // minus what has actually been applied — measured against the
+        // COASTING velocity from that frozen plan, which subtracts gravity's
+        // own contribution over the burn (a kilometre per second in low
+        // orbit; not something to hand-wave).
+        static constexpr sw::f64 kBurnLockSeconds = 120.0;
+        bool m_burnLocked = false;
+        sw::WorldVec3 m_burnDvWorld{0.0};
+        std::vector<sw::space::TrajectorySegment> m_burnCoast;
+        sw::f64 m_burnNodeTime = 0.0; // what the lock was taken for
+        sw::f64 m_burnPrograde = 0.0;
+        sw::f64 m_burnNormal = 0.0;
+        sw::f64 m_burnRadial = 0.0;
+        /// The burn still to fly, as a world vector. Zero-length when there
+        /// is no node. Used by the readout, the navball marker and the SAS.
+        [[nodiscard]] sw::WorldVec3 remainingBurnVector();
+        /// WARP TO THE NODE: absolute simulation time to stop at, or 0.
+        sw::f64 m_warpToSeconds = 0.0;
         void updateManeuverNodeInput();
+
+        // ---- THE TARGET, and how close we get to it -------------------------
+        // Click a body on the map and it becomes the target. From then on
+        // the plan answers the question a transfer is actually about: how
+        // close do I pass, when, and WHERE WILL IT BE by then — because the
+        // body you are aiming at is not where it is now, and the whole
+        // difficulty of a transfer is aiming at where it is going to be.
+        //
+        // Both markers are drawn in the map's own frame (primary-relative),
+        // so the target's future position lands on the orbit ring you can
+        // see rather than in empty space along Terra's year.
+        sw::i32 m_targetIndex = -1; // CelestialIndex body, -1 = none
+        sw::space::ClosestApproach m_approach{};
+        /// The same, for the trajectory AFTER the planned burn.
+        sw::space::ClosestApproach m_nodeApproach{};
+        void updateTargetPick();
+
         sw::ecs::Entity m_solEntity{};
         sw::ecs::Entity m_terraEntity{};
 

@@ -186,16 +186,35 @@ namespace game
                 {
                     return;
                 }
-                const sw::WorldVec3 relativeVelocity = body.velocity - primary->velocity;
-                const sw::f64 speed = glm::length(relativeVelocity);
-                if (speed < 1.0)
+                sw::Vec3 target{0.0f};
+                if (sas.mode == SasComponent::kNode)
                 {
-                    return; // no meaningful prograde
+                    // The burn vector, handed down by the flight plan. It
+                    // shrinks as the burn is flown, and when it reaches zero
+                    // there is nothing left to point at — hold, do not spin
+                    // toward whatever a normalised zero would produce.
+                    const sw::f32 length = glm::length(sas.targetDirection);
+                    if (length < 1.0e-6f)
+                    {
+                        ship.angularVelocity *= 0.85f;
+                        return;
+                    }
+                    target = sas.targetDirection / length;
                 }
-                sw::Vec3 target = sw::Vec3(relativeVelocity / speed);
-                if (sas.mode == SasComponent::kRetrograde)
+                else
                 {
-                    target = -target;
+                    const sw::WorldVec3 relativeVelocity =
+                        body.velocity - primary->velocity;
+                    const sw::f64 speed = glm::length(relativeVelocity);
+                    if (speed < 1.0)
+                    {
+                        return; // no meaningful prograde
+                    }
+                    target = sw::Vec3(relativeVelocity / speed);
+                    if (sas.mode == SasComponent::kRetrograde)
+                    {
+                        target = -target;
+                    }
                 }
 
                 // Proportional attitude controller: command an angular
@@ -378,6 +397,21 @@ namespace game
                 const sw::Vec3 right = glm::normalize(glm::cross(heading, up));
                 transform.rotation =
                     glm::normalize(glm::quat_cast(sw::Mat3{right, up, -heading}));
+
+                // JUMPING, before walking, and only with both feet on the
+                // ground. It adds a RADIAL speed in the SURFACE frame and
+                // touches nothing else: a jump taken at a run keeps the run,
+                // and — the part a naive impulse gets wrong — keeps the
+                // planet's own 465 m/s of spin underneath it.
+                if (controls.jump != 0 && body.isGrounded != 0)
+                {
+                    const sw::WorldVec3 surfaceVelocity =
+                        primary->velocity + glm::cross(primary->angularVelocity, radial);
+                    body.velocity = sw::phys::surfaceJumpVelocity(
+                        body.velocity, surfaceVelocity, sw::WorldVec3(up),
+                        static_cast<sw::f64>(capsule.jumpSpeed));
+                    body.isGrounded = 0;
+                }
 
                 // Walking: grounded only. The tangential velocity is SET in
                 // the LOCAL SURFACE frame (body translation + spin at this

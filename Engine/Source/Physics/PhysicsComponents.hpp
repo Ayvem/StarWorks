@@ -272,6 +272,27 @@ namespace sw::phys
         f64 topAltitude = 1.4e5;    // no drag above this altitude
     };
 
+    /// A JUMP, taken from a moving surface.
+    ///
+    /// It is a function, in the engine, for one reason: it is THE CARRIER-
+    /// VELOCITY RULE in three lines, and every time that rule has been
+    /// written out by hand here it has cost a bug. A body standing on Terra
+    /// is already doing 30 km/s around the Sun and 465 m/s with the spin; a
+    /// jump changes ONE component of its velocity — the radial one, measured
+    /// against the ground underneath it — and must leave the rest exactly
+    /// where it was. Set the radial component rather than adding to it, so
+    /// jumping while already rising cannot stack.
+    ///
+    /// `up` must be a unit vector. Returns the new WORLD velocity.
+    [[nodiscard]] inline WorldVec3 surfaceJumpVelocity(const WorldVec3& worldVelocity,
+                                                       const WorldVec3& surfaceVelocity,
+                                                       const WorldVec3& up, f64 jumpSpeed)
+    {
+        const WorldVec3 relative = worldVelocity - surfaceVelocity;
+        const f64 radialSpeed = glm::dot(relative, up);
+        return surfaceVelocity + (relative - up * radialSpeed) + up * jumpSpeed;
+    }
+
     static_assert(std::is_trivially_copyable_v<DynamicBodyComponent>);
     static_assert(std::is_trivially_copyable_v<OnRailsComponent>);
     static_assert(std::is_trivially_copyable_v<GravitySourceComponent>);

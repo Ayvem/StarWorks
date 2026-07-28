@@ -215,6 +215,44 @@ namespace sw::phys::kepler
         }
     }
 
+    f64 timeAtArcFraction(const KeplerOrbit& orbit, f64 t0, f64 t1, f64 fraction)
+    {
+        const f64 e = orbit.eccentricity;
+        if (!(orbit.meanMotion > 0.0) || std::abs(e - 1.0) < kParabolicBand)
+        {
+            return t0 + (t1 - t0) * fraction; // degenerate: nothing better to do
+        }
+
+        const f64 mean0 =
+            orbit.meanAnomalyAtEpoch + orbit.meanMotion * (t0 - orbit.epochSeconds);
+        const f64 mean1 =
+            orbit.meanAnomalyAtEpoch + orbit.meanMotion * (t1 - orbit.epochSeconds);
+
+        f64 anomaly0 = 0.0;
+        f64 anomaly1 = 0.0;
+        if (orbit.isHyperbolic())
+        {
+            anomaly0 = solveHyperbolicAnomaly(mean0, e);
+            anomaly1 = solveHyperbolicAnomaly(mean1, e);
+        }
+        else
+        {
+            // UNWRAPPED eccentric anomaly. The solver answers in [0, 2pi),
+            // which would send an arc that crosses periapsis backwards
+            // round the ellipse. The whole-revolution count comes from the
+            // mean anomaly, which is linear in time and never wraps.
+            const f64 turns0 = std::floor(mean0 / kTwoPi);
+            const f64 turns1 = std::floor(mean1 / kTwoPi);
+            anomaly0 = solveEllipticAnomaly(mean0, e) + turns0 * kTwoPi;
+            anomaly1 = solveEllipticAnomaly(mean1, e) + turns1 * kTwoPi;
+        }
+
+        const f64 anomaly = anomaly0 + (anomaly1 - anomaly0) * fraction;
+        const f64 mean = orbit.isHyperbolic() ? (e * std::sinh(anomaly) - anomaly)
+                                              : (anomaly - e * std::sin(anomaly));
+        return orbit.epochSeconds + (mean - orbit.meanAnomalyAtEpoch) / orbit.meanMotion;
+    }
+
     f64 period(const KeplerOrbit& orbit)
     {
         SW_ASSERT(!orbit.isHyperbolic(), "Hyperbolic orbits have no period");
