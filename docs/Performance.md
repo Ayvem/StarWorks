@@ -243,7 +243,7 @@ pour le même résultat.
 
 ## 6. Suite de tests
 
-**189 tests, 0 échec, ~1 s** en tout — sans fenêtre, sans périphérique Vulkan et
+**190 tests, 0 échec, ~1 s** en tout — sans fenêtre, sans périphérique Vulkan et
 **sans une seule socket**. Les tests les plus lourds sont les aérodynamiques (le
 solveur tourne pour de vrai sur des formes de manuel) et le contrat de résolution du
 terrain, qui échantillonne le champ analytique des dizaines de milliers de fois.

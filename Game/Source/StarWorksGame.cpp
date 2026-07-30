@@ -2891,7 +2891,27 @@ namespace game
         const sw::f64 anchorU = longitude * radius * std::cos(latitude) + fieldU;
         const sw::f64 anchorV = latitude * radius + fieldV;
 
-        constexpr sw::f64 kSpacing = 1.5;
+        // ---- THE FIELD'S FOUR KNOBS, together and named -----------------------
+        //
+        // They interact, so changing one alone gives a result nobody expects:
+        // the spacing decides how many cells exist, the density pair how many
+        // of those cells grow anything, and the height pair how big what grows
+        // is. And height is multiplied by density further down, so thinning
+        // the field also shortens it — which is why both were reduced by less
+        // than the final effect suggests.
+        //
+        // Measured over the planted disc, ground held fully green (the
+        // densest case there is): 8 834 tufts / 26 502 blades before,
+        // 3 717 / 11 151 after — 42 % of the tufts, 0.042 down to 0.018 per
+        // square metre. Mean blade 0.224 m instead of 0.434 m, tallest 0.61 m
+        // instead of 1.38 m: the 1.75 m suit now stands nearly eight times
+        // the mean blade rather than four, and nothing reaches its waist.
+        constexpr sw::f64 kSpacing = 1.9;          // was 1.5
+        constexpr sw::f32 kDensityFloor = 0.24f;   // was 0.35
+        constexpr sw::f32 kDensitySpread = 0.62f;  // was 0.90
+        constexpr sw::f32 kHeightFloor = 0.13f;    // was 0.22
+        constexpr sw::f32 kHeightSpread = 0.30f;   // was 0.55
+
         const sw::f64 plantRadius = std::min(extent * 0.20, 260.0);
         const sw::f64 plantFull = 30.0;  // full density inside this
         const sw::f64 plantFade = 0.82;  // height fades over the last 18 %
@@ -2980,7 +3000,7 @@ namespace game
                 const sw::f32 green =
                     groundColor.g - 0.5f * (groundColor.r + groundColor.b);
                 sw::f32 density = sw::math::smoothstepf(-0.005f, 0.045f, green);
-                density *= 0.35f + 0.9f * hash01(ku / 13, kv / 13, 91u);
+                density *= kDensityFloor + kDensitySpread * hash01(ku / 13, kv / 13, 91u);
                 // Thinned as an inverse power rather than a ramp: cover within
                 // thirty metres, texture beyond, and a total that stays near
                 // six thousand tufts however far the field is asked to reach.
@@ -3003,8 +3023,9 @@ namespace game
                 {
                     continue;
                 }
-                const sw::f32 height =
-                    (0.22f + 0.55f * hash01(ku, kv, 131u)) * edge * (0.6f + density);
+                const sw::f32 height = (kHeightFloor + kHeightSpread *
+                                        hash01(ku, kv, 131u)) *
+                                       edge * (0.6f + density);
                 if (height < 0.06f)
                 {
                     continue;
@@ -3842,6 +3863,36 @@ namespace game
                     --m_warpIndex;
                 }
                 m_warpToSeconds = 0.0;
+                // SAY IT, AND ONLY NOW. The gate has just refused something
+                // the player asked for, which is the one moment the reason
+                // is worth screen space. Drawn from a permanent condition
+                // instead, it was a warning that lived on the HUD for the
+                // whole game and therefore told nobody anything.
+                m_warpRefusedUntil = clock().totalSeconds() + 4.0;
+                m_warpRefusedReason = warpBlockReason();
+            }
+
+            // ON FOOT, RAILS WARP IS NOT OFFERED AT ALL — and that is a
+            // MOVEMENT rule before it is a physics one.
+            //
+            // Above x5 the integrator is switched off and a landed body
+            // becomes a surface anchor. For a rocket that is exactly right.
+            // For the player it meant keeping the camera and losing the
+            // legs: updateShipControls returns early above x5, so W, A, S, D
+            // and Space all stopped working, with nothing on screen saying
+            // why. A person standing on a planet has nothing to fast-forward
+            // through anyway — and the one case that genuinely needs to skip
+            // hours on foot, catching another player's temporality, sets
+            // bypassAltitudeCap and is deliberately not caught here.
+            if (m_evaMode && kWarpLadder[m_warpIndex] > kMaxPhysicsWarp)
+            {
+                while (m_warpIndex > 0 && kWarpLadder[m_warpIndex] > kMaxPhysicsWarp)
+                {
+                    --m_warpIndex;
+                }
+                m_warpToSeconds = 0.0;
+                m_warpRefusedUntil = clock().totalSeconds() + 4.0;
+                m_warpRefusedReason = "ON FOOT - BOARD A CRAFT TO WARP";
             }
         }
 
@@ -5039,12 +5090,19 @@ namespace game
                     m_flight.tipping ? sw::Vec4{1.0f, 0.65f, 0.25f, 1.0f} : dim);
             y += kLine * 1.15f;
         }
-        // WHY THE WARP KEY IS DOING NOTHING. The gate is a rule about the
-        // situation, not about the key, so it has to say which situation.
-        if (!warpAllowed())
+        // WHY THE WARP KEY JUST DID NOTHING — shown for four seconds after
+        // the gate actually refused something, and not one frame otherwise.
+        //
+        // It used to be drawn from `!warpAllowed()`, a standing condition:
+        // true for every second of every ascent, every reentry and — because
+        // `isGrounded` drops the moment the feet leave the dirt — every jump.
+        // A warning that is on almost always is not a warning, it is
+        // furniture, and the player reasonably read it as the thing that had
+        // taken their controls away.
+        if (clock().totalSeconds() < m_warpRefusedUntil && !m_warpRefusedReason.empty())
         {
-            hudText(std::format("WARP LOCKED  {}", warpBlockReason()), kX, y, kLine * 0.8f,
-                    sw::Vec4{0.95f, 0.45f, 0.35f, 1.0f});
+            hudText(std::format("WARP LOCKED  {}", m_warpRefusedReason), kX, y,
+                    kLine * 0.8f, sw::Vec4{0.95f, 0.45f, 0.35f, 1.0f});
             y += kLine * 1.1f;
         }
 
@@ -6921,6 +6979,14 @@ namespace game
         {
             m_flight.grounded = true;
         }
+        // A HOP IS NOT A FLIGHT — see the gravity-sized latch further down,
+        // which needs the primary this only records the footing for.
+        const bool onFoot =
+            m_evaMode && !m_capsuleEntity.isNull() && flown == m_capsuleEntity;
+        if (onFoot && m_flight.grounded)
+        {
+            m_lastFootingSeconds = clock().totalSeconds();
+        }
 
         m_flight.primaryIndex = controlledPrimaryIndex();
         if (m_flight.primaryIndex < 0)
@@ -6944,6 +7010,45 @@ namespace game
                 m_world.tryGetComponent<sw::phys::AtmosphereComponent>(primary.entity))
         {
             m_flight.atmosphereTop = air->topAltitude;
+        }
+
+        // A HOP IS NOT A FLIGHT.
+        //
+        // `isGrounded` is exact and momentary: it goes to zero the instant
+        // the feet leave the dirt. The warp gate read it directly, so
+        // pressing Space slammed the whole gate shut for the length of a
+        // jump — and the panel put a red WARP LOCKED under the pilot list
+        // for it. Measured on Terra: a 4.5 m/s jump peaks at 1.77 m and is
+        // is off the ground for 0.88 s.
+        //
+        // The question the gate really asks is "could this safely go on
+        // rails?", and for a person a metre and a half above their own
+        // planet the honest answer is yes. So the footing is REMEMBERED for
+        // as long as a jump can physically last.
+        //
+        // That window is computed from the local gravity and not written
+        // down, because a constant would be wrong nearly everywhere: the
+        // same legs and the same key give 0.92 s of air on Terra, 2.4 s on
+        // Mars and 5.6 s on Luna. A body genuinely in flight — thrown clear,
+        // stepping off a cliff — outlasts its own hang time and the gate
+        // closes exactly as it should.
+        if (onFoot && !m_flight.grounded && m_lastFootingSeconds > 0.0)
+        {
+            const sw::f64 surfaceGravity =
+                primary.mu / (primary.bodyRadius * primary.bodyRadius);
+            sw::f32 jumpSpeed = CapsuleComponent{}.jumpSpeed;
+            if (const auto* capsule = m_world.tryGetComponent<CapsuleComponent>(flown))
+            {
+                jumpSpeed = capsule->jumpSpeed;
+            }
+            // The rule lives in the engine (phys::jumpHangSeconds) so it can
+            // be tested without a window; this only feeds it the situation.
+            const sw::f64 hangSeconds = sw::phys::jumpHangSeconds(
+                static_cast<sw::f64>(jumpSpeed), surfaceGravity);
+            if (clock().totalSeconds() - m_lastFootingSeconds < hangSeconds)
+            {
+                m_flight.grounded = true;
+            }
         }
 
         if (m_flight.grounded)
@@ -7517,22 +7622,46 @@ namespace game
             y += kRowH + kGap;
         }
 
-        // ---- footer: why you can or cannot warp ----------------------------
+        // ---- footer: ONLY ABOUT SYNCING -------------------------------------
+        //
+        // This line is in the multiplayer panel, so it answers a multiplayer
+        // question: can you catch the player who is ahead of you? It used to
+        // report the warp gate unconditionally, which meant a red WARP LOCKED
+        // sat under the pilot list at every moment of ordinary play — during
+        // an ascent, during a reentry, and for the second and a half of a
+        // jump — with no one ahead to sync to and nothing being refused. A
+        // permanent alarm about a thing nobody asked for reads as the game
+        // taking something away.
+        //
+        // So: a running sync counts down, a reachable one says whether it
+        // can start, and when nobody is ahead of you the row is simply not
+        // there.
+        bool someoneAhead = false;
+        for (const sw::net::PlayerView& player : roster)
+        {
+            if (player.id != selfId && player.simulatedSeconds - selfClock > 1.0)
+            {
+                someoneAhead = true;
+            }
+        }
+
         if (m_syncWarpTo > 0.0)
         {
             const sw::f64 remaining = m_syncWarpTo - selfClock;
             hudText(std::format("SYNCING  T-{}", hud::signedDuration(remaining)),
                     kLeft + kPad, y + 0.010f, 0.032f, hud::kOk);
         }
-        else if (warpAllowed())
+        else if (someoneAhead)
         {
-            hudText(m_flight.grounded ? "WARP READY - LANDED" : "WARP READY - ORBIT",
-                    kLeft + kPad, y + 0.010f, 0.030f, hud::kOk);
-        }
-        else
-        {
-            hudText(std::format("WARP LOCKED - {}", warpBlockReason()), kLeft + kPad,
-                    y + 0.010f, 0.030f, hud::kBad);
+            if (warpAllowed())
+            {
+                hudText("SYNC READY", kLeft + kPad, y + 0.010f, 0.030f, hud::kOk);
+            }
+            else
+            {
+                hudText(std::format("CANNOT SYNC - {}", warpBlockReason()), kLeft + kPad,
+                        y + 0.010f, 0.030f, hud::kBad);
+            }
         }
     }
 

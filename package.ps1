@@ -26,6 +26,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+. (Join-Path $root 'Build-Common.ps1')
+
 $buildDir = Join-Path $root 'build\package'
 $distDir = Join-Path $root 'dist\StarWorks'
 
@@ -33,6 +35,11 @@ if ($Clean -and (Test-Path $buildDir)) {
     Write-Host 'Purging the packaging build tree...' -ForegroundColor DarkGray
     Remove-Item -Recurse -Force $buildDir
 }
+
+# A build tree carried over from another folder — the project was moved or
+# copied — makes CMake fail with a message nobody should have to decode. It
+# is detected and thrown away here instead.
+[void](Reset-StaleBuildTree -BuildDir $buildDir -SourceDir $root)
 
 # ---- 1. configure ----------------------------------------------------------
 # A SEPARATE build tree from build\windows on purpose: the static runtime is

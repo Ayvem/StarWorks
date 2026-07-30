@@ -33,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 # LA RACINE, DEMANDÉE PLUTÔT QUE SUPPOSÉE. $PSScriptRoot est le dossier de ce
 # fichier, quel que soit le disque du jour.
 $root = $PSScriptRoot
+. (Join-Path $root 'Build-Common.ps1')
 $buildDir = Join-Path $root 'build\windows'
 $config = if ($Release) { 'RelWithDebInfo' } else { 'Debug' }
 
@@ -42,6 +43,10 @@ if ($Clean -and (Test-Path $buildDir)) {
     Write-Host "Purge de l'arbre de build..." -ForegroundColor DarkGray
     Remove-Item -Recurse -Force $buildDir
 }
+
+# Un arbre de build qui vient d'un autre dossier fait échouer CMake avec un
+# message que personne ne devrait avoir à décoder. Détecté et purgé ici.
+[void](Reset-StaleBuildTree -BuildDir $buildDir -SourceDir $root)
 
 # ---- configurer -------------------------------------------------------------
 # Seulement s'il n'y a pas encore de cache, ou après -Clean. Reconfigurer à

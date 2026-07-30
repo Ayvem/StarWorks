@@ -17,6 +17,8 @@
 #include "ECS/Entity.hpp"
 #include "Physics/Kepler.hpp"
 
+#include <algorithm>
+
 namespace sw::phys
 {
     struct DynamicBodyComponent
@@ -379,6 +381,26 @@ namespace sw::phys
     /// Altitude alone was the old test and it is not the same question: it
     /// happily permitted ten thousand times real time on a trajectory whose
     /// next event was the ground.
+    /// How long a jump stays off the ground, with margin — the window over
+    /// which a walker should still count as standing on the planet.
+    ///
+    /// Ballistic: up and back down is 2v/g. The half again on top covers
+    /// landing on ground higher than the take-off point, and the drag a
+    /// suit in air actually feels.
+    ///
+    /// IT IS COMPUTED AND NOT WRITTEN DOWN, because a constant is wrong
+    /// nearly everywhere. The same legs and the same key give 0.92 s of air
+    /// on Terra, 2.4 s on Mars and 5.6 s on Luna; a window tuned on Terra
+    /// would leave a Luna walker "airborne" for most of every hop.
+    [[nodiscard]] inline f64 jumpHangSeconds(f64 jumpSpeed, f64 surfaceGravity)
+    {
+        if (surfaceGravity <= 1.0e-6 || jumpSpeed <= 0.0)
+        {
+            return 1.0;
+        }
+        return std::clamp(2.0 * jumpSpeed / surfaceGravity * 1.5, 1.0, 60.0);
+    }
+
     [[nodiscard]] inline bool warpPermitted(bool grounded, bool closedOrbit,
                                             f64 periapsisAltitude, f64 atmosphereTopAltitude)
     {

@@ -2,6 +2,16 @@
 
 An industrial space simulation game — mine, automate, build ships and stations, and grow a civilization that spans a star system. Powered by a bespoke C++20 / Vulkan engine written exclusively for this game.
 
+<img width="720" height="720" alt="image" src="https://github.com/user-attachments/assets/b8769305-65d8-4b8e-800f-66696fba902c" />
+<img width="1915" height="996" alt="image" src="https://github.com/user-attachments/assets/ab9ed464-d503-4915-b172-38538bee09cc" />
+<img width="1912" height="986" alt="image" src="https://github.com/user-attachments/assets/e04eaf62-2bc5-441b-aea4-9a941eabdab8" />
+<img width="1917" height="987" alt="image" src="https://github.com/user-attachments/assets/1a2f7ef2-cc68-459a-86ee-86006fd0f714" />
+<img width="1915" height="987" alt="image" src="https://github.com/user-attachments/assets/411c6ab4-092e-4daa-a664-a4ab2bd7a26c" />
+<img width="1914" height="986" alt="image" src="https://github.com/user-attachments/assets/73f442f4-453d-447d-bfa3-9539f0e5cba3" />
+<img width="1588" height="891" alt="image" src="https://github.com/user-attachments/assets/2451b716-d646-4fa3-beee-e75d8c3d7717" />
+<img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
+<img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
+
 ## Current state — F9c: On foot, properly, and a check on the rocket that would not fall
 
 **Jumping was losing about one press in three, and the reason is worth writing down.** `ShipControlsComponent` is cleared and rewritten once per *rendered frame*; the walker that reads it runs on the physics lane at a fixed **50 Hz**. Above sixty frames a second most frames tick that lane zero times, so a jump written as a one-frame edge was overwritten before any tick could see it. It is a **latch** now: the request stays set until a physics tick has actually run. Pressing twice inside one tick still jumps once, because the walker clears `isGrounded` as it goes and the second tick finds no ground to push off.
@@ -443,7 +453,7 @@ The join panel distinguishes the two failures, because the cure for one is usele
 
 ## Running the tests
 
-189 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
+190 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
 
 ```powershell
 ctest --test-dir build/windows -C Debug --output-on-failure   # Windows

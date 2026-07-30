@@ -1129,3 +1129,47 @@ SW_TEST(WarpIsPermittedOnlyOnRailsOrOnTheGround)
     SW_CHECK(phys::warpPermitted(false, true, 3.0e3, 0.0));
     SW_CHECK(!phys::warpPermitted(false, true, -1.0e3, 0.0));
 }
+
+SW_TEST(TheJumpWindowCoversARealHopOnEveryBodyYouCanStandOn)
+{
+    // WHY THIS RULE EXISTS. The warp gate asks "is this thing on the
+    // ground?", and `isGrounded` answers for the current instant only — so
+    // one press of the jump key made the gate refuse, and the panel show a
+    // red WARP LOCKED, for the whole hop. The window below is how long the
+    // footing is remembered instead.
+    //
+    // What it must satisfy is exactly one inequality: the window is longer
+    // than the hop, on every body, or the bug comes back somewhere else.
+    constexpr f64 kJumpSpeed = 4.5; // CapsuleComponent::jumpSpeed
+
+    struct Case
+    {
+        const char* name;
+        f64 gravity;
+    };
+    // Surface gravity, m/s^2.
+    const Case bodies[] = {{"Terra", 9.81}, {"Mars", 3.71}, {"Luna", 1.62}};
+
+    for (const Case& body : bodies)
+    {
+        const f64 window = phys::jumpHangSeconds(kJumpSpeed, body.gravity);
+        const f64 ballisticHang = 2.0 * kJumpSpeed / body.gravity;
+        SW_CHECK(window > ballisticHang);
+        // ...and not so much longer that a walker who really has left the
+        // ground keeps a free pass for a minute.
+        SW_CHECK(window < ballisticHang * 2.0);
+    }
+
+    // A constant tuned on one body would fail on another, which is the whole
+    // reason this is computed: Luna's hop alone is six times Terra's.
+    SW_CHECK(phys::jumpHangSeconds(kJumpSpeed, 1.62) >
+             phys::jumpHangSeconds(kJumpSpeed, 9.81) * 5.0);
+
+    // Degenerate inputs answer with the floor rather than infinity: deep
+    // space has no surface to be standing on in the first place.
+    SW_CHECK_EQ(phys::jumpHangSeconds(kJumpSpeed, 0.0), 1.0);
+    SW_CHECK_EQ(phys::jumpHangSeconds(0.0, 9.81), 1.0);
+    // A body so small the hop is effectively an escape is clamped, not
+    // unbounded — the gate must still close eventually.
+    SW_CHECK(phys::jumpHangSeconds(kJumpSpeed, 1.0e-4) <= 60.0);
+}

@@ -63,7 +63,16 @@ Ou, tout en un — configure si nécessaire, compile, lance :
 
 `launch.ps1` ne reconfigure que s'il n'y a pas encore de cache : reconfigurer à chaque lancement ajouterait une demi-minute à une boucle qui doit durer quelques secondes.
 
-**Après avoir changé de branche ou récupéré de nouveaux fichiers**, si la configuration part en erreur bizarre :
+**Si tu as déplacé ou copié le dossier**, `launch.ps1` et `package.ps1` s'en occupent seuls : un arbre de build enregistre en dur son dossier source, donc un cache venu d'ailleurs fait échouer CMake avec
+
+```
+The current CMakeCache.txt directory G:/... is different than the
+directory F:/... where CMakeCache.txt was created.
+```
+
+Les deux scripts comparent `CMAKE_HOME_DIRECTORY` et `CMAKE_CACHEFILE_DIR` du cache avec l'endroit réel, purgent l'arbre et reconfigurent en disant pourquoi. Ce n'est pas rattrapable autrement : les chemins absolus sont aussi dans les fichiers générés, les règles de dépendances et les `.vcxproj`.
+
+En `cmake` à la main, c'est à toi de le faire :
 
 ```powershell
 Remove-Item -Recurse -Force build\windows

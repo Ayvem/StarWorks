@@ -649,6 +649,15 @@ namespace game
         /// panel can say so without asking the operating system every frame.
         sw::platform::FirewallRequest m_netFirewall =
             sw::platform::FirewallRequest::Unsupported;
+        /// Wall clock of the last tick the suit had both feet down. The warp
+        /// gate reads it so a jump — 1.6 s of legitimate air — does not count
+        /// as having left the planet. See refreshFlightState.
+        sw::f64 m_lastFootingSeconds = -1.0;
+        /// Wall clock until which the warp refusal is worth saying, and what
+        /// to say. A gate that is silent until it actually refuses something
+        /// is the difference between an explanation and a permanent warning.
+        sw::f64 m_warpRefusedUntil = -1.0;
+        std::string m_warpRefusedReason;
         /// Sampled once, when hosting starts. A Public network profile makes
         /// the firewall rule inert without removing it, so it has to be said
         /// out loud or it is invisible.
