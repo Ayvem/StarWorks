@@ -1,0 +1,29 @@
+﻿StarWorks
+=========
+
+Run StarWorks.exe. Keep it in this folder: the game finds Shaders\ and
+Assets\ next to its own executable, so a lone .exe will not start.
+
+REQUIREMENTS ON THIS MACHINE
+  * Windows 10 or 11, 64-bit.
+  * A graphics driver with Vulkan 1.3. Any current NVIDIA, AMD or Intel
+    driver has it; a fresh Windows install with the Microsoft Basic Display
+    Adapter does not. If the game exits complaining that no Vulkan device
+    was found, install the manufacturer's driver.
+  * Nothing else. The C++ runtime is linked into the executable, so there is
+    no Visual C++ redistributable to install and no Vulkan SDK to fetch.
+
+IF IT DOES NOT START
+  Run it from a terminal so you can read what it says:
+
+      .\StarWorks.exe --log-file starworks.log
+
+  A window that never appears, with no output at all, means Windows refused
+  to load the executable itself â€” that is a missing DLL, and on THIS build
+  the only one that can be missing is vulkan-1.dll, which comes with the
+  graphics driver.
+
+USEFUL FLAGS
+  --log-file <path>    mirror the log to a file
+  --quality low|medium|high
+  --cpu                software rendering (very slow, but it runs anywhere)

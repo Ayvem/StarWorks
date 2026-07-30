@@ -30,6 +30,7 @@
 
 #include "ECS/CommandBuffer.hpp"
 #include "ECS/System.hpp"
+#include "Physics/Aerodynamics.hpp"
 #include "Physics/PhysicsComponents.hpp"
 #include "Planet/Terrain.hpp"
 #include "Scene/TransformComponents.hpp"
@@ -120,6 +121,13 @@ namespace sw::phys
         {
             f64 crashSpeedThreshold = 8.0; // m/s vertical: crash vs landing
             f64 groundFrictionPerSecond = 2.5;
+            /// How fast the ground rubs the SPIN off a body resting on it.
+            /// The linear friction has always existed; this is its twin, and
+            /// without it a rocket that lands turning turns for ever. Chosen
+            /// so a vehicle settles in under a second while still leaving
+            /// the RCS enough authority to swing a landed craft round
+            /// slowly (0.5 rad/s^2 against 3/s decay holds ~9 deg/s).
+            f64 groundAngularFrictionPerSecond = 3.0;
         };
 
         explicit SurfaceInteractionSystem(const Config& config) : m_config(config) {}
@@ -136,7 +144,8 @@ namespace sw::phys
                 .write<DynamicBodyComponent>()
                 .read<GravitySourceComponent>()
                 .read<AtmosphereComponent>()
-                .read<GroundHullComponent>();
+                .read<GroundHullComponent>()
+                .read<aero::AeroStateComponent>(); // mass distribution, when known
         }
 
         void update(ecs::World& world, f32 deltaSeconds) override;
@@ -150,6 +159,7 @@ namespace sw::phys
             Quat rotation;             // body orientation (terrain is body-fixed)
             glm::dquat rotation64;     // the same, exact: see GravitySource
             f64 radius;                // sea level
+            f64 mu;                    // GM, for the local weight of a landed body
             bool hasAtmosphere;
             bool hasTerrain;
             AtmosphereComponent atmosphere;

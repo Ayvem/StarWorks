@@ -103,6 +103,22 @@ namespace sw::ecs
             return *component;
         }
 
+        // --- type-erased component access ------------------------------------
+        // For code that learns its component types at RUNTIME rather than at
+        // compile time — today that means the network mirror, which is
+        // handed a list of component NAMES by the host and has no template
+        // parameter to work with. Gameplay code should keep using the typed
+        // overloads above; these skip every compile-time check the ECS
+        // otherwise gives you.
+
+        [[nodiscard]] bool hasComponentRaw(Entity entity, ComponentTypeId type) const;
+        /// Adds the component if it is absent (zero-filled) and returns its
+        /// storage. Never null for a live entity and a registered type.
+        std::byte* addComponentRaw(Entity entity, ComponentTypeId type);
+        void removeComponentRaw(Entity entity, ComponentTypeId type);
+        /// Null if the entity is dead or does not carry the component.
+        [[nodiscard]] std::byte* tryGetComponentRaw(Entity entity, ComponentTypeId type);
+
         // --- queries -------------------------------------------------------------
         /// Calls fn(Entity, Ts&...) for every entity having all of Ts.
         /// Iteration order: archetype creation order, then row order —
@@ -172,6 +188,25 @@ namespace sw::ecs
         u32 restoreEntitiesIntoArchetype(Archetype& archetype, std::span<const Entity> entities);
         /// Rebuilds the free list and alive count; call once after restoring.
         void finalizeRestore(std::span<const u32> allGenerations);
+
+        /// Creates — or revives — the entity carrying EXACTLY this index and
+        /// generation, growing the slot table as needed, and returns it. A
+        /// slot already alive under the same generation is left untouched;
+        /// one alive under a DIFFERENT generation is destroyed first,
+        /// because the host recycled that index and the local occupant is
+        /// somebody else's row.
+        ///
+        /// This is the primitive a MIRROR world needs. A network client's
+        /// entity indices must match the host's exactly, for the reason the
+        /// save file already restores them exactly: entity handles live
+        /// INSIDE components — a conveyor names its body, a cable names its
+        /// poles, a cloud deck names its planet — and no component tells
+        /// anyone which of its fields are handles. Renumber the entities and
+        /// every one of those fields quietly points at the wrong thing.
+        ///
+        /// Cost: O(free slots) for the free-list removal, paid once per
+        /// entity that appears, never per tick.
+        Entity mirrorEntity(Entity entity);
 
     private:
         struct EntityRecord

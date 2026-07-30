@@ -30,11 +30,12 @@ Modularity with minimal dependencies; no God objects; strong cohesion inside a m
 | `Space` | active | hierarchical star system (CelestialBody tree), CelestialIndex (analytic world states at any time, SOI queries), CelestialMotionSystem, patched-conics trajectory prediction |
 | `Planet` | active | analytic planetary heightfield (mask + orogeny belts + warped ridged/billow relief + erosion + bathymetry), shared bit-exact with the GPU; analytic ORE DEPOSITS + the survey that sites a mine on them |
 | `UI` | active | procedural 5x7 bitmap font + renderer screen-space path (flight HUD); retained UI later |
-| `Gameplay` / `Audio` / `Network` | planned | game rules, sound, (much) later multiplayer |
+| `Gameplay` / `Audio` | planned | game rules, sound |
+| `Network` | active | authoritative-host multiplayer, PER-PLAYER CLOCKS and a stamped Timeline (an action carries the instant it happened at; a player who has not reached it holds it until they do): UDP transport (+ a simulated wire for tests), two delivery services over one socket (unreliable-sequenced state, reliable-ordered everything else), baseline/delta replication of ECS component columns into an INDEX-EXACT mirror world |
 | (game layer) | active | pilotable ship (thrust/RCS via ThrustSystem), chase camera, star-map view with constant-screen-size beacons |
 | `Serialization` | active | bounds-checked binary writer/reader (throws on corruption) |
 | `Save` | active | schema-named world snapshots, entity index+generation preserved, simulation clocks |
-| `Tools` / `Editor` | active | Part Studio (`.swpart` authoring), **AeroForge** (offline wind tunnel: geometry → `.aero.json`), GLSL parity checker, planet preview renderer |
+| `Tools` / `Editor` | active | Part Studio (`.swpart` authoring), **AeroForge** (offline wind tunnel: geometry → `.aero.json`), **NetProbe** (headless host+client over real sockets), GLSL parity checker, planet preview renderer |
 
 Dependency direction (only downward):
 `Game → {Scene, Renderer, Input, Core} → {Platform, Math, Core}`. `Platform` knows nothing about `Renderer`; `Input` knows nothing about GLFW; `Scene` knows nothing about Vulkan.
@@ -767,5 +768,274 @@ Every autopilot button toggles now, so there is no button whose only job is to m
 
 `SasComponent::surfaceRelative` is written by the game each frame from the same flag, alongside `targetDirection`, so one toggle drives the readout, the markers and the autopilot and they cannot disagree. The active frame is printed above the button row, because two buttons that mean different things depending on a toggle elsewhere on the screen need to say which.
 
+### F6c — the ground, and rotation (done)
+
+`SurfaceInteractionSystem` had always been honest about one half of contact and silent about the other. It clamped the lowest point of the hull to the terrain, absorbed the radial impact, and rubbed the tangential slide off under `groundFrictionPerSecond` — and it never once mentioned `angularVelocity`. Before F6 nothing much wrote that field, so the omission was invisible. Once the atmosphere could spin a vehicle, it was the first thing anyone would notice: a rocket lying across a hillside at forty degrees, propped on the corner of its own bounding box, still turning at whatever rate it last had.
+
+**`phys::topplingAcceleration` is the missing statics**, and it is a pure header function so the numbers can be checked without a world. It takes the eight corners of the `GroundHullComponent`, keeps the ones within a size-scaled tolerance of the lowest — those are the support — and asks how far the centre of mass leans past that support's reach in the direction it is leaning. Inside, the answer is EXACTLY zero: the ground holds the body up and there is no torque to explain. Outside, the edge is the pivot and the overhang is the lever, so it topples and accelerates as it goes.
+
+Everything is computed in MODEL space, because a torque is frame-agnostic and the corners are already there. The mass distribution comes from `aero::AeroStateComponent` when the aerodynamics pass has computed a real tensor from the parts and their fuel, and from `aero::boxInertia` of the hull otherwise — so a crate and a rocket both get an answer, and the rocket's is the better one.
+
+`Config::groundAngularFrictionPerSecond` (3/s) is the twin of the linear friction. It is chosen so a vehicle settles in under a second while still leaving RCS enough authority to swing a landed craft slowly: 0.5 rad/s² against a 3/s decay holds about 9°/s.
+
+Measured on a 12 m rocket 2.4 m across, balanced at its middle — statics says it tips once `6 sin(t) > 1.2`, past 11.5°:
+
+| start tilt | after 60 s |
+|---|---|
+| 0°, 5°, 10°, 11° | unchanged — standing |
+| 12° | 91.8° — over |
+| 25° | 90.3° — over |
+| 45° | 88.1° — over |
+
+A 1 rad/s spin is under 0.1 rad/s in a second and exactly zero after three. An upright rocket left for thirty seconds sits at 6.000 m doing 0.000 m/s and 0.000 rad/s — the regression this pass most had to avoid, since contact now writes to an attitude.
+
+All four results are in `PhysicsTests`, including the pure-function one that asserts a balanced body gets **exactly** zero rather than merely a small number: a rocket that creeps while balanced is a rocket that cannot be left on a pad.
+
+### F6d — the drawn ground and the collider, reconciled (done)
+Reported as "in some places the rocket or the player goes through the ground", with a screenshot of a rocket half-submerged in a hillside. Physics was not at fault: `SurfaceInteractionSystem` samples `planet::terrainElevation` exactly, and it samples the footprint's extremes and takes the MAX so an object may rest above the ground but never inside it. The **mesh** was at fault, and in a way that is worth writing down because it is a whole class of bug.
+
+The terrain patch draws a grid of samples with flat triangles stretched between them. The analytic field is a RIDGED fractal — it has creases — so the chord error across a cell falls roughly with the cell WIDTH, not its square. The drawn surface therefore tracks the collider only as well as the grid is fine, and the grid's fineness was being chosen from **sea-level altitude**. Standing on the launch site's 1,100 m plateau, the LOD sized the patch for somebody flying at 1,100 m: a 6.6 km square in 137 m cells. Terra's terrain reaches 9 km, so this was the normal case rather than an edge one.
+
+Measured over three sites and ~250,000 interior samples per configuration, gap between the analytic surface and the mesh's own bilinear interpolation:
+
+| configuration | cell | worst sink | worst hover | rms |
+|---|---|---|---|---|
+| sea altitude 1,100 m → extent 6,600 m, 96 cells | 137.5 m | **8.77 m** | 17.72 m | 2.30 m |
+| ground altitude 0 m → extent 1,500 m, 96 cells | 31.25 m | 1.25 m | 3.85 m | 0.38 m |
+| ground altitude 0 m → extent 1,500 m, 192 cells | 15.62 m | **0.50 m** | 2.30 m | 0.14 m |
+
+The same probe falsified the obvious first guess. The patch builder already band-limits its octaves to the cell size, so the suspicion was that it was keeping detail it could not represent — but capping the stack at 14 or 13 octaves moved the worst sink from 1.19 m to 1.14 m and 1.19 m. The error does not live in the finest octaves; it lives in the creases of the mid-band ones, and only a finer cell touches it (31.25 m → 1.19, 23.4 → 0.79, 15.6 → 0.46, 11.7 → 0.36).
+
+So: the LOD reads `distance - (bodyRadius + terrainElevation(centreDir))`, one extra heightfield sample per frame on a direction already computed; and `kCells` stopped being a constant — 192 at landing extent, 128 in the middle, 96 for the patches measured in hundreds of kilometres, where nothing is touching anything. The landing patch costs ~37,000 heightfield evaluations per rebuild instead of ~9,400, on a worker thread, at most once a second.
+
+`TerrainTests` pins the contract rather than the numbers: a 15.6 m grid follows the collider to under 0.6 m, a 137 m grid does not, and halving the cell may never make the agreement worse. That last clause is the one that would catch a future LOD change quietly going the wrong way.
+
+### F6e — ground you can read (done)
+Three additions to the terrain patch, all baked, all on the worker thread that already rebuilds it.
+
+**Relief shading.** The patch's normals were honest and its lambert was correct, and rolling ground still looked like a painted sheet: nothing cast, nothing pooled, and a dip and a rise of the same slope were the same colour. Two terms fix it, both computed on the height grid already in hand — no extra heightfield evaluations, so the shading cannot disagree with the surface it shades. A CAST SHADOW marched toward the sun a cell at a time, softened by the distance to the blocker so a far ridge throws a vaguer shadow than a near one; and a SKY OCCLUSION term, the same march over six azimuths with no sun in it. Baked into the albedo so they multiply the shader's lambert rather than replacing it. The sun direction is captured in the body frame when the job is submitted: Terra turns 0.004° between rebuilds, so a one-rebuild-old shadow map is a correct one.
+
+Measured: 21 ms for a 192-cell grid; the term runs 0.40–1.00 on Terra's roughest ground (found by scanning 4,000 directions for local roughness) and is **flat at 1.00 on the launch plain**. That last number is the useful one — it says the launch site genuinely has under a metre of relief per fifteen, and that no amount of correct shading will make it read as textured. Which is what the plants are for.
+
+**Plants.** ~5,600 tufts within 120 m, baked into the patch: one mesh, one draw call, no collision, rebuilt with the ground. Three tapered blades per tuft, both windings so a blade is never invisible from the side the culler happens to be on.
+
+The scatter is anchored to the PLANET, not the patch. Each tuft's lattice cell is `floor((anchorU + u) / spacing)` where `anchorU`/`anchorV` are the patch centre's absolute plate-carrée coordinates in metres — so re-centring the patch under a walking player leaves the grass exactly where it was growing. A field that reshuffles on every terrain rebuild is worse than no field.
+
+Where they grow is read off the ground rather than declared: the palette's own greenness (`g - (r+b)/2`) sets the density, the interpolated normal rejects anything steeper than about 28°, and anything at or below a metre of elevation is surf. Nothing has to be kept in step with the biome table because nothing duplicates it. Density thins with distance — cover within 25 m, texture beyond — and the tufts inherit the ground's baked shadow along with its colour.
+
+**A rim skirt.** The globe is a second ground surface under the patch (133 km between vertices at LOD 0, so a few kilometres of it is the interior of one triangle). It stays, because past the 1.5 km rim it IS the horizon — but at the rim the sheet simply stopped and the eye followed the cut down onto it. One ring of quads dropped from the border vertices, darkened like a cut bank: 4 × kCells triangles, half a per cent of the patch. Nothing else about the hidden surface needed changing, because the front-to-back batch sort plus the early depth test declared in `Mesh.frag` already reject its covered fragments before a single noise octave is evaluated.
+
+Patch cost at landing extent: 45 ms heightfield + 21 ms shading + ~2 ms scatter, ~141,000 triangles, on a pool thread at most once a second.
+
+### F6f — the aerodynamics pass, measured and cut by 4x (done)
+Written while producing `docs/Performance.md`, which is the point: the number only turned up because somebody timed it.
+
+`VesselAerodynamicsSystem` cost **283 us a tick on a 31-part vehicle** — 1.4 % of a 20 ms budget, harmless in itself, but quadratic in the part count and therefore a wall at KSP scale. The cost is one loop: every part's nine occlusion rays against every other part's boxes.
+
+The first rejection tried was the obvious one — is the box far from the ray's LINE — and it bought **11 %**. That is the useful measurement, because it says why: on a rocket every box hugs the same axis the airflow runs along, so almost nothing is off-line and the test almost never fires. The rejection that pays is **along the flow**: a box the ray reaches only after it has already struck the part it would have to shade cannot shade it, and flying nose-first that is half the vehicle. Together with moving two per-vessel scratch vectors off the stack and onto the system:
+
+| parts | before | after | |
+|---|---:|---:|---|
+| 7 | 13.3 us | 5.5 us | 2.4x |
+| 15 | 64.5 us | 21.4 us | 3.0x |
+| 31 | 282.9 us | 67.5 us | 4.2x |
+
+Extrapolated, 120 parts is ~1 ms (5 % of a tick) and 250 parts ~4.3 ms (22 %). The next lever, if it is ever needed, is to recompute exposure only when the flow direction has moved more than a degree or two — it changes slowly — which would take the dominant term down to a fraction of the ticks. Not done, because nothing asks for it yet.
+
+`docs/Performance.md` carries the full per-system table, the terrain patch breakdown, the geometry counts and where the ceilings are.
+
+### F6g — the crash the grass was blamed for (done)
+Reported as "the game crashes as soon as the grass is meant to appear". The grass was innocent; it was simply the next thing the same build produced.
+
+The rim skirt held REFERENCES into `mesh.vertices` — the two rim vertices it copies down — and then pushed onto that same vector. The vector had been `resize`d to exactly the ground grid, so capacity equalled size and **the very first push reallocated**, freeing the block those two references pointed into. Every read after it was a use-after-free.
+
+Why it presented as a grass bug rather than a permanent one: at 192 cells the freed block is 37,249 x 48 = **1,787,952 bytes**, well past glibc's mmap threshold, so `free` hands the pages back to the OS and the next read touches an unmapped address — a hard segfault, every time. The 192-cell grid is exactly the near-ground patch, which is exactly where the grass grows. Reproduced standalone under AddressSanitizer:
+
+```
+ERROR: AddressSanitizer: heap-use-after-free ... READ of size 48
+0x... is located 48 bytes inside of 1787952-byte region
+freed by thread T0 here: ... std::vector<Vertex>::push_back
+```
+
+The same reproduction with the two vertices taken BY VALUE is clean. That is the fix, plus a `reserve` up front so the appends never move what is already there, plus a stated fallback for the degenerate-edge normal that would otherwise have normalised a zero vector into NaN.
+
+Two guards went in with it, because this class of fault is invisible to the compiler and silent until a driver chokes:
+
+* the builder walks the finished mesh once for non-finite positions/normals and out-of-range indices, and REFUSES to hand over a mesh that has any — 0.3 ms against a 60 ms build;
+* the main thread's landing pad checks that the pending mesh is non-empty before creating a GPU buffer from it, because a zero-vertex buffer is its own kind of crash. A refused build simply leaves the patch already on screen where it is.
+
+The lesson is narrow and worth keeping: **nothing may hold a reference into a container it is about to append to.** `mesh.vertices[i]` re-subscripted per read is fine; a `const Vertex&` carried across a `push_back` is not.
+
+### F6h — the field stopped teleporting (done)
+Reported as "the grass appears all at once and disappears all at once when the player goes far enough". It was not a fade problem; it was a **re-centring** problem, and the two numbers involved were three orders of magnitude apart.
+
+The grass only exists within a disc around the PATCH CENTRE, and that centre only moved when the player had travelled 30 % of the patch extent — **450 m** at landing scale. The field's radius was **120 m**. So walking in a straight line: you leave the field, spend a few hundred metres on bare ground, and then the patch re-centres and an entire field arrives in one frame while the old one leaves in the same one.
+
+Thirty per cent of the extent is the right threshold for the GROUND: its vertices are computed from absolute body-frame directions, so the terrain surface is bit-identical before and after a re-centre and the rebuild is literally invisible. It is wrong by an order of magnitude for anything that only exists near the centre.
+
+Two changes, sized against each other:
+
+* **A patch that carries plants follows the player at the scale of the field** — `min(extent * 0.30, 40 m)`. The ground pays a 60 ms rebuild every 40 m instead of every 450 m: on a worker thread, against a patch already on screen, capped at one per second. Walking that is one rebuild every ten seconds (0.6 % of a core); at 40 m/s it saturates at one a second (6 %).
+* **The field reaches further than the patch moves.** Radius 120 m -> **260 m**, with the density thinned as an inverse power (`(30/r)^1.5`) instead of a ramp, and the height fade moved out to the last 18 %. Measured, the count barely changes — **6,082 tufts against 5,600** — for a field 4.7x wider, and the triangles go 140,928 -> 146,712. The scatter costs 2.5 ms instead of 0.2 (94,388 lattice cells walked instead of 20,107), which is nothing against a 60 ms build.
+
+The point of the sizing: a re-centre shifts every tuft's distance from the centre by at most 40 m, so the only tufts whose size can change in that one frame are those between 173 m and 260 m out. Measured there: a 0.6 m blade subtends **0.13-0.19 degrees — four to six pixels** at a 60-degree FOV on a 1920-wide screen, and the field has thinned to one tuft per 56-104 m^2. The pop is not eliminated. It is moved to where it cannot be seen, and the numbers say by how much.
+
+If the rebuild rate ever bites, the next step is to give the grass its own mesh and its own job reading the patch's cached height grid — re-centring the field would then cost ~3 ms instead of 60, independently of the terrain. Not done, because 60 ms every ten seconds on a pool thread is not a problem.
+
+### F6i — the upload spike, and why the field moved off the patch (done)
+Reported as a lag spike every time the grass is placed. It was mine, and it was a rate regression meeting a synchronous uploader.
+
+`VulkanMemory::uploadToBuffer` creates a staging buffer, records a one-shot copy, **submits it to the GRAPHICS queue and then blocks on a fence**. The wait therefore drains whatever that queue is already holding — up to a whole frame of GPU work — and it happens on the main thread, twice per mesh (vertices, then indices). That has always been true; it was invisible while the terrain patch re-centred every 450 m. Making the patch follow the grass at 40 m multiplied it by eleven, on a mesh that had also grown to 107,521 vertices, **5.8 MB**.
+
+The fix is structural rather than a tuning of the threshold: **the grass is its own geometry now**, built from the ground grid the patch already computed and kept for exactly this purpose (1.8 MB of vertices, copied into the job so a terrain rebuild landing mid-seed cannot pull the ground out from under it). That buys three things at once:
+
+* the ground goes back to re-centring at 450 m, so its 5.8 MB upload is rare again;
+* the field re-centres at 40 m, and a re-centre now uploads only the grass;
+* the grass is cut into **six chunks uploaded ONE PER FRAME** — 603 kB each against 5.8 MB, and the stall is divided by six and spread over six frames instead of landing on one.
+
+Chunks are assigned by hash, so the six come out within 7 % of each other (858 / 830 / 809 / 829 / 833 / 801 tufts) — the split is about balancing six uploads, not about what appears first, because the field is only ever shown complete: the new set fills the spare slot bank while the old one keeps drawing, and they swap when the last chunk lands. No gap, no partial field, no flicker.
+
+Building it from the patch's grid rather than resampling the heightfield is not an optimisation, it is the correctness condition: a second sampling would put the blades up to half a metre off the surface that is drawn, which on a 0.6 m blade is half the blade.
+
+Two latent faults went out with it: the slot sentinel was `0`, which is a legal mesh index, and an empty chunk cleared its slot handle rather than its validity flag — which would have grown the mesh table by one entry on every rebuild over bare rock.
+
+### F7 — multiplayer, from the wire up (done)
+
+No design was handed down for this one, so the decisions are stated here with the reasons, because every one of them closes doors.
+
+**Authoritative host, not deterministic lockstep.** Lockstep sends almost nothing and would have been tempting. It cannot work here, for three independent reasons: this engine cannot promise bit-exact floating point across machines (the physics lane sums forces over parts in archetype order, the aero tables are interpolated, and the compiler may contract a multiply-add — one bit of divergence compounds into two different worlds within minutes, invisibly); nobody could join a game already running, because there would be no state to hand them; and time warp would have to be unanimous. So the host simulates, clients mirror, and what a client sends back is INTENT — "pitch up, throttle 60 %" — never state. That is also the whole anti-cheat story: a client that lies about its inputs flies badly, and that is all.
+
+**The mirror carries the host's entity indices exactly.** The obvious alternative — a network id per entity, mapped to a locally allocated one — dies on the first component that stores an entity handle, and this game is full of them: a conveyor names its body and its link, a cable names its two poles, a cloud deck names its planet, a part names its vessel. Nothing declares which fields are handles, so nothing can rewrite them. The save file reached the same conclusion years ago and restores indices exactly for exactly this reason; replication just does it incrementally, through one new ECS primitive (`World::mirrorEntity`) and type-erased component access, because a mirror learns its component types at runtime from a table the host sends.
+
+**A delta is diffed against the last snapshot the client ACKNOWLEDGED, never the last one sent.** On a lossy link those differ, and diffing against something the client never received produces a world that is wrong and stays wrong. Diffing against the last confirmed state means a lost snapshot costs bandwidth (the next one carries more) and nothing else — there is no repair path because there is nothing to repair. A snapshot naming a baseline the client does not hold is refused whole, without touching the world.
+
+**Change detection is a memcmp.** Components are trivially copyable by ECS rule, so "did this change" is a byte comparison: no per-component code, no dirty flags, and no chance of a system forgetting to raise one. The one place bytes are not enough is a RECYCLED entity index — same index, new generation, and possibly identical bytes. That entity is forced to resend everything, because the mirror has to throw the old occupant away wholesale; a plain byte diff would have left an empty entity carrying somebody else's links. There is a test that fails without it.
+
+**Two delivery services over one UDP socket.** State deltas are unreliable and sequenced: a lost one is worthless because a newer one exists, and resending it would deliver stale truth behind fresh truth. Everything else — handshake, world transfer, pilot input, disconnect — is reliable ordered, with a 32-datagram window (not a tuning knob: the acknowledgement is one sequence plus a 32-bit field covering the 32 before it, so anything further back would fall out of every future ack and resend forever). TCP was not an option precisely because it forces ordering on the half that must not have it.
+
+**Which channel a datagram rode is on the wire, not inferred from its type.** This was a bug before it was a decision. A Snapshot is normally unreliable, but one too large for a single datagram is promoted to the reliable channel so it can be fragmented — and the receiver, deciding by message type alone, handed each fragment upward as a whole snapshot. One flag bit fixed it. A fragmented message takes CONSECUTIVE reliable sequences, so reassembly is just walking the channel in order: no reassembly table, no message-id bookkeeping, and no way to hand up half a message.
+
+Two smaller ones, both found by writing the tests: a peer that has received nothing must not appear to acknowledge datagram zero (zero is a legal sequence number, so the ack fields need a validity bit), and the snapshot beat is PER PEER — a global timer fired again milliseconds after a client was accepted mid-beat and sent it a second full snapshot, 45 kB the client correctly refused.
+
+**Measured** (`Tools/NetProbe`, real UDP sockets, real component layouts): a 100-entity co-op world costs **606 B per delta, 14.7 kB/s downstream, 1.6 kB/s up**, and the delta fits in one datagram, so state really does ride the unreliable channel. A 500-entity world with twenty craft under thrust costs 2,316 B and 56.6 kB/s. The encoder costs 5 µs per snapshot at 100 entities, 26 µs at 500, 112 µs at 2,000 — at twenty snapshots a second that is 0.2 % of one core for a busy session. A joining client has the whole world in its mirror **0.9 ms** after connecting on loopback (45 kB transferred reliably and fragmented). The whole stack is tested against a simulated wire with seeded loss and jitter — 20 % loss with reordering, four seconds, and every mirrored value still agrees with the instant the client believes it is looking at, to 1e-9.
+
+**What is deliberately not here.** No interest management: every client is sent every replicated entity, which is why the 500-entity delta needs three datagrams instead of one. That is the next thing to build and the game design already argues for it — a player on Terra does not need Luna's base at twenty hertz. Nothing is wired into the game layer yet either: no player avatars, no command vocabulary, no host/join UI. This milestone is the wire, proved.
+
+### F8 — a menu for the session, and a clock each (done)
+
+The question this milestone answers is the one that decides whether time warp and multiplayer can exist in the same game: **whose clock is it?**
+
+**Everybody's own.** A player warps because *they* are waiting for an apoapsis; the player landing a rocket elsewhere is not. Dragging the session forward would make warp a thing you negotiate, and the alternative — forbidding it — is worse. So nobody is dragged, and two players can legitimately sit hours apart.
+
+**What crosses the gap is a STAMPED action.** Not "this happened", but "this happened AT INSTANT T". A receiver whose clock has not reached T holds it, unopened, and it lands for them at exactly the moment it landed for its author. No world is rewritten and no world runs ahead of itself. `Network/Timeline.hpp` is thirty lines of queue and the whole model. The case it cannot cover is an event stamped in the local past — a player *behind* you acting, or a very late packet — where nothing short of rewinding the simulation would place it correctly; it lands at once and is **counted**, and that count is the honest diagnostic for "these two should have synced first".
+
+**Time warp stopped being free.** Past ×5 the integrator is off and the world is analytic, which is exact when the motion already IS a conic clear of the air and fiction otherwise. The old gate was ALTITUDE, and altitude answers a different question: it happily permitted ×10,000 on a trajectory whose next event was the ground. `phys::warpPermitted(grounded, closedOrbit, periapsisAltitude, atmosphereTop)` is the rule, in the engine so it can be tested without a window, and the flight state it reads is computed **once per frame before anything consumes it** — the warp control runs at the top of the frame and the HUD at the bottom, and two independent computations of "am I in a stable orbit" would eventually disagree.
+
+**The catch-up warp bypasses the ladder and not the rule.** Closing a three-hour gap from a 200 km orbit at the altitude-capped ×100 takes a real hour, so nobody would press it; SYNC goes to ×10,000,000. It still requires an orbit or the ground, because that requirement is about whether the world can be faked at all, not about how fast. Measured on the real servo (largest rung under half the remaining time, re-chosen every frame): **3 hours closes in 45.7 s, one day in 61.6 s, one year in 109.9 s**, overshoot under 0.03 s, and the numbers are the same at 30 fps as at 60 — the servo reads the time remaining, not a key count.
+
+**The engine had no text input.** No `glfwSetCharCallback` anywhere, no character path, no buffer. Typed characters now arrive as CHARACTERS — through the keyboard layout, the dead keys and the shift state, which is not what a key code is on any layout but a US one — latched per frame exactly like the key-press events and cleared in `newFrame()`. While a field has focus, every gameplay key in `onUpdate` asks through one predicate rather than each guarding itself, so adding the next field cannot silently leave a key live underneath it. The panel toggles on **F3**: `N` was already maneuver-node creation, and every letter within reach is a flight control.
+
+**Found in a picture, before the code ran.** The panel's height comes from the roster length; a mock of the layout — the same NDC arithmetic and the same glyph advance, rendered to an image and looked at — put the footer verdict *outside* the panel. Five fixed rows, not four. That is a screenshot's worth of debugging paid for with a python script.
+
+**What is deliberately not here.** The client's mirror world is kept separate from the live world rather than merged: this build does not yet draw other players' craft, and decoding a remote world into the local one would fight the local simulation for every entity. The one event kind on the wire is a stamped position beacon, which exercises the timeline on real traffic; staging, construction and the rest of the vocabulary join it at the same seam. And the roster is sampled at 4 Hz, so a SYNC lands a fraction of a second short of a player who is still moving — the button simply reappears.
+
+### F9 — you start on foot, and a rocket has to be paid for (done)
+
+The starting rocket, the asteroid and the eight orbital cubes are deleted. What survives is the outpost on Terra, which was always the interesting half and was always decorative next to a vehicle the player was simply given.
+
+**The rule.** A vessel exists in this world only because an assembly hall was handed a design and the metal to build it. The hangar's `BUILD` — one click, a finished vehicle out of nothing, no cost, no pad, no queue — was a door in the side of the factory, and everything the mine, the smelter, the belts and the grid produce could be had for free by pressing it. It is now `ORDER`: it writes and registers the design, then queues it at the nearest hall, which pays in iron and copper at its own rate out of its own bin and ships the hull down the belt to a pad. The in-place "rebuild this vessel" mode went with it; the hangar creates nothing at all now, which is the only version of the rule with no seam in it.
+
+Measured (`AssemblySystem` driven directly, shipped catalogue, the outpost's own seeded stock): **STARLING costs 2,950 kg iron + 450 kg copper and takes 85 s at full power**; the VAB is seeded with 3,000 and 500, i.e. **exactly one rocket**, and with the copper removed the order stalls at **87 %** with the surplus iron left in the bin where a smelter can route it elsewhere. There is no standing order at start-up either — seeding one would have re-created the rocket that had just been deleted a hundred lines above.
+
+**On foot became the normal state**, and that is a bigger change than it sounds. `controlledEntity()` used to fall back to the ship; it now falls back to the SUIT, which is created with the world and never destroyed. Everything downstream — the HUD, the chase camera, the terrain patch focus, the simulation bubble, the trajectory prediction — dereferences that without checking, and there is now no ship for it to find on frame one.
+
+The crashes that had to be closed, all of them latent the moment a rocket stopped being guaranteed: the ship's control block and the throttle readout dereferenced `m_shipEntity` unconditionally, once per frame each; `toggleEva` spawned the suit *relative to the ship*, so there was no way to be on foot without first being in a cockpit; `cyclePilotedVessel` refused to act below two vessels, which meant the first rocket ever built could never be boarded; and the hangar key required `!m_evaMode`, putting the design tool behind a vessel obtainable only through the design tool.
+
+**The suit spawns at 464.62 m/s.** Fourteen metres north of the hub, two metres above its own ground, carrying Terra's orbital velocity plus its spin at that point — the site is on the equator, so the spin term is the full 465 m/s. Spawned at rest in the world frame it would watch the ground leave at half a kilometre a second, which is the same carrier-velocity rule that governs every landed craft in this engine. Measured alongside it: the ground steps 0.09 m across those fourteen metres and at worst 0.35 m within twenty, so the suit lands on flat ground outside the hub's hull rather than inside its floor.
+
+`P` boards the nearest vessel rather than cycling a list — cycling is the right verb when you are already flying and want the other rocket, and the wrong one when you are standing next to exactly one. `G` steps back out beside the vessel and co-moving with it. Staging on foot is refused: it would fire a decoupler on a vehicle the player is not aboard and may not be able to see.
+
+### F9b — the hangar draws, the VAB builds (done)
+
+F9 made the VAB the only door a vessel can come through and then left a second verb on the hangar's own action row. Two rooms now have one verb each.
+
+**The hangar saves a design, on the press, and does nothing else.** `SAVE` writes the `.swship` and registers it; there is no autosave, because a drawing office that wrote a file on every part placed would fill the catalogue with forty near-identical rockets. The manufacturing button is gone, and so is the "rebuild this vessel in place" path that sat behind the same call — that one also spawned parts for free, just more quietly.
+
+**The VAB's panel became a catalogue.** Designs down the left; on the right the selected one, drawn in 3D and turning, with part count, dry mass, each metal's cost against what is actually in the bin, the build time at full power, and a `PRODUCE` button. A row click SELECTS. Ordering is one deliberate press beside the price and the picture — the old behaviour ordered a rocket as a side effect of reading the list.
+
+**Solid geometry inside a HUD panel needed a second pipeline.** The screen-space pass has no depth buffer and no culling, which is right for flat panels and hopeless for a solid. `DrawItem::hudSolid` routes to a pipeline identical to the HUD's but for one flag — back faces culled — which is a complete hidden-surface solution for a convex part, and the caller sorts the parts back-to-front among themselves. The two pipelines interleave inside the HUD batch list in painter's order, so the model draws on its panel and under the text; the bind happens where the flag changes, twice a frame for one preview.
+
+**The handedness is the trap, and it is not a matter of taste.** The camera negates Y once, at the source (`Camera.cpp`: `m_projection[1][1] *= -1`), and the counter-clockwise front-face convention was settled empirically against that. A preview transform with no flip — or with two — presents the opposite winding and culls exactly the faces that should be kept: the rocket renders inside out. So the transform is a proper rotation times a scale with a NEGATIVE Y, and that is written into the `hudSolid` comment as a requirement rather than left to be rediscovered.
+
+Verified numerically, over a full turn, because it cannot be verified by eye without a window: determinant **negative**; worst overflow past the preview box **−0.014 NDC**, i.e. always inside; one metre of design spans **14.98 px across and 14.98 px down**, so nothing is stretched; the depth sort is monotone. Framing fits the shape and not its bounding sphere — a rocket is long and thin, and the sphere fit gave up a third of the available height (152 px of a 205 px box) for a width nothing occupied; the axis-aware fit gets 188.
+
+### F9c — on foot properly, and a check on the rocket that would not fall (done)
+
+**The jump was a one-frame edge feeding a fixed-rate consumer.** `ShipControlsComponent` is cleared and rewritten once per rendered frame; `CapsuleMovementSystem` reads it on the physics lane at 50 Hz. Above 60 fps most frames tick that lane zero times, so roughly one press in three was overwritten before anything could act on it. It is a latch now, cleared only once `advance()` has actually run a physics tick. Double-firing is prevented by the walker itself, which clears `isGrounded` as it jumps.
+
+That failure mode is general and worth naming: **any edge written by the frame loop into a component consumed by a fixed-step lane must be a latch, not a pulse.** Staging, docking and every future one-shot input has the same shape.
+
+**`E` is one ray with two answers.** It used to scan only buildings; it now scans building hulls and part hulls in the same cast and returns the nearest hit, and the caller decides — a machine opens its panel, a vessel gets boarded. Casting twice and comparing afterwards would be two answers to one question.
+
+**Walk speed 4 -> 8 m/s.** The outpost is 200 m across.
+
+**The rocket that leaned and would not fall — measured, not argued.** A probe stood the shipped design on the real launch site, with the real terrain, the real `GroundHullComponent` and the game's own systems (including `ThrustSystem`, which turns out to be the only thing in the build that integrates `DynamicBodyComponent::angularVelocity` into a rotation, gated on `ShipComponent`):
+
+* 0 deg -> 0.25 deg, 8 deg -> 8.00 deg, **15 deg -> 14.99 deg**, **30 deg -> 88.43 deg** after 60 s. The statics put this hull's threshold at **15.1 deg**, and the measurements straddle it exactly.
+* The warp path: frozen at 67.8 deg mid-topple by the bubble's surface anchor, held there for the whole warp, back to 91.1 deg sixty seconds after release.
+
+So nothing is broken. What is wrong is that both correct behaviours are illegible — a rocket leaning fourteen degrees on its own base and a rocket frozen by warp look identical to a rocket the physics has forgotten. The HUD now prints `LANDED  LEAN n DEG  RESTING|TIPPING`, computed from `phys::topplingAcceleration` — the very function the ground contact uses — so the readout cannot drift from the behaviour it describes.
+
+**And a lesson about the probe.** Its first run showed the rocket climbing 40 m and never settling, which looked exactly like the reported fault and would have been reported as one. The harness never advanced Terra's spin angle, so the terrain was sampled in a frozen body frame while the craft co-rotated at 465 m/s — nine kilometres of stationary landscape dragged under it every minute. A measurement rig that does not reproduce the systems around the thing under test measures the rig.
+
+### F10 — shipping it, and reaching it across the room (done)
+
+Two failures with the same shape: the code was right and the machine refused to run it, and in both cases the refusal happened *before* anything of ours executed, so there was nothing to read.
+
+**`build\windows\bin\Debug\StarWorks.exe` runs on the machine that built it and on no other.** A Debug build links the debug C++ runtime — `vcruntime140d.dll`, `msvcp140d.dll`, `ucrtbased.dll` — and Microsoft does not redistribute those; they ship with Visual Studio and with nothing else. Windows refuses to create the process, so there is no log, no message box and no clue. `SW_STATIC_RUNTIME` links the runtime statically and is set **before** `include(Dependencies)`, because glfw compiles with whatever `CMAKE_MSVC_RUNTIME_LIBRARY` says at declaration time and a mismatch is a link error rather than a warning. `package.ps1` turns it on, builds RelWithDebInfo, and stages the exe with the shaders and assets taken *from beside the built binary* rather than from the source tree — so the folder contains exactly what was compiled, including the `.spv`, and never a shader edited since.
+
+**A LAN game needs nothing from the router and everything from the host's firewall.** The asymmetry is the whole story: the joining side sends first, so its reply arrives through the flow its own packet opened and no rule is needed. The host only ever waits to be spoken to, and Windows Defender drops the unsolicited `ConnectRequest` that would start the conversation. The client then retries until it gives up. Neither end has anything to say about it — the host's process never saw a byte.
+
+So the game now says which of the two timeouts it is. `NO REPLY - CHECK FIREWALL` when `datagramsReceived` is still zero: nothing at that address ever answered, and the cure is a rule, an address or a host. `TIMED OUT - LINK LOST` when datagrams did arrive and then stopped: a real network fault, and the firewall rule is useless against it. One counter separates two problems whose fixes have nothing in common.
+
+**The game asks for the rule itself, and is never the thing that gets elevated.** Pressing `HOST` is the only moment in the game that needs an unsolicited inbound datagram and the only moment at which asking for administrator rights is explicable, so that is where the prompt lives. Two constraints shape it:
+
+* *Ask only when there is something to ask for.* Reading the firewall needs no privileges, so `INetFwPolicy2` is queried in-process first and the prompt only appears when no enabled inbound Allow rule covers this executable. A UAC prompt on every press of HOST would teach the player to click through it, which is how a UAC prompt stops being a security feature.
+* *Elevate a helper, not the game.* `ShellExecuteEx` with the `runas` verb runs one hidden `netsh` that adds the rule and exits. A game running as administrator writes every save, log and crash dump as administrator and refuses drag-and-drop from Explorer — a permanent cost for a one-time configuration change. `netsh` rather than PowerShell: present on every edition including Home, subject to no execution policy, and no script host flashing a console.
+
+`ERROR_CANCELLED` is reported as `Declined`, not as a failure — dismissing a UAC dialog is a decision, and dressing it up as an error invites a retry loop. Hosting continues either way, and the panel says so. The exit code is not trusted on its own either: the firewall is re-read afterwards and the result reports what is actually there. The rule is matched and created **by executable path rather than by port**, so it survives a port change, opens nothing else on the machine, and recognises a rule Windows created through its own prompt as already sufficient — `firewall.ps1` creates the identical rule, so using the script means the game never asks.
+
+The panel's firewall verdict is a line of its own rather than a suffix on the status. Measured before writing it: `HOSTING ON 192.168.1.61:7777 - FIREWALL REFUSED` is **0.725 NDC** wide at the status size against **0.494** of usable panel width. That is the third HUD overflow this project has caught by arithmetic instead of by looking at it.
+
+**`net::localAddress(port)` asks the routing table rather than listing adapters.** A UDP socket is connected to 8.8.8.8:53 and immediately asked, via `getsockname`, which source it *would* use — nothing is transmitted, because `connect()` on a datagram socket only fixes a destination. A developer machine with Docker, WSL, a VPN and a Bluetooth PAN has half a dozen addresses and exactly one of them is the answer; enumerating them and guessing is how you end up telling the other player to type a bridge address. The host panel prints the result, so nobody reads it out of `ipconfig`. `firewall.ps1` adds the inbound rule on Private and Domain only, deliberately not Public, and its `-Check` mode reports the address, the rule and the network profile without changing anything — Public blocks inbound whatever the rule says, and Windows picks Public silently for any network you never answered the discoverability prompt for.
+
+### F10b — the silence, told apart (done)
+
+A firewall rule was added and the client still said `NO REPLY`. Ping between the two machines returned nothing either. Neither observation means what it looks like it means, and that is the whole lesson of this entry.
+
+**Ping is not evidence.** Windows Defender ships the inbound ICMP echo rule *disabled*, so two PCs on the same switch refuse to ping each other by default. A failed ping is the expected reading of a working network. `netcheck.ps1 -AllowPing` adds the rule when you want ICMP as a diagnostic, and the script says out loud that the game does not need it.
+
+**Three causes wore the same face.** From the client, a firewall eating the packet, a wrong address, and a host that received the packet and threw it away are one symptom. Only the host can separate them, and until now it dropped strangers with a bare `continue`. `Host::Reception` counts what reached the socket before any of it was believed: `arrived`, `fromStrangers`, `refused`, `wrongVersion` (with the offending version), `notOurs`. The `F3` panel shows `RX n REFUSED n` and a verdict; `RX` at zero while someone is trying is a completely different problem from `RX` climbing alongside `REFUSED`.
+
+**The version mismatch deserved its own counter.** `readHeader` rejects a datagram whose version is not ours, silently, before anything else — so two machines running two different builds produce exactly the symptom of a blocked port. The header's first six bytes are read by hand at the drop site precisely because the point is to see the values `readHeader` refused. It is logged once per distinct version rather than per datagram.
+
+**A rule can be present and inert.** The rule covers Private and Domain; a Public network profile blocks inbound however many rules exist, and Windows assigns Public in silence to any network whose discoverability prompt was never answered. `onPublicNetwork()` reads `INetFwPolicy2::get_CurrentProfileTypes` — a mask, not a value, because a machine can be on several networks at once and the one the other player is reaching may be the Public one. The panel says `NETWORK IS PUBLIC - RULE INACTIVE`, which is the most confusing state this feature can be in and the one no tool that lists rules will reveal.
+
+**And an instrument that is not one of the suspects.** `netcheck.ps1` sends and receives plain UDP with nothing of ours in it, in pairs across the two machines, and the listener answers so the sender learns whether the path works *in both directions* — a firewall is one-way, and the return trip is the half that usually works. It prints each address with its prefix length and consults ARP, because two machines on different subnets, or one behind a router with client isolation, will never reach each other whatever is written into either firewall. If that script works and the game does not, the game is at fault; if it fails too, the game never had a chance. Its socket logic was run end to end before shipping, one process to another.
+
+### F10c — the project does not know where it lives (done)
+
+The whole tree moved from one drive letter to another and `launch.ps1` broke on its **first line**, which was `cd F:\StarWorks`. Nothing else in the project broke, which is the interesting part: the C++ already resolved every asset, shader and save from `FileSystem::executableDirectory()`, and CMake from `${CMAKE_SOURCE_DIR}`. One convenience line, written once, was the entire failure.
+
+The rule now: **nothing assumes where the project lives.** Scripts resolve from `$PSScriptRoot`, CMake from its own source dir, the game from its own executable, and anything that genuinely needs the source root asks `FileSystem::projectRoot()`.
+
+**`projectRoot()` looks for a marker, not for a level count.** It walks up from the executable for a directory carrying `CMakeLists.txt` **and** `Assets/` together. The pair matters: Part Studio's old write-back climbed a fixed five levels looking for any folder named `Assets/Parts`, and from a project at `G:\StarWorks` five levels reaches the drive root — so a stray `G:\Assets\Parts` would have been silently written into. The walk is bounded by the filesystem instead, stopping when `parent_path()` stops moving, which is what a root does on both Windows and POSIX. It returns **empty** for a packaged build, and that is the correct answer rather than an error: `dist\StarWorks\` deliberately ships no source tree, and a caller treating "no root" as a failure would break the shipped game to serve the developer's convenience.
+
+**A rule nobody checks lasts about a week**, so `PortabilityTests.cpp` walks the source tree and fails on any drive-letter path in a `.ps1`, `.cpp`, `.hpp`, `.cmake`, `.json` or `.txt` file. Whole-line comments are skipped, because the files that *explain* the rule have to be able to name the paths they ban; a path in a comment trailing real code is still flagged, since deciding where a comment starts on a mixed line means parsing string literals, and a matcher needing a parser is a matcher nobody trusts. Markdown is out of scope — `-Exe <path>\StarWorks.exe` in a document illustrates a path the *user* supplies, which is what documentation is for. The guard was verified in both directions: it caught the seven explanatory comments on its first run, and after the comment rule it was proven again by planting `$broken = "G:\StarWorks\build"` in `launch.ps1`, watching it fail by name and line, and removing it.
+
+The last absolute path in the tree was not in any file the build reads: a `StarWorks - Raccourci.lnk` sitting in the root, still pointing at `F:\StarWorks\build\windows\bin\Debug\StarWorks.exe`. A Windows shortcut stores an absolute target and cannot be made relative, so it is replaced by `StarWorks.cmd`, where `%~dp0` is the batch equivalent of `$PSScriptRoot`: it finds the executable itself, preferring the packaged folder over the development builds, and runs it from its own directory so `Shaders\` and `Assets\` resolve. The guard scans `.cmd` and `.bat` too, and its comment rule learned `rem` — with the trailing space required, because `remove` is not a comment and batch agrees.
+
+`launch.ps1` was rewritten around that: `$PSScriptRoot`, `-S`/`-B` rather than `--preset` so it cannot silently depend on the caller's working directory, configure only when there is no cache, and `-Clean`/`-Release`/`-Test`/`-NoRun`/`-GameArgs`. Its parameter is `-GameArgs` and not `-Args` because `$Args` is a PowerShell automatic variable and declaring it in `param()` is a syntax error rather than a warning.
+
 ### Milestone 32+ — candidates (remaining)
-F4 exploitation UI, part fabrication and real conveyor transport. Also: impact-driven joint breakage (fields ready), per-Mach aero tables (the format has room; the runtime call site would not change), reentry heating driven by the same dynamic pressure, control surfaces that deflect, placeholder cleanup, multiplayer groundwork.
+F4 exploitation UI, part fabrication and real conveyor transport. A rename field for designs (the character path exists now). Fuel and crew as build inputs rather than pad stock. Also: impact-driven joint breakage (fields ready), per-Mach aero tables (the format has room; the runtime call site would not change), reentry heating driven by the same dynamic pressure, control surfaces that deflect, placeholder cleanup. Multiplayer next steps: interest management (per-client relevance by distance and attachment), drawing other players' craft from the mirror world, the rest of the stamped-event vocabulary (staging, construction, resource transfer), and client-side interpolation between snapshots.

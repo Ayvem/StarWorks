@@ -16,10 +16,19 @@ namespace sw
         m_keysPrevious = m_keys;
         m_mouseButtonsPrevious = m_mouseButtons;
         m_keyPressedEvents.fill(false);
+        m_charCount = 0;
         m_mousePressedEvents.fill(false);
         m_mouseDeltaX = 0.0f;
         m_mouseDeltaY = 0.0f;
         m_scrollDeltaY = 0.0f;
+    }
+
+    void Input::handleChar(u32 codepoint)
+    {
+        if (m_charCount < kMaxCharsPerFrame)
+        {
+            m_charsTyped[m_charCount++] = codepoint;
+        }
     }
 
     bool Input::isKeyDown(KeyCode key) const

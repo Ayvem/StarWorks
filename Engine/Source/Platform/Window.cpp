@@ -181,6 +181,14 @@ namespace sw
             }
         });
 
+        glfwSetCharCallback(handle, [](GLFWwindow* w, unsigned int codepoint) {
+            auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+            if (self != nullptr && self->m_callbacks.onChar)
+            {
+                self->m_callbacks.onChar(static_cast<u32>(codepoint));
+            }
+        });
+
         glfwSetMouseButtonCallback(handle, [](GLFWwindow* w, int button, int action, int mods) {
             auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
             if (self != nullptr && self->m_callbacks.onMouseButton)

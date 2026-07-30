@@ -1,0 +1,19 @@
+{
+  "id": 4,
+  "name": "Iron Smelting",
+  "requiredCategory": "refinery",
+  "inputs": [
+    {
+      "resource": "IronOre",
+      "unitsPerSecond": 3.0
+    }
+  ],
+  "outputs": [
+    {
+      "resource": "Iron",
+      "unitsPerSecond": 1.8
+    }
+  ],
+  "powerKw": 120.0,
+  "massLossFraction": 0.4
+}

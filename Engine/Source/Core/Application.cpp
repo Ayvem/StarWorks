@@ -97,6 +97,7 @@ namespace sw
         callbacks.onKey = [this](i32 key, i32 /*scancode*/, i32 action, i32 /*mods*/) {
             m_input.handleKey(key, action);
         };
+        callbacks.onChar = [this](u32 codepoint) { m_input.handleChar(codepoint); };
         callbacks.onMouseButton = [this](i32 button, i32 action, i32 /*mods*/) {
             m_input.handleMouseButton(button, action);
         };

@@ -51,7 +51,6 @@ namespace game
         /// SuRFace-relative speed readout.
         constexpr sw::WorldVec3 kTerraAngularVelocity{0.0, 7.2921e-5, 0.0};
 
-        constexpr sw::u32 kStationModuleCount = 8;
 
         constexpr sw::f64 kBubbleEnterRadius = 1.0e4; // 10 km
         constexpr sw::f64 kBubbleExitRadius = 1.5e4;  // 15 km (hysteresis)
@@ -175,7 +174,12 @@ namespace game
         /// PHYSICS WARP: the world stays fully simulated (drag, thrust,
         /// collisions) up to this time scale; beyond it everything rides
         /// analytic rails. Integration at 50 Hz stays stable to x5.
-        constexpr sw::f32 kMaxPhysicsWarp = 5.0f;
+        /// The one event kind this build speaks: "my craft was here, at this
+    /// instant". Everything else a player does will join it here, and the
+    /// Timeline treats them all the same way.
+    constexpr sw::u32 kNetEventBeacon = 1;
+
+    constexpr sw::f32 kMaxPhysicsWarp = 5.0f;
 
         [[nodiscard]] sw::f32 maxWarpForAltitude(sw::f64 altitudeMeters)
         {
@@ -203,7 +207,6 @@ namespace game
         constexpr sw::f32 kLodScreenFractions[CelestialLodComponent::kLodLevels - 1] = {
             0.5f, 0.15f, 0.04f, 0.008f};
 
-        constexpr sw::f32 kCubeBoundsRadius = 0.8660254f;
         constexpr const char* kGlyphCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,-+/%:";
 
         [[nodiscard]] sw::MeshData buildMarkerMesh()
@@ -345,6 +348,27 @@ namespace game
             constexpr sw::Vec4 kRowOnHover{0.16f, 0.60f, 0.37f, 1.0f};
             constexpr sw::Vec4 kRowStop{0.44f, 0.15f, 0.15f, 1.0f};
             constexpr sw::Vec4 kTitle{0.97f, 0.99f, 1.0f, 1.0f};
+        /// A signed span of simulation time, at whatever unit makes it
+        /// readable. Used for "how far ahead is this player", where the
+        /// answer is anywhere from four seconds to four days.
+        [[nodiscard]] inline std::string signedDuration(sw::f64 seconds)
+        {
+            const char* sign = (seconds < 0.0) ? "-" : "+";
+            const sw::f64 magnitude = std::abs(seconds);
+            if (magnitude >= 86400.0)
+            {
+                return std::format("{}{:.1f} D", sign, magnitude / 86400.0);
+            }
+            if (magnitude >= 3600.0)
+            {
+                return std::format("{}{:.1f} H", sign, magnitude / 3600.0);
+            }
+            if (magnitude >= 60.0)
+            {
+                return std::format("{}{:.0f} MIN", sign, magnitude / 60.0);
+            }
+            return std::format("{}{:.0f} S", sign, magnitude);
+        }
             constexpr sw::Vec4 kText{0.91f, 0.95f, 1.0f, 1.0f};
             constexpr sw::Vec4 kTextDim{0.64f, 0.75f, 0.88f, 1.0f};
             constexpr sw::Vec4 kOk{0.42f, 0.95f, 0.55f, 1.0f};
@@ -777,11 +801,18 @@ namespace game
         buildSaveSchema();
         m_celestialIndex.rebuild(m_world);
 
-        const sw::WorldVec3 stationCenter =
-            m_world.getComponent<TransformComponent>(m_terraEntity).position +
-            sw::WorldVec3{0.0, 0.0, kStationOrbitRadius};
-        m_cameraController.setPose(stationCenter + sw::WorldVec3{0.0, 250.0, 2000.0}, 0.0f,
-                                   -0.08f);
+        // The FREE camera's parking spot (Tab). It used to look at the
+        // orbital station, which no longer exists; it now sits above the
+        // outpost the player is standing in, so pressing Tab on the first
+        // frame does not fly the view to empty space.
+        {
+            const sw::Vec3 siteUp = terraStartSite();
+            const sw::WorldVec3 terraCentre =
+                m_world.getComponent<TransformComponent>(m_terraEntity).position;
+            m_cameraController.setPose(
+                terraCentre + sw::WorldVec3(siteUp) * (kTerraRadius + 220.0), 0.0f,
+                -0.35f);
+        }
 
         // ---- simulation lanes ---------------------------------------------------
         m_physicsLane = m_simulation.findLane("Physics");
@@ -1063,23 +1094,6 @@ namespace game
         const sw::u32 cloudMeshId =
             registerMesh(renderer().createMesh(buildCloudShellMesh()));
 
-        sw::u32 asteroidMeshId = 0;
-        sw::f32 asteroidBoundsRadius = 2.5f;
-        try
-        {
-            asteroidMeshId = registerMesh(renderer().createMesh(sw::GltfLoader::loadMesh(
-                sw::FileSystem::resolve("Assets/Models/asteroid.glb"))));
-        }
-        catch (const sw::Exception& e)
-        {
-            SW_LOG_WARN("Game", "Asteroid asset unavailable ({}); using procedural sphere",
-                        e.message());
-            asteroidMeshId = registerMesh(renderer().createMesh(
-                sw::PrimitiveFactory::makeUvSphere(1.0f, 24, 32, {0.45f, 0.41f, 0.38f, 1.0f})));
-            asteroidBoundsRadius = 1.0f;
-        }
-        const sw::u32 moduleMeshId = registerMesh(renderer().createMesh(
-            sw::PrimitiveFactory::makeCube(1.0f, {0.75f, 0.78f, 0.82f, 1.0f})));
         // The F2 overlay's box: a UNIT cube (half extent 0.5), scaled to
         // each hull box. White, so the tint alone decides how it reads.
         m_hullBoxMeshIndex = registerMesh(renderer().createMesh(
@@ -1144,7 +1158,6 @@ namespace game
             SW_LOG_INFO("Game", "Cable part: {:.2f} m span segment", m_cableSegmentM);
         }
 
-        const auto& partMeshIds = m_partMeshIds;
         // THE PLAYER IS A PART. First person or not, you are visible to
         // yourself in the map, to a future second player, and in every
         // screenshot taken from the ship — and a capsule primitive said
@@ -1487,21 +1500,16 @@ namespace game
                           -siteEast));
             if (!vabEntity.isNull())
             {
-                // Enough metal for the first hull, and an order standing.
-                // Same reasoning as the half-charged battery bank: the
-                // starting outpost demonstrates the loop once, and everything
-                // after that has to be fed by the factory.
+                // Enough metal for a first hull, and NO order standing. The
+                // outpost is stocked, not started: the player designs
+                // something in the hangar and orders it, which is the whole
+                // loop this milestone exists to make mandatory. Seeding an
+                // order here would just re-create the starting rocket that
+                // was deleted a hundred lines above.
                 auto& bin =
                     m_world.getComponent<sw::factory::InventoryComponent>(vabEntity);
                 sw::factory::inventoryAdd(bin, sw::res::Resource::Iron, 3000.0);
                 sw::factory::inventoryAdd(bin, sw::res::Resource::Copper, 500.0);
-                if (const sw::parts::ShipBlueprint* first =
-                        sw::parts::blueprintCatalog().empty()
-                            ? nullptr
-                            : &sw::parts::blueprintCatalog().front())
-                {
-                    orderVehicle(vabEntity, *first);
-                }
             }
             if (!padEntity.isNull())
             {
@@ -1629,204 +1637,77 @@ namespace game
             }
         }
 
-        // ---- asteroid: dynamic body + mining site ---------------------------------
-        sw::ecs::Entity asteroidEntity{};
+        // ---- THE PLAYER: on foot, at the base --------------------------------
+        //
+        // There is no starting rocket any more, and that is the point. A
+        // vessel exists in this world only because a VAB was given a design
+        // and the iron and copper to build it; handing the player one at
+        // start-up made the entire assembly line decorative.
+        //
+        // So the player starts as a suit standing on the pad apron at TERRA
+        // ALPHA. On foot is the NORMAL state now — piloting is something you
+        // board, not something you begin in.
         {
             const sw::ecs::Entity e = m_world.createEntity();
+
+            // Ten metres north of the hub, on the ground, in the same tangent
+            // frame every building was laid out in.
+            const sw::Vec3 siteUp = terraStartSite();
+            const sw::Vec3 siteEast =
+                glm::normalize(glm::cross(sw::Vec3{0.0f, 1.0f, 0.0f}, siteUp));
+            const sw::Vec3 siteNorth = glm::cross(siteUp, siteEast);
+            const sw::Vec3 standDirection = glm::normalize(
+                siteUp + siteNorth * (14.0f / static_cast<sw::f32>(kTerraRadius)));
+
+            sw::f64 elevation = 0.0;
+            if (const auto* terrain =
+                    m_world.tryGetComponent<sw::planet::TerrainComponent>(terraEntity))
+            {
+                elevation = sw::planet::terrainElevation(*terrain, standDirection);
+            }
+
             TransformComponent transform{};
-            transform.position = stationCenter + sw::WorldVec3{650.0, 120.0, -300.0};
-            transform.uniformScale = 120.0f;
+            transform.position = terraPos0 + sw::WorldVec3(standDirection) *
+                                                 (kTerraRadius + elevation + 2.0);
+            transform.rotation = standUpFor(standDirection);
+            m_world.addComponent(
+                e, PreviousTransformComponent{transform.position, transform.rotation});
             m_world.addComponent(e, transform);
-            m_world.addComponent(e, snapshotOf(transform));
-            m_world.addComponent(e, BoundsComponent{asteroidBoundsRadius});
-            m_world.addComponent(e, MeshComponent{asteroidMeshId});
-            m_world.addComponent(e, SpinComponent{{0.2f, 1.0f, 0.1f}, 0.05f});
-            m_world.addComponent(e, MapMarkerComponent{{0.85f, 0.65f, 0.35f, 1.0f}});
-
-            const sw::f64 radius = glm::length(transform.position - terraPos0);
-            const sw::f64 speed = sw::phys::kepler::circularOrbitSpeed(kMuTerra, radius);
-            m_world.addComponent(e, sw::phys::DynamicBodyComponent{
-                                        terraVel0 + sw::WorldVec3{speed, 0.0, 0.0}, 5.0e8});
-
-            sw::factory::InventoryComponent hopper{};
-            hopper.volumeCapacityM3 = 40.0;
-            m_world.addComponent(e, hopper);
-            m_world.addComponent(e, sw::factory::MinerComponent{
-                                        sw::res::Resource::IronOre, 2.0, 0.0});
-            asteroidEntity = e;
-        }
-
-        // ---- THE PLAYER ROCKET: a vessel assembled from catalog parts -----------
-        // The root entity is the rigid body + controls; every part is its
-        // own entity riding the root (entity-per-part is what will make
-        // staging, docking and damage cheap later).
-        {
-            const sw::ecs::Entity root = m_world.createEntity();
-            TransformComponent transform{};
-            transform.position = stationCenter + sw::WorldVec3{-250.0, 60.0, 400.0};
-            m_world.addComponent(root, transform);
-            m_world.addComponent(root, snapshotOf(transform));
-            m_world.addComponent(root, BoundsComponent{0.1f}); // parts render, not the root
-            m_world.addComponent(root, MapMarkerComponent{{0.3f, 1.0f, 0.5f, 1.0f}});
-            m_world.addComponent(root, ShipComponent{});
-            m_world.addComponent(root, ShipControlsComponent{});
-            m_world.addComponent(root, SasComponent{});
-            m_world.addComponent(root, sw::parts::VesselComponent{});
-            // The air's answer, refreshed every tick. Its PRESENCE is
-            // also the switch that turns the old isotropic drag off for
-            // this vessel: a part-built craft is flown by its tables.
-            m_world.addComponent(root, sw::aero::AeroStateComponent{});
-
-            const sw::f64 radius = glm::length(transform.position - terraPos0);
-            const sw::f64 speed = sw::phys::kepler::circularOrbitSpeed(kMuTerra, radius);
-            // Mass/drag are overwritten by the VesselAssemblySystem each tick.
-            m_world.addComponent(root, sw::phys::DynamicBodyComponent{
-                                           terraVel0 + sw::WorldVec3{speed, 0.0, 0.0},
-                                           4.0e4});
-            m_shipEntity = root;
-
-            auto spawnPart = [&](sw::u32 definitionId, const sw::Vec3& localPosition,
-                                 const sw::Quat& localRotation = {1, 0, 0, 0},
-                                 sw::f32 boundsRadius = 3.0f) {
-                const sw::ecs::Entity part = m_world.createEntity();
-                TransformComponent partTransform{};
-                partTransform.position =
-                    transform.position + sw::WorldVec3(localPosition);
-                partTransform.rotation = localRotation;
-                m_world.addComponent(part, partTransform);
-                m_world.addComponent(part, snapshotOf(partTransform));
-                m_world.addComponent(part, BoundsComponent{boundsRadius});
-                m_world.addComponent(part, MeshComponent{partMeshIds.at(definitionId)});
-                sw::parts::PartComponent partComponent{};
-                partComponent.definitionId = definitionId;
-                partComponent.vessel = root;
-                partComponent.localPosition = localPosition;
-                partComponent.localRotation = localRotation;
-                m_world.addComponent(part, partComponent);
-                return part;
-            };
-
-            // Stack, nose (-Z) to tail (+Z): every one of the 9 part types,
-            // wired together by REAL JOINT ENTITIES (each with its own
-            // strength/break force — the structural truth of the vessel).
-            auto joint = [&](sw::ecs::Entity a, sw::ecs::Entity b, sw::u8 pointA,
-                             sw::u8 pointB, sw::parts::JointType type) {
-                const sw::f64 force = std::min(
-                    sw::parts::findDefinition(
-                        m_world.getComponent<sw::parts::PartComponent>(a).definitionId)
-                        ->breakingForceN,
-                    sw::parts::findDefinition(
-                        m_world.getComponent<sw::parts::PartComponent>(b).definitionId)
-                        ->breakingForceN);
-                sw::parts::connectParts(m_world, a, b, pointA, pointB, type, force,
-                                        force);
-            };
-            using JT = sw::parts::JointType;
-            const auto dock =
-                spawnPart(sw::parts::kPartDockingRing, {0.0f, 0.0f, -9.0f}, {1, 0, 0, 0}, 1.1f);
-            const auto core =
-                spawnPart(sw::parts::kPartCoreStructural, {0.0f, 0.0f, -7.3f}, {1, 0, 0, 0}, 1.8f);
-            const auto cargo =
-                spawnPart(sw::parts::kPartCargoBaySmall, {0.0f, 0.0f, -4.9f}, {1, 0, 0, 0}, 1.8f);
-            const auto decoupler =
-                spawnPart(sw::parts::kPartDecouplerFlat, {0.0f, 0.0f, -3.55f}, {1, 0, 0, 0}, 1.2f);
-            const sw::ecs::Entity tankA =
-                spawnPart(sw::parts::kPartFuelTankMedium, {0.0f, 0.0f, -1.2f},
-                          {1, 0, 0, 0}, 2.5f);
-            const sw::ecs::Entity tankB =
-                spawnPart(sw::parts::kPartFuelTankMedium, {0.0f, 0.0f, 3.0f},
-                          {1, 0, 0, 0}, 2.5f);
-            const auto engine =
-                spawnPart(sw::parts::kPartEngineVector, {0.0f, 0.0f, 6.2f}, {1, 0, 0, 0}, 1.5f);
-            // Radial parts sit ON the collider surfaces now (node-accurate);
-            // the -X twins carry a 180-degree yaw so their mount faces the hull.
-            const sw::Quat flip180{0.0f, 0.0f, 0.0f, 1.0f}; // 180 deg about Z
-            const auto finR =
-                spawnPart(sw::parts::kPartFinBasic, {1.22f, 0.0f, 3.7f}, {1, 0, 0, 0}, 1.6f);
-            const auto finL =
-                spawnPart(sw::parts::kPartFinBasic, {-1.22f, 0.0f, 3.7f}, flip180, 1.6f);
-            const sw::ecs::Entity battery =
-                spawnPart(sw::parts::kPartBatteryPack, {1.25f, 0.0f, -4.9f},
-                          {1, 0, 0, 0}, 0.7f);
-            const auto solar =
-                spawnPart(sw::parts::kPartSolarWing, {-1.25f, 0.0f, -4.9f}, {1, 0, 0, 0}, 3.1f);
-            joint(dock, core, 1, 0, JT::Stack); // dock node 1 = bottom
-            joint(core, cargo, 1, 0, JT::Stack);
-            joint(cargo, decoupler, 1, 0, JT::Stack);
-            joint(decoupler, tankA, 1, 0, JT::Stack);
-            joint(tankA, tankB, 1, 0, JT::Stack);
-            joint(tankB, engine, 1, 0, JT::Stack);
-            joint(cargo, battery, 2, 0, JT::Radial);
-            joint(cargo, solar, 3, 0, JT::Radial);
-            joint(tankB, finR, 2, 0, JT::Radial);
-            joint(tankB, finL, 3, 0, JT::Radial);
-
-            // Fill the tanks and half-charge the battery (capacities from
-            // the catalog; resources are ordinary volume-bounded cargo).
-            for (const sw::ecs::Entity tank : {tankA, tankB})
+            m_world.addComponent(e, BoundsComponent{1.4f});
+            m_world.addComponent(e, MeshComponent{m_capsuleMeshIndex});
+            m_world.addComponent(e, MapMarkerComponent{{1.0f, 0.8f, 0.2f, 1.0f}});
+            m_world.addComponent(e, m_capsuleHull);
+            if (const auto* suit = sw::parts::findDefinition(sw::parts::kPropEvaSuit))
             {
-                sw::factory::InventoryComponent inventory{};
-                inventory.volumeCapacityM3 = 21.0;
-                sw::factory::inventoryAdd(inventory, sw::res::Resource::Fuel, 16000.0);
-                m_world.addComponent(tank, inventory);
+                sw::phys::HullComponent hull{};
+                if (hullFor(*suit, hull))
+                {
+                    m_world.addComponent(e, hull);
+                    m_world.addComponent(e, sw::phys::HullMoverComponent{});
+                }
             }
-            {
-                sw::factory::InventoryComponent inventory{};
-                inventory.volumeCapacityM3 = 0.12;
-                sw::factory::inventoryAdd(inventory,
-                                          sw::res::Resource::ElectricCharge, 400.0);
-                m_world.addComponent(battery, inventory);
-            }
-        }
+            m_world.addComponent(e, CapsuleComponent{});
+            m_world.addComponent(e, ShipControlsComponent{});
 
-        // ---- station modules (rails around TERRA) + refinery / depot ---------------
-        sw::ecs::Entity refineryEntity{};
-        for (sw::u32 i = 0; i < kStationModuleCount; ++i)
-        {
-            const sw::f64 offset =
-                (static_cast<sw::f64>(i) / kStationModuleCount - 0.5) * 1.0e-4;
-            const sw::phys::KeplerOrbit orbit = sw::phys::kepler::fromElements(
-                kMuTerra, kStationOrbitRadius + (static_cast<sw::f64>(i) - 3.5) * 12.0,
-                0.0, 0.0, 0.0, 0.0, kStationPhase + offset, 0.0);
+            // THE CARRIER VELOCITY. A body standing on Terra is not still: it
+            // is doing Terra's orbit plus Terra's spin at this latitude, some
+            // 30 km/s and 465 m/s of it. Start it at rest in the world frame
+            // and the ground leaves at half a kilometre a second.
+            sw::WorldVec3 spin{0.0};
+            if (const auto* gravity =
+                    m_world.tryGetComponent<sw::phys::GravitySourceComponent>(terraEntity))
+            {
+                spin = glm::cross(gravity->angularVelocity,
+                                  transform.position - terraPos0);
+            }
+            sw::phys::DynamicBodyComponent body{};
+            body.velocity = terraVel0 + spin;
+            body.mass = 120.0;
+            body.ballisticFactor = 0.01;
+            m_world.addComponent(e, body);
 
-            const sw::ecs::Entity e = m_world.createEntity();
-            TransformComponent transform{};
-            sw::phys::kepler::evaluate(orbit, 0.0, transform.position);
-            transform.position += terraPos0;
-            transform.uniformScale = 30.0f;
-            m_world.addComponent(e, transform);
-            m_world.addComponent(e, snapshotOf(transform));
-            m_world.addComponent(e, BoundsComponent{kCubeBoundsRadius});
-            m_world.addComponent(e, MeshComponent{moduleMeshId});
-            sw::phys::OnRailsComponent rails{};
-            rails.orbit = orbit;
-            rails.primary = terraEntity;
-            rails.dynamicMass = 2.0e5; // a 200 t module, if ever de-railed
-            m_world.addComponent(e, rails);
-            m_world.addComponent(e, SpinComponent{{0.3f, 1.0f, 0.2f},
-                                                  0.1f + hash01(i) * 0.1f});
-            if (i == 0)
-            {
-                m_world.addComponent(e, MapMarkerComponent{{1.0f, 1.0f, 1.0f, 1.0f}});
-                sw::factory::InventoryComponent tanks{};
-                tanks.volumeCapacityM3 = 15.0;
-                m_world.addComponent(e, tanks);
-                m_world.addComponent(e, sw::factory::RefineryComponent{
-                                            sw::res::Resource::IronOre,
-                                            sw::res::Resource::Iron, 1.0, 0.9, 0.0});
-                m_world.addComponent(e, sw::factory::makeItemLink(
-                                            asteroidEntity, sw::res::Resource::IronOre,
-                                            1.5));
-                refineryEntity = e;
-            }
-            else if (i == 1)
-            {
-                sw::factory::InventoryComponent silo{};
-                silo.volumeCapacityM3 = 60.0;
-                m_world.addComponent(e, silo);
-                m_world.addComponent(e, sw::factory::makeItemLink(
-                                            refineryEntity, sw::res::Resource::Iron, 1.0));
-            }
+            m_capsuleEntity = e;
+            m_evaMode = true;
         }
     }
 
@@ -2010,7 +1891,21 @@ namespace game
 
     sw::ecs::Entity StarWorksGame::controlledEntity() const
     {
-        return (m_evaMode && !m_capsuleEntity.isNull()) ? m_capsuleEntity : m_shipEntity;
+        // ON FOOT IS THE NORMAL STATE. There may be no vessel at all — the
+        // game now starts with none — so the suit is the fallback and not
+        // the exception. Everything downstream (the HUD, the camera, the
+        // terrain patch, the simulation bubble) dereferences this without
+        // checking, which is only safe because it is never null once the
+        // scene is built.
+        if (m_evaMode && !m_capsuleEntity.isNull())
+        {
+            return m_capsuleEntity;
+        }
+        if (!m_shipEntity.isNull() && m_world.isAlive(m_shipEntity))
+        {
+            return m_shipEntity;
+        }
+        return m_capsuleEntity;
     }
 
     sw::WorldVec3 StarWorksGame::controlledVelocity() const
@@ -2317,6 +2212,16 @@ namespace game
         // it, so the upload is a plain buffer creation with no device idle.
         if (m_terrainJob.load(std::memory_order_acquire) == TerrainJob::Ready)
         {
+            // A BUILD THAT PRODUCED NOTHING IS NOT A BUILD TO UPLOAD. The
+            // job refuses to hand over a mesh it found a fault in, and a
+            // zero-vertex buffer is its own kind of crash — so the landing
+            // pad checks rather than assumes, and the patch already on
+            // screen simply stays there.
+            if (m_terrainPendingMesh.empty())
+            {
+                m_terrainJob.store(TerrainJob::Idle, std::memory_order_release);
+                return;
+            }
             if (m_terrainMeshSlots[0] == 0xFFFFFFFFu)
             {
                 m_terrainMeshSlots[0] =
@@ -2337,6 +2242,25 @@ namespace game
                     renderer().createMesh(m_terrainPendingMesh);
             }
             m_terrainMeshSlot = m_terrainMeshSlots[m_terrainSlotIndex];
+            // KEEP THE GROUND GRID. It is what lets the grass be re-centred
+            // without rebuilding the terrain — and, more importantly, what
+            // makes the field stand on exactly the surface that is DRAWN.
+            // A second sampling of the heightfield would put it up to half a
+            // metre out, which on a 0.6 m blade is half the blade.
+            m_terrainGridCells = m_terrainPendingCells;
+            m_terrainGridEast = m_terrainPendingEast;
+            m_terrainGridNorth = m_terrainPendingNorth;
+            {
+                const sw::usize gridVertices =
+                    static_cast<sw::usize>(m_terrainGridCells + 1) *
+                    (m_terrainGridCells + 1);
+                m_terrainGridVertices.assign(
+                    m_terrainPendingMesh.vertices.begin(),
+                    m_terrainPendingMesh.vertices.begin() +
+                        static_cast<std::ptrdiff_t>(
+                            std::min(gridVertices, m_terrainPendingMesh.vertices.size())));
+            }
+            m_grassCenterDir = sw::Vec3(0.0f); // force the field to re-seed
             m_terrainOriginLocal = m_terrainPendingOrigin;
             m_terrainCenterDir = m_terrainPendingCenterDir;
             m_terrainExtent = m_terrainPendingExtent;
@@ -2393,18 +2317,55 @@ namespace game
                                   : glm::inverse(glm::dquat(bodyTransform->rotation));
         const sw::Vec3 centerDir =
             sw::Vec3(glm::normalize(inverseRotation * (radial / distance)));
-        // Down to 1.5 km at landing: with 96 cells that is a 31 m grid, fine
-        // enough for the gullies and benches the 16-octave heightfield now
+        // HOW HIGH ABOVE THE GROUND — not above the sea.
+        //
+        // This is the bug that buried the rocket. The patch's resolution is
+        // chosen from your altitude, and it was measuring that from SEA
+        // LEVEL: standing on an 1,100 m plateau, the game sized the patch
+        // for somebody flying at 1,100 m and drew a 6.6 km square in 137 m
+        // cells. A mesh that coarse cannot follow a creased fractal, and
+        // measured against the collider the drawn ground was off by up to
+        // 7.7 m — which is how a 2.4 m rocket ends up half-submerged in a
+        // hillside it is, as far as physics is concerned, resting neatly on
+        // top of. Terra's terrain reaches 9 km; almost nowhere interesting
+        // is at sea level.
+        const sw::f64 groundAltitude =
+            distance -
+            (primary.bodyRadius +
+             sw::planet::terrainElevation(*terrain, centerDir));
+        // Down to 1.5 km at landing: with 192 cells that is a 15.6 m grid,
+        // fine enough for the gullies and benches the 16-octave heightfield
         // carries. (It used to bottom out at 4 km / 125 m cells, which could
         // not show anything smaller than a hill.)
         const sw::f64 extent =
-            std::clamp(std::max(seaAltitude, 250.0) * 6.0, 1.5e3, 4.0e5);
+            std::clamp(std::max(groundAltitude, 250.0) * 6.0, 1.5e3, 4.0e5);
 
         const sw::f64 now = clock().totalSeconds();
+        // HOW FAR YOU MAY WALK BEFORE THE PATCH FOLLOWS YOU.
+        //
+        // Thirty per cent of the extent — 450 m at landing scale — is the
+        // right answer for the GROUND, whose vertices are anchored to the
+        // planet and therefore identical before and after a re-centre: you
+        // cannot see that rebuild happen at all. It is the wrong answer by
+        // an order of magnitude for the FIELD standing on it, which only
+        // exists within a disc around the patch centre. Walk out of that
+        // disc and there is no grass; wait for the patch to re-centre and a
+        // whole new field arrives in one frame while the old one leaves in
+        // the same one.
+        //
+        // So a patch that carries plants follows the player at the scale of
+        // the field rather than the scale of the terrain. The ground pays
+        // for it — a 60 ms rebuild every 40 m instead of every 450 m, which
+        // walking is one every ten seconds — and pays it on a worker thread,
+        // against a patch already on screen, at most once a second.
+        // The grass has its own clock now (see updateGrassField), so the
+        // ground is free to go back to the threshold that suits it: its
+        // vertices are planet-anchored and a re-centre is invisible.
+        const sw::f64 followDistance = extent * 0.30;
         const bool moved =
             static_cast<sw::f64>(glm::distance(centerDir, m_terrainCenterDir)) *
                 primary.bodyRadius >
-            extent * 0.30;
+            followDistance;
         const bool rescaled =
             extent > m_terrainExtent * 1.8 || extent < m_terrainExtent * 0.55;
         const bool needRebuild = m_terrainMeshSlot == 0xFFFFFFFFu ||
@@ -2430,15 +2391,42 @@ namespace game
             surfaceStyle = bodyLod->surfaceStyle;
         }
 
+        // WHERE THE SUN IS, in the body's own frame — because the relief
+        // shading below is BAKED, and a baked shadow has to be baked toward
+        // something. Terra turns 0.004 degrees in the second between two
+        // rebuilds, so a shadow map that is one rebuild old is a shadow map
+        // that is right.
+        sw::Vec3 sunDirBody{0.0f, 1.0f, 0.0f};
+        if (const auto* sunTransform =
+                m_world.tryGetComponent<TransformComponent>(m_solEntity))
+        {
+            const sw::WorldVec3 toSun = sunTransform->position - bodyTransform->position;
+            if (glm::length(toSun) > 1.0)
+            {
+                sunDirBody =
+                    sw::Vec3(glm::normalize(inverseRotation * glm::normalize(toSun)));
+            }
+        }
+
         // Everything the build needs is captured BY VALUE: the job never
         // touches the world, the renderer or any component.
         const sw::planet::TerrainComponent terrainCopy = *terrain;
         const sw::f64 radius = primary.bodyRadius;
         m_terrainPendingBody = primary.entity;
         m_terrainJob.store(TerrainJob::Running, std::memory_order_release);
-        threadPool().submit([this, terrainCopy, surfaceStyle, centerDir, extent,
-                             radius]() {
-            buildTerrainPatch(terrainCopy, surfaceStyle, centerDir, extent, radius);
+        // CELLS ARE NOT A CONSTANT, because what matters is the cell SIZE
+        // where somebody is standing. Measured against the collider at
+        // landing extent, going from 96 cells to 192 takes the worst gap
+        // between the drawn ground and the ground you stand on from 1.25 m
+        // down to 0.50 m — and nothing at four hundred kilometres up cares
+        // either way, so the big patches keep the cheap grid.
+        const sw::u32 cells = (extent <= 2.5e3) ? 192u
+                              : (extent <= 2.5e4) ? 128u
+                                                  : 96u;
+        threadPool().submit([this, terrainCopy, surfaceStyle, centerDir, extent, radius,
+                             cells, sunDirBody]() {
+            buildTerrainPatch(terrainCopy, surfaceStyle, centerDir, extent, radius,
+                              cells, sunDirBody);
             m_terrainJob.store(TerrainJob::Ready, std::memory_order_release);
         });
     }
@@ -2446,11 +2434,12 @@ namespace game
     void StarWorksGame::buildTerrainPatch(const sw::planet::TerrainComponent& terrain,
                                           sw::i32 surfaceStyle,
                                           const sw::Vec3& centerDir, sw::f64 extent,
-                                          sw::f64 radius)
+                                          sw::f64 radius, sw::u32 cellCount,
+                                          const sw::Vec3& sunDirBody)
     {
         // ---- the grid: a tangent plane projected onto the sphere ----------
-        constexpr sw::u32 kCells = 96;
-        constexpr sw::u32 kVerts = kCells + 1;
+        const sw::u32 kCells = std::clamp(cellCount, 16u, 256u);
+        const sw::u32 kVerts = kCells + 1;
         const sw::Vec3 reference =
             (std::abs(centerDir.y) < 0.99f) ? sw::Vec3{0, 1, 0} : sw::Vec3{1, 0, 0};
         const sw::Vec3 east = glm::normalize(glm::cross(reference, centerDir));
@@ -2487,6 +2476,12 @@ namespace game
 
         std::vector<sw::WorldVec3> points(kVerts * kVerts);
         std::vector<sw::f32> elevations(kVerts * kVerts);
+        /// The SOLID ground height at each vertex — sea level clamped in,
+        /// negative sea floor clamped out. This is the surface the relief
+        /// shading marches over, and it is the same array the geometry was
+        /// built from, so a shadow can never fall on ground that is not
+        /// drawn where the shadow says it is.
+        std::vector<sw::f32> ground(kVerts * kVerts);
         for (sw::u32 j = 0; j < kVerts; ++j)
         {
             for (sw::u32 i = 0; i < kVerts; ++i)
@@ -2510,11 +2505,153 @@ namespace game
                                              : 0.0;
                 points[j * kVerts + i] = dir * (radius + elevation) - origin;
                 elevations[j * kVerts + i] = signedElevation;
+                ground[j * kVerts + i] = static_cast<sw::f32>(elevation);
+            }
+        }
+
+        // ---- RELIEF SHADING, baked -----------------------------------------
+        //
+        // The patch's triangles are 15 m across and its normals are honest,
+        // but a lambert term alone leaves rolling ground looking like a
+        // painted sheet: nothing casts, nothing pools, and a dip and a rise
+        // of the same slope are the same colour. Two terms fix that, and
+        // both are computed on the height grid that is already in hand — no
+        // extra heightfield evaluations, and no possibility of disagreeing
+        // with the surface being drawn.
+        //
+        //   CAST SHADOW  march toward the sun, one cell at a time, and see
+        //                whether the ground ever rises above the ray. This
+        //                is what puts a hill's shadow on the valley beside
+        //                it, and it is the term that makes a landscape read
+        //                as a landscape at low sun.
+        //   SKY OCCLUSION  the same march in six directions with no sun in
+        //                it: how much of the sky this point can see. Gullies
+        //                and the insides of craters darken; ridges do not.
+        //
+        // Both stay deliberately gentle. This is ground the player has to
+        // land on and walk over, not a photograph.
+        const sw::f64 cellSpacing = 2.0 * extent / kCells;
+        std::vector<sw::f32> shading(kVerts * kVerts, 1.0f);
+        {
+            const sw::f32 sunUp = glm::dot(sunDirBody, centerDir);
+            const sw::Vec3 sunTangent = sunDirBody - centerDir * sunUp;
+            const sw::f32 sunTangentLength = glm::length(sunTangent);
+            // Direction the shadow ray walks, in GRID cells.
+            sw::f32 sunU = 0.0f;
+            sw::f32 sunV = 0.0f;
+            if (sunTangentLength > 1.0e-5f)
+            {
+                sunU = glm::dot(sunTangent, east) / sunTangentLength;
+                sunV = glm::dot(sunTangent, north) / sunTangentLength;
+            }
+            // Metres of climb per metre walked toward the sun. A sun on the
+            // horizon casts shadows to infinity; cap the slope so the march
+            // stays finite and the terminator stays soft.
+            const sw::f32 sunSlope =
+                (sunTangentLength > 1.0e-5f)
+                    ? glm::clamp(sunUp / sunTangentLength, -8.0f, 8.0f)
+                    : 8.0f;
+
+            const auto heightAt = [&](sw::i32 i, sw::i32 j) {
+                const sw::i32 ci = glm::clamp(i, 0, static_cast<sw::i32>(kCells));
+                const sw::i32 cj = glm::clamp(j, 0, static_cast<sw::i32>(kCells));
+                return ground[static_cast<sw::usize>(cj) * kVerts + ci];
+            };
+
+            constexpr sw::i32 kShadowSteps = 20;
+            constexpr sw::i32 kSkySteps = 6;
+            // Six azimuths, fixed: enough to tell a hollow from a shoulder,
+            // cheap enough to run on every vertex of a 192-cell grid.
+            constexpr sw::f32 kSkyDirs[6][2] = {{1.0f, 0.0f},   {0.5f, 0.866f},
+                                                {-0.5f, 0.866f}, {-1.0f, 0.0f},
+                                                {-0.5f, -0.866f}, {0.5f, -0.866f}};
+
+            for (sw::u32 j = 0; j < kVerts; ++j)
+            {
+                for (sw::u32 i = 0; i < kVerts; ++i)
+                {
+                    const sw::usize index = static_cast<sw::usize>(j) * kVerts + i;
+                    const sw::f32 base = ground[index];
+
+                    // ---- cast shadow ----------------------------------
+                    sw::f32 blocked = 0.0f;
+                    if (sunUp > -0.05f)
+                    {
+                        for (sw::i32 step = 1; step <= kShadowSteps; ++step)
+                        {
+                            const sw::f32 walk =
+                                static_cast<sw::f32>(step) *
+                                static_cast<sw::f32>(cellSpacing);
+                            const sw::f32 rayHeight = base + walk * sunSlope;
+                            const sw::f32 terrainHeight = heightAt(
+                                static_cast<sw::i32>(i) +
+                                    static_cast<sw::i32>(std::lround(sunU * step)),
+                                static_cast<sw::i32>(j) +
+                                    static_cast<sw::i32>(std::lround(sunV * step)));
+                            // Softened by how far the blocker is: a ridge at
+                            // the end of the march throws a vaguer shadow
+                            // than the boulder at your feet, which is both
+                            // true and what keeps the term from banding.
+                            const sw::f32 over = terrainHeight - rayHeight;
+                            if (over > 0.0f)
+                            {
+                                const sw::f32 softness =
+                                    2.0f + 0.35f * static_cast<sw::f32>(step) *
+                                               static_cast<sw::f32>(cellSpacing);
+                                blocked = std::max(blocked,
+                                                   glm::clamp(over / softness, 0.0f, 1.0f));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        blocked = 1.0f; // the sun is under this horizon
+                    }
+
+                    // ---- sky occlusion ---------------------------------
+                    sw::f32 openness = 0.0f;
+                    for (const auto& direction : kSkyDirs)
+                    {
+                        sw::f32 highest = 0.0f; // tangent of the horizon angle
+                        for (sw::i32 step = 1; step <= kSkySteps; ++step)
+                        {
+                            const sw::f32 walk =
+                                static_cast<sw::f32>(step) *
+                                static_cast<sw::f32>(cellSpacing);
+                            const sw::f32 rise =
+                                heightAt(static_cast<sw::i32>(i) +
+                                             static_cast<sw::i32>(
+                                                 std::lround(direction[0] * step)),
+                                         static_cast<sw::i32>(j) +
+                                             static_cast<sw::i32>(
+                                                 std::lround(direction[1] * step))) -
+                                base;
+                            highest = std::max(highest, rise / walk);
+                        }
+                        // cos of the horizon angle: 1 = open sky, 0 = a wall.
+                        openness += 1.0f / std::sqrt(1.0f + highest * highest);
+                    }
+                    openness /= 6.0f;
+
+                    // Measured on Terra's roughest ground the term runs
+                    // 0.50 .. 1.00; on the launch plain it is flat at 1.00,
+                    // because that ground really is flat at fifteen metres
+                    // and honest shading of flat ground is no shading. What
+                    // makes the plain read is the field standing on it.
+                    const sw::f32 sunTerm = 1.0f - 0.55f * blocked;
+                    const sw::f32 skyTerm = 0.45f + 0.55f * openness;
+                    shading[index] = glm::clamp(sunTerm * skyTerm, 0.22f, 1.0f);
+                }
             }
         }
 
         sw::MeshData mesh;
-        mesh.vertices.resize(kVerts * kVerts);
+        // Room for the ground, its rim skirt and a full field of plants, so
+        // appending never has to move what is already there. Bounded and
+        // stated, because everything below appends to this vector.
+        mesh.vertices.reserve(static_cast<sw::usize>(kVerts) * kVerts + 16u * kCells +
+                              96000u);
+        mesh.vertices.resize(static_cast<sw::usize>(kVerts) * kVerts);
         const auto style = static_cast<SurfaceStyle>(surfaceStyle);
         for (sw::u32 j = 0; j < kVerts; ++j)
         {
@@ -2550,6 +2687,14 @@ namespace game
                 // every frequency in the palette, so nothing is faded here.
                 colorizeSurfaceVertex(vertex, style, vertexDir, elevations[index],
                                       slope, terrain, patchFrequencyLimit);
+                // The baked relief term multiplies the ALBEDO, so it stacks
+                // with the shader's own lambert instead of replacing it: a
+                // slope facing the sun is bright, a slope facing the sun
+                // from inside somebody else's shadow is not.
+                const sw::f32 relief = shading[index];
+                vertex.color.r *= relief;
+                vertex.color.g *= relief;
+                vertex.color.b *= relief;
             }
         }
         mesh.indices.reserve(kCells * kCells * 6);
@@ -2566,10 +2711,480 @@ namespace game
             }
         }
 
+        // ---- THE RIM SKIRT --------------------------------------------------
+        //
+        // The patch is a sheet laid over the globe, and the globe is a second
+        // ground surface underneath it — 133 km between vertices at this
+        // level of detail, so within a few kilometres of the camera it is
+        // one enormous flat triangle. It has to stay: beyond the patch's
+        // 1.5 km rim it IS the horizon. But it should never be SEEN, and at
+        // the rim it was: the sheet simply stopped, and the eye followed the
+        // cut straight down onto the surface below.
+        //
+        // A skirt closes it. One ring of quads dropped from the border
+        // vertices, darkened like a cut bank, costing 4 x kCells triangles —
+        // half a per cent of the patch. Nothing else about the second
+        // surface needs changing, because front-to-back batching plus the
+        // early depth test already reject every one of its hidden fragments
+        // before it evaluates a noise octave.
+        {
+            const sw::f32 skirtDrop =
+                static_cast<sw::f32>(std::max(200.0, extent * 0.35));
+            const auto addSkirt = [&](sw::u32 i, sw::u32 j, sw::u32 iNext, sw::u32 jNext) {
+                const sw::usize a = static_cast<sw::usize>(j) * kVerts + i;
+                const sw::usize b = static_cast<sw::usize>(jNext) * kVerts + iNext;
+                const sw::u32 first = static_cast<sw::u32>(mesh.vertices.size());
+                const sw::Vec3 down = -centerDir * skirtDrop;
+
+                // BY VALUE, and this is not a style preference. Reading the
+                // two rim vertices through REFERENCES into `mesh.vertices`
+                // and then pushing onto that same vector is a use-after-free
+                // the moment the push reallocates — which it does on the very
+                // first quad, because the vector was sized exactly to the
+                // ground grid. It cost a crash the instant a patch with a
+                // skirt was built, and it is the reason the grass appeared to
+                // be at fault: the grass is simply what the same build
+                // produces next.
+                const sw::Vertex topA = mesh.vertices[a];
+                const sw::Vertex topB = mesh.vertices[b];
+
+                // The rim's outward normal: along the edge, turned a quarter
+                // turn about the local vertical. Degenerate edges (two rim
+                // vertices at the same place) would normalise a zero vector
+                // into NaN and hand the GPU a mesh full of them, so the
+                // fallback is stated rather than hoped for.
+                sw::Vec3 along = topB.position - topA.position;
+                if (glm::dot(along, along) < 1.0e-12f)
+                {
+                    along = east;
+                }
+                const sw::Vec3 outward = glm::cross(centerDir, glm::normalize(along));
+                const sw::Vec3 normal = (glm::dot(outward, outward) > 1.0e-12f)
+                                            ? glm::normalize(outward)
+                                            : centerDir;
+
+                for (sw::u32 corner = 0; corner < 4; ++corner)
+                {
+                    const sw::Vertex& source = (corner % 2 == 0) ? topA : topB;
+                    sw::Vertex vertex = source;
+                    if (corner >= 2)
+                    {
+                        vertex.position += down;
+                        vertex.color = sw::Vec4(sw::Vec3(source.color) * 0.45f, 1.0f);
+                    }
+                    vertex.normal = normal;
+                    mesh.vertices.push_back(vertex);
+                }
+                // Both windings: which side of the rim faces the camera
+                // depends on which edge of the patch it is.
+                mesh.indices.insert(mesh.indices.end(),
+                                    {first, first + 2, first + 1, first + 1, first + 2,
+                                     first + 3, first, first + 1, first + 2, first + 1,
+                                     first + 3, first + 2});
+            };
+            for (sw::u32 i = 0; i < kCells; ++i)
+            {
+                addSkirt(i, 0, i + 1, 0);
+                addSkirt(i, kCells, i + 1, kCells);
+                addSkirt(0, i, 0, i + 1);
+                addSkirt(kCells, i, kCells, i + 1);
+            }
+        }
+
+        // ---- THE GUARD ------------------------------------------------------
+        //
+        // Everything above APPENDS to one vertex vector, and a geometry bug
+        // in an append is invisible to the compiler and silent at runtime
+        // until a driver chokes on it. One pass over the finished mesh turns
+        // that whole class of fault into a log line and a patch that is
+        // simply not shown: 0.3 ms against a 60 ms build, which is nothing
+        // for never handing the GPU a NaN.
+        {
+            sw::usize bad = 0;
+            for (const sw::Vertex& vertex : mesh.vertices)
+            {
+                if (!std::isfinite(vertex.position.x) || !std::isfinite(vertex.position.y) ||
+                    !std::isfinite(vertex.position.z) || !std::isfinite(vertex.normal.x) ||
+                    !std::isfinite(vertex.normal.y) || !std::isfinite(vertex.normal.z))
+                {
+                    bad += 1;
+                }
+            }
+            const sw::u32 vertexCount = static_cast<sw::u32>(mesh.vertices.size());
+            for (const sw::u32 index : mesh.indices)
+            {
+                if (index >= vertexCount)
+                {
+                    bad += 1;
+                    break;
+                }
+            }
+            if (bad != 0)
+            {
+                SW_LOG_ERROR("Terrain",
+                             "Patch build produced {} bad vertices or an out-of-range "
+                             "index ({} vertices, {} indices) - discarding",
+                             bad, vertexCount, mesh.indices.size());
+                return; // the previous patch keeps being shown
+            }
+        }
+
         m_terrainPendingMesh = std::move(mesh);
         m_terrainPendingOrigin = origin;
         m_terrainPendingCenterDir = centerDir;
         m_terrainPendingExtent = extent;
+        m_terrainPendingCells = kCells;
+        m_terrainPendingEast = east;
+        m_terrainPendingNorth = north;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // THE GRASS FIELD
+    //
+    // Its own geometry, on its own clock, cut into chunks that go to the GPU
+    // one per frame. It reads the ground grid the terrain patch already
+    // produced, so every blade stands on exactly the surface that is drawn —
+    // and so re-centring the field costs nothing on the heightfield.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::buildGrassField(const std::vector<sw::Vertex>& groundGrid,
+                                        sw::u32 cellCount, const sw::Vec3& centerDir,
+                                        const sw::Vec3& east, const sw::Vec3& north,
+                                        sw::f64 extent, sw::f64 radius,
+                                        const sw::Vec3& fieldDir)
+    {
+        for (sw::MeshData& chunk : m_grassPending)
+        {
+            chunk.vertices.clear();
+            chunk.indices.clear();
+            chunk.vertices.reserve(16000);
+            chunk.indices.reserve(48000);
+        }
+        const sw::u32 verts = cellCount + 1;
+        if (groundGrid.size() < static_cast<sw::usize>(verts) * verts)
+        {
+            return;
+        }
+
+        const auto hash01 = [](sw::i64 a, sw::i64 b, sw::u32 salt) {
+            sw::u64 h = static_cast<sw::u64>(a) * 0x9E3779B97F4A7C15ull;
+            h ^= static_cast<sw::u64>(b) * 0xC2B2AE3D27D4EB4Full;
+            h ^= static_cast<sw::u64>(salt) * 0x165667B19E3779F9ull;
+            h ^= h >> 29;
+            h *= 0xBF58476D1CE4E5B9ull;
+            h ^= h >> 32;
+            return static_cast<sw::f32>(h & 0xFFFFFFull) / 16777215.0f;
+        };
+
+        // Where the PLAYER is, in the patch's own tangent chart. The field
+        // follows them; the chart does not move.
+        const sw::f64 fieldU = static_cast<sw::f64>(glm::dot(fieldDir, east)) * radius;
+        const sw::f64 fieldV = static_cast<sw::f64>(glm::dot(fieldDir, north)) * radius;
+
+        // The lattice is anchored to the PLANET: absolute plate-carrée metres,
+        // so a tuft keeps its cell — and therefore its jitter, its height and
+        // its colour — no matter which patch or which field it lands in.
+        const sw::f64 latitude =
+            std::asin(glm::clamp(static_cast<sw::f64>(centerDir.y), -1.0, 1.0));
+        const sw::f64 longitude = std::atan2(static_cast<sw::f64>(centerDir.x),
+                                             static_cast<sw::f64>(centerDir.z));
+        const sw::f64 anchorU = longitude * radius * std::cos(latitude) + fieldU;
+        const sw::f64 anchorV = latitude * radius + fieldV;
+
+        constexpr sw::f64 kSpacing = 1.5;
+        const sw::f64 plantRadius = std::min(extent * 0.20, 260.0);
+        const sw::f64 plantFull = 30.0;  // full density inside this
+        const sw::f64 plantFade = 0.82;  // height fades over the last 18 %
+
+        // Bilinear read of the ground the patch drew. Positions, colours and
+        // normals all come from the same four vertices, so a blade stands on
+        // the surface, is lit like it, and is coloured by it.
+        const auto sampleGrid = [&](sw::f64 u, sw::f64 v, sw::Vec3& outPoint,
+                                    sw::Vec4& outColor, sw::Vec3& outNormal) {
+            const sw::f64 fx = (u / extent * 0.5 + 0.5) * cellCount;
+            const sw::f64 fy = (v / extent * 0.5 + 0.5) * cellCount;
+            if (fx < 0.0 || fy < 0.0 || fx >= cellCount || fy >= cellCount)
+            {
+                return false;
+            }
+            const sw::u32 i = static_cast<sw::u32>(fx);
+            const sw::u32 j = static_cast<sw::u32>(fy);
+            const sw::f32 a = static_cast<sw::f32>(fx - i);
+            const sw::f32 b = static_cast<sw::f32>(fy - j);
+            const sw::usize i00 = static_cast<sw::usize>(j) * verts + i;
+            const sw::usize i10 = i00 + 1;
+            const sw::usize i01 = i00 + verts;
+            const sw::usize i11 = i01 + 1;
+            const auto mix2 = [a, b](auto p00, auto p10, auto p01, auto p11) {
+                return (p00 * (1.0f - a) + p10 * a) * (1.0f - b) +
+                       (p01 * (1.0f - a) + p11 * a) * b;
+            };
+            outPoint = mix2(groundGrid[i00].position, groundGrid[i10].position,
+                            groundGrid[i01].position, groundGrid[i11].position);
+            outColor = mix2(groundGrid[i00].color, groundGrid[i10].color,
+                            groundGrid[i01].color, groundGrid[i11].color);
+            outNormal = glm::normalize(mix2(groundGrid[i00].normal, groundGrid[i10].normal,
+                                            groundGrid[i01].normal, groundGrid[i11].normal));
+            return true;
+        };
+
+        const sw::i64 uFirst =
+            static_cast<sw::i64>(std::floor((anchorU - plantRadius) / kSpacing));
+        const sw::i64 uLast =
+            static_cast<sw::i64>(std::ceil((anchorU + plantRadius) / kSpacing));
+        const sw::i64 vFirst =
+            static_cast<sw::i64>(std::floor((anchorV - plantRadius) / kSpacing));
+        const sw::i64 vLast =
+            static_cast<sw::i64>(std::ceil((anchorV + plantRadius) / kSpacing));
+
+        for (sw::i64 kv = vFirst; kv <= vLast; ++kv)
+        {
+            for (sw::i64 ku = uFirst; ku <= uLast; ++ku)
+            {
+                // Cell -> patch-local metres, jittered by a function OF THE
+                // CELL, so the jitter travels with the planet and not with
+                // the field.
+                const sw::f32 jitterU = hash01(ku, kv, 11u) - 0.5f;
+                const sw::f32 jitterV = hash01(ku, kv, 23u) - 0.5f;
+                const sw::f64 localU = static_cast<sw::f64>(ku) * kSpacing - anchorU +
+                                       static_cast<sw::f64>(jitterU) * kSpacing * 0.85;
+                const sw::f64 localV = static_cast<sw::f64>(kv) * kSpacing - anchorV +
+                                       static_cast<sw::f64>(jitterV) * kSpacing * 0.85;
+                const sw::f64 distanceSquared = localU * localU + localV * localV;
+                if (distanceSquared > plantRadius * plantRadius)
+                {
+                    continue;
+                }
+                // ...and back into the patch's chart, which is offset from the
+                // field's by where the player stands in it.
+                const sw::f64 u = localU + fieldU;
+                const sw::f64 v = localV + fieldV;
+
+                sw::Vec3 base{0.0f};
+                sw::Vec4 groundColor{0.0f};
+                sw::Vec3 groundNormal{0.0f};
+                if (!sampleGrid(u, v, base, groundColor, groundNormal))
+                {
+                    continue;
+                }
+                // A cliff face is bare, and it is bare because it is a cliff.
+                if (glm::dot(groundNormal, centerDir) < 0.88f)
+                {
+                    continue;
+                }
+                // WHAT THE GROUND ITSELF SAYS. Green ground grows things; rock,
+                // ice, dune and open water do not — read straight off the
+                // palette, so a plant can never appear on a colour that would
+                // not support it and no biome table has to be kept in step
+                // with the one the terrain already has.
+                const sw::f32 green =
+                    groundColor.g - 0.5f * (groundColor.r + groundColor.b);
+                sw::f32 density = sw::math::smoothstepf(-0.005f, 0.045f, green);
+                density *= 0.35f + 0.9f * hash01(ku / 13, kv / 13, 91u);
+                // Thinned as an inverse power rather than a ramp: cover within
+                // thirty metres, texture beyond, and a total that stays near
+                // six thousand tufts however far the field is asked to reach.
+                const sw::f64 distance = std::sqrt(distanceSquared);
+                if (distance > plantFull)
+                {
+                    density *= static_cast<sw::f32>(std::pow(plantFull / distance, 1.5));
+                }
+                if (hash01(ku, kv, 57u) > density)
+                {
+                    continue;
+                }
+                // Fade LATE, so the band sits beyond anything a re-centre can
+                // move a visible tuft across.
+                const sw::f32 edge =
+                    1.0f - sw::math::smoothstepf(static_cast<sw::f32>(plantFade), 1.0f,
+                                                 static_cast<sw::f32>(distance /
+                                                                      plantRadius));
+                if (edge <= 0.02f)
+                {
+                    continue;
+                }
+                const sw::f32 height =
+                    (0.22f + 0.55f * hash01(ku, kv, 131u)) * edge * (0.6f + density);
+                if (height < 0.06f)
+                {
+                    continue;
+                }
+                const sw::f32 width = height * (0.28f + 0.16f * hash01(ku, kv, 77u));
+
+                const sw::Vec3 leaf =
+                    glm::mix(sw::Vec3(groundColor), sw::Vec3(0.20f, 0.34f, 0.12f),
+                             0.55f + 0.25f * hash01(ku, kv, 197u));
+                const sw::Vec4 rootColor{leaf * 0.55f, 1.0f};
+                const sw::Vec4 tipColor{leaf * (1.05f + 0.25f * hash01(ku, kv, 211u)),
+                                        1.0f};
+
+                // WHICH CHUNK. By hash, so the six of them are the same size
+                // and each is spread over the whole field — the set is only
+                // ever shown complete, so this is about balancing the six
+                // uploads, not about what appears first.
+                const sw::u32 chunkIndex =
+                    std::min(static_cast<sw::u32>(hash01(ku, kv, 777u) *
+                                                  static_cast<sw::f32>(kGrassChunks)),
+                             kGrassChunks - 1u);
+                sw::MeshData& chunk = m_grassPending[chunkIndex];
+
+                for (sw::u32 blade = 0; blade < 3; ++blade)
+                {
+                    const sw::f32 yaw =
+                        (hash01(ku, kv, 300u + blade) + static_cast<sw::f32>(blade)) *
+                        2.0943951f;
+                    const sw::Vec3 lean = east * std::cos(yaw) + north * std::sin(yaw);
+                    const sw::Vec3 across = glm::normalize(glm::cross(centerDir, lean));
+                    const sw::f32 bend =
+                        height * (0.25f + 0.35f * hash01(ku, kv, 400u + blade));
+
+                    const sw::Vec3 root = base;
+                    const sw::Vec3 tip = root + centerDir * height + lean * bend;
+                    const sw::Vec3 normal =
+                        glm::normalize(centerDir * 0.72f + across * 0.28f);
+
+                    const sw::u32 first = static_cast<sw::u32>(chunk.vertices.size());
+                    const sw::Vec3 offsets[4] = {root - across * (width * 0.5f),
+                                                 root + across * (width * 0.5f),
+                                                 tip - across * (width * 0.12f),
+                                                 tip + across * (width * 0.12f)};
+                    for (sw::u32 corner = 0; corner < 4; ++corner)
+                    {
+                        sw::Vertex vertex{};
+                        vertex.position = offsets[corner];
+                        vertex.normal = normal;
+                        vertex.color = (corner < 2) ? rootColor : tipColor;
+                        vertex.uv = {0.05f, 0.15f}; // matte: leaves do not shine
+                        chunk.vertices.push_back(vertex);
+                    }
+                    // Both windings, so a blade is never invisible from the
+                    // side the culler happens to be looking from.
+                    chunk.indices.insert(chunk.indices.end(),
+                                         {first, first + 1, first + 2, first + 1,
+                                          first + 3, first + 2, first + 2, first + 1,
+                                          first, first + 2, first + 3, first + 1});
+                }
+            }
+        }
+    }
+
+    void StarWorksGame::updateGrassField()
+    {
+        // ---- 1. land one chunk per frame ------------------------------------
+        //
+        // ONE. `uploadToBuffer` submits its copy and then waits on a fence,
+        // which drains whatever the graphics queue is holding — so every
+        // upload costs up to a frame of GPU work whatever its size. Doing six
+        // small ones on six frames turns one visible spike into six frames
+        // nobody notices, and the field on screen never flickers because the
+        // OLD set keeps drawing until the last new chunk has landed.
+        if (m_grassJob.load(std::memory_order_acquire) == TerrainJob::Ready)
+        {
+            const sw::u32 target = m_grassSet ^ 1u;
+            if (m_grassUploadCursor < kGrassChunks)
+            {
+                const sw::u32 index = m_grassUploadCursor;
+                m_grassChunkValid[target][index] = !m_grassPending[index].empty();
+                if (m_grassChunkValid[target][index])
+                {
+                    if (m_grassSlots[target][index] == 0xFFFFFFFFu)
+                    {
+                        m_grassSlots[target][index] =
+                            registerMesh(renderer().createMesh(m_grassPending[index]));
+                    }
+                    else
+                    {
+                        m_meshes[m_grassSlots[target][index]] =
+                            renderer().createMesh(m_grassPending[index]);
+                    }
+                }
+                m_grassUploadCursor += 1;
+                return; // one upload per frame, and not one more
+            }
+            // Every chunk has landed: show the new field and release the CPU
+            // copies.
+            m_grassSet = target;
+            m_grassLiveCount = kGrassChunks;
+            m_grassCenterDir = m_grassPendingCenterDir;
+            m_grassOriginLocal = m_grassPendingOriginLocal;
+            m_grassBody = m_terrainBody;
+            for (sw::MeshData& chunk : m_grassPending)
+            {
+                chunk = sw::MeshData{};
+            }
+            m_grassJob.store(TerrainJob::Idle, std::memory_order_release);
+            return;
+        }
+        if (m_grassJob.load(std::memory_order_acquire) != TerrainJob::Idle)
+        {
+            return; // a field is being seeded
+        }
+
+        // ---- 2. does the field need to move? --------------------------------
+        if (m_terrainGridVertices.empty() || m_terrainGridCells == 0 ||
+            m_terrainExtent > 2.5e3)
+        {
+            m_grassLiveCount = 0; // too high up for a field to mean anything
+            return;
+        }
+        const sw::i32 primaryIndex = controlledPrimaryIndex();
+        if (primaryIndex < 0 || m_terrainBody.isNull())
+        {
+            return;
+        }
+        const auto& primary =
+            m_celestialIndex.body(static_cast<sw::usize>(primaryIndex));
+        const auto* bodyTransform =
+            m_world.tryGetComponent<TransformComponent>(m_terrainBody);
+        const auto* bodySpin =
+            m_world.tryGetComponent<sw::phys::GravitySourceComponent>(m_terrainBody);
+        if (bodyTransform == nullptr)
+        {
+            return;
+        }
+        const auto& craft = m_world.getComponent<TransformComponent>(controlledEntity());
+        const sw::WorldVec3 radial = craft.position - bodyTransform->position;
+        const sw::f64 distance = glm::length(radial);
+        if (distance <= 1.0)
+        {
+            return;
+        }
+        const glm::dquat inverseRotation =
+            (bodySpin != nullptr) ? glm::inverse(sw::phys::spinRotation(*bodySpin))
+                                  : glm::inverse(glm::dquat(bodyTransform->rotation));
+        const sw::Vec3 here =
+            sw::Vec3(glm::normalize(inverseRotation * (radial / distance)));
+
+        // FORTY METRES, the scale of the field rather than of the terrain.
+        // Any further and a walking player leaves the grass behind.
+        const sw::f64 travelled =
+            static_cast<sw::f64>(glm::distance(here, m_grassCenterDir)) *
+            primary.bodyRadius;
+        if (m_grassLiveCount != 0 && travelled < 40.0)
+        {
+            return;
+        }
+
+        // ---- 3. seed it -----------------------------------------------------
+        // The grid is copied into the job rather than shared: 1.8 MB and a
+        // fifth of a millisecond buys the guarantee that a terrain rebuild
+        // landing mid-seed cannot pull the ground out from under it.
+        const std::vector<sw::Vertex> grid = m_terrainGridVertices;
+        const sw::u32 cells = m_terrainGridCells;
+        const sw::Vec3 centerDir = m_terrainCenterDir;
+        const sw::Vec3 east = m_terrainGridEast;
+        const sw::Vec3 north = m_terrainGridNorth;
+        const sw::f64 extent = m_terrainExtent;
+        const sw::f64 radius = primary.bodyRadius;
+        m_grassPendingCenterDir = here;
+        m_grassPendingOriginLocal = m_terrainOriginLocal;
+        m_grassUploadCursor = 0;
+        m_grassJob.store(TerrainJob::Running, std::memory_order_release);
+        threadPool().submit([this, grid, cells, centerDir, east, north, extent, radius,
+                             here]() {
+            buildGrassField(grid, cells, centerDir, east, north, extent, radius, here);
+            m_grassJob.store(TerrainJob::Ready, std::memory_order_release);
+        });
     }
 
     sw::i32 StarWorksGame::controlledPrimaryIndex() const
@@ -2989,52 +3604,54 @@ namespace game
 
     void StarWorksGame::toggleEva()
     {
-        if (!m_evaMode && m_capsuleEntity.isNull())
+        // ON FOOT IS HOME. The suit is created with the world and never
+        // destroyed; this only decides which of the two things the player's
+        // hands are on. Boarding therefore needs a vessel to board, and
+        // there may not be one — the world starts with none.
+        if (m_capsuleEntity.isNull())
         {
-            // First EVA: spawn the capsule beside the ship, co-moving.
+            return;
+        }
+        if (m_evaMode)
+        {
+            if (m_shipEntity.isNull() || !m_world.isAlive(m_shipEntity))
+            {
+                SW_LOG_INFO("Game", "No vessel to board — order one at the VAB");
+                return;
+            }
+            m_evaMode = false;
+            SW_LOG_INFO("Game", "Aboard: controlling vessel {}", m_shipEntity.index);
+            return;
+        }
+
+        // Stepping out: put the suit beside the vessel, CO-MOVING with it.
+        // Anything else and the ship leaves at orbital speed the instant the
+        // player's feet touch vacuum.
+        if (!m_shipEntity.isNull() && m_world.isAlive(m_shipEntity))
+        {
             const auto& shipTransform =
                 m_world.getComponent<TransformComponent>(m_shipEntity);
             const sw::WorldVec3 shipVelocity = controlledVelocity();
-
-            const sw::ecs::Entity e = m_world.createEntity();
-            TransformComponent transform{};
-            transform.position = shipTransform.position +
-                                 sw::WorldVec3(shipTransform.rotation *
-                                               sw::Vec3{12.0f, 0.0f, 0.0f});
-            m_world.addComponent(
-                e, PreviousTransformComponent{transform.position, transform.rotation});
-            m_world.addComponent(e, transform);
-            m_world.addComponent(e, BoundsComponent{1.4f});
-            m_world.addComponent(e, MeshComponent{m_capsuleMeshIndex});
-            m_world.addComponent(e, MapMarkerComponent{{1.0f, 0.8f, 0.2f, 1.0f}});
-            // The suit STANDS on the ground rather than being buried to the
-            // waist, and the box it stands on is EV-1's own hitbox — one
-            // description of how big the player is, not two.
-            m_world.addComponent(e, m_capsuleHull);
-            // ...and the same boxes again as the SOLID shape, plus the tag
-            // that says this is the thing that gets pushed out rather than
-            // the thing that does the pushing.
-            if (const auto* suit = sw::parts::findDefinition(sw::parts::kPropEvaSuit))
+            auto& transform = m_world.getComponent<TransformComponent>(m_capsuleEntity);
+            transform.position =
+                shipTransform.position +
+                sw::WorldVec3(shipTransform.rotation * sw::Vec3{12.0f, 0.0f, 0.0f});
+            transform.rotation = shipTransform.rotation;
+            if (auto* previous =
+                    m_world.tryGetComponent<PreviousTransformComponent>(m_capsuleEntity))
             {
-                sw::phys::HullComponent hull{};
-                if (hullFor(*suit, hull))
-                {
-                    m_world.addComponent(e, hull);
-                    m_world.addComponent(e, sw::phys::HullMoverComponent{});
-                }
+                previous->position = transform.position;
+                previous->rotation = transform.rotation;
             }
-            m_world.addComponent(e, CapsuleComponent{});
-            m_world.addComponent(e, ShipControlsComponent{});
-            sw::phys::DynamicBodyComponent body{};
-            body.velocity = shipVelocity;
-            body.mass = 120.0;
-            body.ballisticFactor = 0.01; // draggier than the ship
-            m_world.addComponent(e, body);
-            m_capsuleEntity = e;
+            if (auto* body =
+                    m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(m_capsuleEntity))
+            {
+                body->velocity = shipVelocity;
+                body->angularVelocity = sw::Vec3{0.0f};
+            }
         }
-        m_evaMode = !m_evaMode;
-        SW_LOG_INFO("Game", "{}", m_evaMode ? "EVA: controlling capsule"
-                                            : "Back aboard: controlling ship");
+        m_evaMode = true;
+        SW_LOG_INFO("Game", "EVA: on foot");
     }
 
     // STAGING: fire the ship's next decoupler, nose-most last.
@@ -3080,6 +3697,51 @@ namespace game
         // half the time that is left: the approach slows down of its own
         // accord and the last rung is x1, which is what stops the overshoot
         // a fixed ladder plus a human reaction time cannot avoid.
+        // ---- SYNC WARP: catching another player's temporality -------------
+        // Same servo as the node, one difference that matters: it is allowed
+        // past the altitude ladder. Closing a three-hour gap from a 200 km
+        // orbit at x100 would take a real hour, and nobody would use it.
+        bool bypassAltitudeCap = false;
+        if (m_syncWarpTo > 0.0)
+        {
+            const sw::f64 remaining = m_syncWarpTo - m_physicsLane->presentSeconds();
+            if (remaining <= 0.0 || !netActive() || !warpAllowed())
+            {
+                if (remaining > 0.0)
+                {
+                    SW_LOG_INFO("Game", "Sync warp stopped: {}",
+                                netActive() ? warpBlockReason() : "session ended");
+                }
+                else
+                {
+                    SW_LOG_INFO("Game", "Sync warp: caught up");
+                }
+                m_syncWarpTo = 0.0;
+                m_syncWarpPlayer = 0;
+                m_warpIndex = 0;
+            }
+            else
+            {
+                sw::u32 want = 0;
+                for (sw::u32 i = 0; i < kWarpSteps; ++i)
+                {
+                    if (static_cast<sw::f64>(kWarpLadder[i]) <= remaining * 0.5)
+                    {
+                        want = i;
+                    }
+                }
+                m_warpIndex = want;
+                bypassAltitudeCap = true;
+            }
+        }
+        if (m_syncWarpTo > 0.0 && (input().wasKeyPressed(sw::KeyCode::Period) ||
+                                   input().wasKeyPressed(sw::KeyCode::Comma)))
+        {
+            m_syncWarpTo = 0.0;
+            m_syncWarpPlayer = 0;
+            SW_LOG_INFO("Game", "Sync warp cancelled");
+        }
+
         if (m_warpToSeconds > 0.0)
         {
             if (!m_nodeActive)
@@ -3119,7 +3781,7 @@ namespace game
             SW_LOG_INFO("Game", "Warp to node cancelled");
         }
 
-        if (input().wasKeyPressed(sw::KeyCode::Period))
+        if (keyPressed(sw::KeyCode::Period))
         {
             if (m_simulation.isPaused())
             {
@@ -3131,7 +3793,7 @@ namespace game
                 ++m_warpIndex;
             }
         }
-        if (input().wasKeyPressed(sw::KeyCode::Comma) && !m_simulation.isPaused())
+        if (keyPressed(sw::KeyCode::Comma) && !m_simulation.isPaused())
         {
             if (m_warpIndex > 0)
             {
@@ -3155,12 +3817,32 @@ namespace game
                 minAltitude = std::min(minAltitude, altitude);
             });
 
-        const sw::f32 maxAllowed = maxWarpForAltitude(minAltitude);
-        while (m_warpIndex > 0 && kWarpLadder[m_warpIndex] > maxAllowed)
+        if (!bypassAltitudeCap)
         {
-            --m_warpIndex;
-            SW_LOG_INFO("Game", "Warp limited to x{:g} (altitude {:.0f} km)",
-                        kWarpLadder[m_warpIndex], minAltitude / 1000.0);
+            const sw::f32 maxAllowed = maxWarpForAltitude(minAltitude);
+            while (m_warpIndex > 0 && kWarpLadder[m_warpIndex] > maxAllowed)
+            {
+                --m_warpIndex;
+                SW_LOG_INFO("Game", "Warp limited to x{:g} (altitude {:.0f} km)",
+                            kWarpLadder[m_warpIndex], minAltitude / 1000.0);
+            }
+
+            // AND THE REAL GATE. Past physics warp the integrator is switched
+            // off and the world goes analytic, which is only an approximation
+            // of the truth when the truth is already analytic: a closed orbit
+            // clear of the air, or a craft standing still on the ground.
+            // A suborbital arc, a reentry or an escape trajectory is not, and
+            // warping one used to hand back a vehicle somewhere it could
+            // never have reached. The altitude ladder above never caught
+            // that: it happily allowed x1000 on a trajectory into the dirt.
+            if (kWarpLadder[m_warpIndex] > kMaxPhysicsWarp && !warpAllowed())
+            {
+                while (m_warpIndex > 0 && kWarpLadder[m_warpIndex] > kMaxPhysicsWarp)
+                {
+                    --m_warpIndex;
+                }
+                m_warpToSeconds = 0.0;
+            }
         }
 
         m_simulation.setTimeScale(kWarpLadder[m_warpIndex]);
@@ -3176,15 +3858,32 @@ namespace game
 
     void StarWorksGame::updateShipControls()
     {
-        // The jump edge is TAKEN here, whether or not it can be used: a
-        // request that survives a trip through the map screen would fire the
-        // moment the player came back, which is not what they pressed.
+        // THE JUMP IS A LATCH, NOT AN EDGE, and this is why.
+        //
+        // `ShipControlsComponent` is cleared and rewritten here, once per
+        // RENDERED FRAME. It is consumed by CapsuleMovementSystem, which
+        // runs on the physics lane at a FIXED fifty hertz. Above sixty frames
+        // a second most frames tick that lane zero times — so a jump written
+        // as a one-frame edge was cleared again before any tick could see it,
+        // and roughly one press in three did nothing at all.
+        //
+        // So the request stays set until a physics tick has actually run
+        // (cleared in onUpdate, after `advance`). Pressing twice inside one
+        // tick still jumps once: the system sets isGrounded to 0 as it goes,
+        // and a second tick finds no ground to push off.
         const bool jumpRequested = m_jumpRequested;
-        m_jumpRequested = false;
 
-        // Idle both control blocks, then feed the controlled one.
-        auto& shipControls = m_world.getComponent<ShipControlsComponent>(m_shipEntity);
-        shipControls = {};
+        // Idle both control blocks, then feed the controlled one. There may
+        // be NO SHIP: the world starts without one and stays that way until
+        // a VAB builds a design and a pad rolls it out.
+        ShipControlsComponent* shipControls =
+            m_shipEntity.isNull()
+                ? nullptr
+                : m_world.tryGetComponent<ShipControlsComponent>(m_shipEntity);
+        if (shipControls != nullptr)
+        {
+            *shipControls = {};
+        }
         ShipControlsComponent* capsuleControls = nullptr;
         if (!m_capsuleEntity.isNull())
         {
@@ -3202,8 +3901,13 @@ namespace game
             return; // engines only work while the world is truly simulated
         }
 
-        ShipControlsComponent& controls =
-            (m_evaMode && capsuleControls != nullptr) ? *capsuleControls : shipControls;
+        ShipControlsComponent* controlsPtr =
+            (m_evaMode && capsuleControls != nullptr) ? capsuleControls : shipControls;
+        if (controlsPtr == nullptr)
+        {
+            return; // nothing under this player's hands
+        }
+        ShipControlsComponent& controls = *controlsPtr;
 
         const bool walking = m_evaMode && capsuleControls != nullptr;
 
@@ -3431,29 +4135,45 @@ namespace game
 
     void StarWorksGame::onUpdate(sw::f32 deltaSeconds)
     {
+        // The address field takes the keyboard while it has focus — including
+        // ESC, which cancels it rather than quitting the game. Everything
+        // below asks through keyPressed(), which is false while typing.
+        updateTextField();
+
         // ESC quits the game — except in the hangar, where it belongs to
         // the editor (drop / put back the held part).
-        if (input().wasKeyPressed(sw::KeyCode::Escape) && !m_editorMode)
+        if (keyPressed(sw::KeyCode::Escape) && !m_editorMode)
         {
             window().requestClose();
             return;
         }
 
         // --- mode toggles -------------------------------------------------------
-        if (input().wasKeyPressed(sw::KeyCode::M))
+        if (keyPressed(sw::KeyCode::M))
         {
             m_mapView = !m_mapView;
             SW_LOG_INFO("Game", "Star map {}", m_mapView ? "opened" : "closed");
         }
-        if (input().wasKeyPressed(sw::KeyCode::G) && !m_mapView)
+        if (keyPressed(sw::KeyCode::G) && !m_mapView)
         {
             toggleEva();
         }
-        if (input().wasKeyPressed(sw::KeyCode::V))
+        // F3, not a letter: N already creates a maneuver node on the map,
+        // and every other letter in reach is a flight control. F2 shows the
+        // hulls, F5/F9 save and load — the panel keys are a family.
+        if (keyPressed(sw::KeyCode::F3))
+        {
+            m_netPanel = !m_netPanel;
+            if (!m_netPanel)
+            {
+                m_netAddressFocused = false;
+            }
+        }
+        if (keyPressed(sw::KeyCode::V))
         {
             m_speedSurfaceRelative = !m_speedSurfaceRelative;
         }
-        if (input().wasKeyPressed(sw::KeyCode::Tab))
+        if (keyPressed(sw::KeyCode::Tab))
         {
             m_shipMode = !m_shipMode;
             if (!m_shipMode)
@@ -3472,7 +4192,7 @@ namespace game
         // stops. Space was doing the one thing a pilot's thumb should never
         // do by accident, on the key every game in the genre uses to stage.
         // On foot it jumps; in a rocket it fires the next decoupler.
-        if (input().wasKeyPressed(sw::KeyCode::Space) && !m_editorMode && !m_mapView)
+        if (keyPressed(sw::KeyCode::Space) && !m_editorMode && !m_mapView)
         {
             if (m_evaMode)
             {
@@ -3489,7 +4209,11 @@ namespace game
         }
 
         // ---- vessel editor (B) + staging (Z) -----------------------------------
-        if (input().wasKeyPressed(sw::KeyCode::B) && !m_mapView && !m_evaMode)
+        // THE HANGAR OPENS ON FOOT. It used to require a cockpit, which
+        // made sense while the player began in one; now that on foot is the
+        // normal state, refusing there would put the design tool behind a
+        // vessel you can only obtain by using the design tool.
+        if (keyPressed(sw::KeyCode::B) && !m_mapView)
         {
             if (m_editorMode) { exitEditor(); }
             else { enterEditor(); }
@@ -3500,7 +4224,10 @@ namespace game
         }
         // Z stays as the second name for the same action — the muscle
         // memory of everyone who has flown this build so far.
-        if (input().wasKeyPressed(sw::KeyCode::Z) && !m_editorMode && !m_mapView)
+        // Staging belongs to whoever is IN the rocket. On foot it would fire
+        // a decoupler on a vessel the player is not aboard and may not even
+        // be able to see.
+        if (keyPressed(sw::KeyCode::Z) && !m_editorMode && !m_mapView && !m_evaMode)
         {
             fireNextDecoupler();
         }
@@ -3546,7 +4273,7 @@ namespace game
         // ---- SAS: T cycles OFF -> SAS -> PGD -> RTG -> NODE; buttons too ------
         // NODE is skipped when there is no node: cycling onto a mode that
         // cannot point anywhere would look like the key had stopped working.
-        if (input().wasKeyPressed(sw::KeyCode::T))
+        if (keyPressed(sw::KeyCode::T))
         {
             const sw::u32 ring[5] = {SasComponent::kOff, SasComponent::kStability,
                                      SasComponent::kPrograde, SasComponent::kRetrograde,
@@ -3563,13 +4290,13 @@ namespace game
             }
             m_sasMode = ring[(index + 1) % count];
         }
-        if (input().wasKeyPressed(sw::KeyCode::P) && !m_editorMode)
+        if (keyPressed(sw::KeyCode::P) && !m_editorMode)
         {
             cyclePilotedVessel(); // fly any built vessel
         }
         // F opens the BUILDING catalogue. Not in the hangar, which is the
         // rocket editor and has its own palette.
-        if (input().wasKeyPressed(sw::KeyCode::F) && !m_editorMode)
+        if (keyPressed(sw::KeyCode::F) && !m_editorMode)
         {
             m_buildMenu = !m_buildMenu;
             m_configTarget = {}; // one panel at a time
@@ -3578,7 +4305,7 @@ namespace game
         // rebuild: the hitboxes are authored by hand now, and an authoring
         // mistake and an engine mistake look identical until you can see
         // the boxes.
-        if (input().wasKeyPressed(sw::KeyCode::F2))
+        if (keyPressed(sw::KeyCode::F2))
         {
             m_showHitboxes = !m_showHitboxes;
             SW_LOG_INFO("Game", "HITBOXES {}", m_showHitboxes ? "SHOWN" : "HIDDEN");
@@ -3586,7 +4313,7 @@ namespace game
         // E opens the MACHINE panel of whatever you are standing next to.
         // On foot only: E is also the ship's roll axis, and a pilot pressing
         // it means roll. (`m_evaMode` is checked inside.)
-        if (input().wasKeyPressed(sw::KeyCode::E) && m_evaMode && !m_editorMode)
+        if (keyPressed(sw::KeyCode::E) && m_evaMode && !m_editorMode)
         {
             // Closing needs nothing; OPENING casts a ray from the camera, so
             // it has to wait for this frame's camera — the same reason the
@@ -3645,6 +4372,10 @@ namespace game
             }
         }
 
+        // The gate the warp control reads. Computed here, once, so the HUD
+        // and the control cannot disagree about whether this craft is in a
+        // stable orbit — they run at opposite ends of the frame.
+        refreshFlightState();
         updateWarp();
 
         // --- per-mode camera & controls ------------------------------------------
@@ -3707,13 +4438,23 @@ namespace game
             m_aerodynamics->setTimeSeconds(m_physicsLane->presentSeconds());
         }
 
+        const sw::u64 physicsTicksBefore = m_physicsLane->tickCount();
         m_simulation.advance(m_world, deltaSeconds, &threadPool());
         m_commands.playback(m_world);
+        if (m_physicsLane->tickCount() != physicsTicksBefore)
+        {
+            // A tick ran, so whatever was latched has been acted on.
+            m_jumpRequested = false;
+        }
+        // After the clock has moved: the session reports THIS player's new
+        // instant, and whatever the timeline says is now due is released.
+        updateNetwork(deltaSeconds);
 
         // Fresh hierarchy snapshot for the map, HUD and flight plan.
         m_celestialIndex.rebuild(m_world);
         refreshPrediction();
         updateTerrainPatch();
+        updateGrassField();
 
         updateReentryEffects(deltaSeconds);
         // A crate of rocket that has arrived becomes a rocket. Once a frame
@@ -3812,6 +4553,120 @@ namespace game
         outX = input().mouseX() / static_cast<sw::f32>(width) * 2.0f - 1.0f;
         outY = input().mouseY() / static_cast<sw::f32>(height) * 2.0f - 1.0f;
         return true;
+    }
+
+    void StarWorksGame::hudDesignPreview(const sw::parts::ShipBlueprint& design,
+                                         sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
+                                         sw::f32 spinRadians)
+    {
+        if (design.parts.empty())
+        {
+            return;
+        }
+
+        // ---- 1. how big is it, and where is its middle --------------------
+        sw::Vec3 low{1.0e9f};
+        sw::Vec3 high{-1.0e9f};
+        for (const sw::parts::BlueprintPartRecord& part : design.parts)
+        {
+            const auto* definition = sw::parts::findDefinition(part.definitionId);
+            if (definition == nullptr)
+            {
+                continue;
+            }
+            const sw::f32 reach = sw::parts::partBoundsRadius(*definition);
+            low = glm::min(low, part.localPosition - sw::Vec3{reach});
+            high = glm::max(high, part.localPosition + sw::Vec3{reach});
+        }
+        if (low.x > high.x)
+        {
+            return; // nothing in the catalogue matched a part we have
+        }
+        const sw::Vec3 centre = (low + high) * 0.5f;
+        const sw::Vec3 half = glm::max((high - low) * 0.5f, sw::Vec3{0.05f});
+
+        // ---- 2. the view: proper rotations only ---------------------------
+        // Stood upright by the same rotation the hangar uses, turned about
+        // that vertical by the caller's angle, and tipped a little so the
+        // thing reads as a solid rather than a silhouette.
+        // The hangar's own display rotation: +90 deg about X puts the nose
+        // (-Z) up. Written out rather than shared because the constant lives
+        // in the hangar's translation unit section, further down this file.
+        constexpr sw::f32 kPitch = 0.22f;
+        const sw::Quat standUpright = glm::angleAxis(1.5707963f, sw::Vec3{1, 0, 0});
+        const sw::Quat view = glm::angleAxis(-kPitch, sw::Vec3{1.0f, 0.0f, 0.0f}) *
+                              glm::angleAxis(spinRadians, sw::Vec3{0.0f, 1.0f, 0.0f}) *
+                              standUpright;
+
+        // ---- 3. fit it to the rectangle -----------------------------------
+        // NDC x is compressed by the aspect ratio and NDC y is not, so the
+        // width available in "square" units is the half-width TIMES aspect.
+        //
+        // FIT THE SHAPE, NOT ITS BOUNDING SPHERE. A rocket is long and thin,
+        // and a sphere around it is as wide as it is tall — framing by the
+        // sphere throws away a third of the height for a width nothing ever
+        // occupies. So: the vessel's own axis (+Z, stood upright, so it runs
+        // up the screen) sets the vertical extent, its radial size sets the
+        // horizontal one, and the pitch mixes a little of each into the
+        // other. Worst case over a whole turn, so the model does not pulse
+        // as it spins.
+        const sw::f32 radial = std::max(half.x, half.y);
+        const sw::f32 needHeight =
+            half.z * std::cos(kPitch) + radial * std::sin(kPitch);
+        const sw::f32 needWidth = radial;
+
+        const sw::f32 aspect = renderer().aspectRatio();
+        const sw::f32 halfWidth = std::abs(x1 - x0) * 0.5f;
+        const sw::f32 halfHeight = std::abs(y1 - y0) * 0.5f;
+        const sw::f32 scale = std::min(halfWidth * aspect / needWidth,
+                                       halfHeight / needHeight) *
+                              0.92f;
+        const sw::Vec3 middle{(x0 + x1) * 0.5f, (y0 + y1) * 0.5f, 0.0f};
+
+        // THE Y IS NEGATED, ONCE. The camera does the same thing in its
+        // projection and the front-face convention was settled against it;
+        // a preview that skipped the flip would be culled inside out.
+        const sw::Mat4 frame =
+            glm::translate(sw::Mat4{1.0f}, middle) *
+            glm::scale(sw::Mat4{1.0f}, sw::Vec3{scale / aspect, -scale, scale}) *
+            glm::mat4_cast(view);
+
+        // ---- 4. back to front ---------------------------------------------
+        // The view looks toward -Z of its own space, exactly as the camera
+        // does, so the most negative depth is the farthest away.
+        struct Ordered
+        {
+            sw::f32 depth;
+            const sw::parts::BlueprintPartRecord* part;
+        };
+        std::vector<Ordered> ordered;
+        ordered.reserve(design.parts.size());
+        for (const sw::parts::BlueprintPartRecord& part : design.parts)
+        {
+            ordered.push_back({(view * (part.localPosition - centre)).z, &part});
+        }
+        std::sort(ordered.begin(), ordered.end(),
+                  [](const Ordered& a, const Ordered& b) { return a.depth < b.depth; });
+
+        // ---- 5. submit -----------------------------------------------------
+        for (const Ordered& entry : ordered)
+        {
+            const auto meshIt = m_partMeshIds.find(entry.part->definitionId);
+            if (meshIt == m_partMeshIds.end())
+            {
+                continue;
+            }
+            sw::DrawItem item{};
+            item.mesh = &m_meshes[meshIt->second];
+            item.transform =
+                frame *
+                glm::translate(sw::Mat4{1.0f}, entry.part->localPosition - centre) *
+                glm::mat4_cast(entry.part->localRotation);
+            item.screenSpace = true;
+            item.hudSolid = true;
+            item.hudLayer = static_cast<sw::u8>(sw::ui::HudLayer::Background);
+            m_drawItems.push_back(item);
+        }
     }
 
     void StarWorksGame::hudText(std::string_view text, sw::f32 x, sw::f32 y,
@@ -4158,13 +5013,40 @@ namespace game
         }
 
         // ---- throttle + warp -----------------------------------------------------------
-        const auto& ship = m_world.getComponent<ShipComponent>(m_shipEntity);
-        hudText(std::format("THR {:.0f}%  WARP X{}", ship.throttle * 100.0f,
-                            m_simulation.isPaused()
-                                ? std::string("0")
-                                : warpText(kWarpLadder[m_warpIndex])),
+        // On foot there is no throttle, and there may be no vessel at all.
+        const auto* ship = m_shipEntity.isNull()
+                               ? nullptr
+                               : m_world.tryGetComponent<ShipComponent>(m_shipEntity);
+        const std::string warpLabel = m_simulation.isPaused()
+                                          ? std::string("0")
+                                          : warpText(kWarpLadder[m_warpIndex]);
+        hudText((ship != nullptr && !m_evaMode)
+                    ? std::format("THR {:.0f}%  WARP X{}", ship->throttle * 100.0f,
+                                  warpLabel)
+                    : std::format("WARP X{}", warpLabel),
                 kX, y, kLine, dim);
         y += kLine * 1.3f;
+        // STANDING ON SOMETHING: how far over it is leaning, and whether
+        // the ground is still holding it. A rocket resting at eight degrees
+        // is not a broken rocket — a body inside its own support polygon
+        // does not stand itself back up — but there was no way to tell that
+        // from a rocket that had stopped being simulated.
+        if (m_flight.grounded)
+        {
+            hudText(std::format("LANDED  LEAN {:.0f} DEG  {}", m_flight.leanDegrees,
+                                m_flight.tipping ? "TIPPING" : "RESTING"),
+                    kX, y, kLine * 0.85f,
+                    m_flight.tipping ? sw::Vec4{1.0f, 0.65f, 0.25f, 1.0f} : dim);
+            y += kLine * 1.15f;
+        }
+        // WHY THE WARP KEY IS DOING NOTHING. The gate is a rule about the
+        // situation, not about the key, so it has to say which situation.
+        if (!warpAllowed())
+        {
+            hudText(std::format("WARP LOCKED  {}", warpBlockReason()), kX, y, kLine * 0.8f,
+                    sw::Vec4{0.95f, 0.45f, 0.35f, 1.0f});
+            y += kLine * 1.1f;
+        }
 
         // ---- vessel resources (parts carry them as real cargo) -----------------
         sw::f64 fuelUnits = 0.0;
@@ -4438,6 +5320,14 @@ namespace game
         {
             collectMapButtons();
             collectWarpToNodeButton(); // appends: collectMapButtons clears
+        }
+        // The multiplayer panel lives on the RIGHT and appends after
+        // whichever collector above cleared the list, so it coexists with the
+        // flight HUD, the map and even the build catalogue rather than
+        // fighting any of them for the button table.
+        if (m_netPanel && !m_editorMode)
+        {
+            collectNetPanel();
         }
         // (Hangar UI is not collected here: the hangar renders through its
         // own path — collectHangarItems -> collectEditorUi.)
@@ -5252,26 +6142,6 @@ namespace game
         return root;
     }
 
-    void StarWorksGame::hangarBuild()
-    {
-        if (m_blueprint.empty())
-        {
-            return;
-        }
-        const sw::ecs::Entity vessel = instantiateBlueprint(m_hangarSource);
-        if (m_hangarSource.isNull())
-        {
-            m_shipEntity = vessel; // fly the new build from the pad
-            m_sasMode = 0;
-            SW_LOG_INFO("Game", "HANGAR: new vessel BUILT on the launch pad");
-        }
-        else
-        {
-            SW_LOG_INFO("Game", "HANGAR: modifications applied to loaded vessel");
-        }
-        exitEditor();
-    }
-
     // ------------------------------------------------------------------------
     // F5 — A DESIGN IS A FILE, AND A FILE IS A ROCKET
     //
@@ -5322,12 +6192,12 @@ namespace game
         return design;
     }
 
-    void StarWorksGame::hangarSaveShip()
+    std::string StarWorksGame::hangarSaveShip()
     {
         if (m_blueprint.empty())
         {
             SW_LOG_WARN("Game", "HANGAR: nothing to save");
-            return;
+            return {};
         }
         // The name is the one thing the hangar has no field for yet, so it
         // is derived: DESIGN 1, DESIGN 2... A rename UI is a text box, and a
@@ -5357,7 +6227,7 @@ namespace game
         if (!sw::parts::saveBlueprintFile(design, path))
         {
             SW_LOG_ERROR("Game", "HANGAR: could not save '{}'", path.string());
-            return;
+            return {};
         }
         // Registered as well as written: the point of saving is that you can
         // walk to the VAB and order it, now, without restarting the game.
@@ -5366,6 +6236,7 @@ namespace game
         SW_LOG_INFO("Game",
                     "HANGAR: saved '{}' ({} parts, {:.0f} kg iron, {:.0f} kg copper)",
                     name, design.parts.size(), bill.ironKg, bill.copperKg);
+        return name;
     }
 
     void StarWorksGame::orderVehicle(sw::ecs::Entity hall,
@@ -5589,6 +6460,48 @@ namespace game
         m_world.forEach<ShipComponent>([&](sw::ecs::Entity entity, ShipComponent&) {
             pilotable.push_back(entity);
         });
+        if (pilotable.empty())
+        {
+            SW_LOG_INFO("Game", "No vessel exists yet — order one at the VAB");
+            return;
+        }
+
+        // ON FOOT, `P` BOARDS THE NEAREST ONE. Cycling through a list is the
+        // right verb when you are already flying and want the other rocket;
+        // it is the wrong one when you are standing next to exactly one.
+        if (m_evaMode || m_shipEntity.isNull() || !m_world.isAlive(m_shipEntity))
+        {
+            const sw::WorldVec3 here =
+                m_world.getComponent<TransformComponent>(controlledEntity()).position;
+            sw::ecs::Entity best{};
+            sw::f64 bestDistance = 0.0;
+            for (const sw::ecs::Entity candidate : pilotable)
+            {
+                const auto* transform =
+                    m_world.tryGetComponent<TransformComponent>(candidate);
+                if (transform == nullptr)
+                {
+                    continue;
+                }
+                const sw::f64 distance = glm::length(transform->position - here);
+                if (best.isNull() || distance < bestDistance)
+                {
+                    best = candidate;
+                    bestDistance = distance;
+                }
+            }
+            if (best.isNull())
+            {
+                return;
+            }
+            m_shipEntity = best;
+            m_evaMode = false;
+            m_sasMode = 0;
+            SW_LOG_INFO("Game", "Boarded vessel {} ({:.0f} m away)", m_shipEntity.index,
+                        bestDistance);
+            return;
+        }
+
         if (pilotable.size() < 2)
         {
             return;
@@ -5602,7 +6515,6 @@ namespace game
             }
         }
         m_shipEntity = pilotable[next];
-        m_evaMode = false;
         m_sasMode = 0;
         SW_LOG_INFO("Game", "PILOTING vessel {}", m_shipEntity.index);
     }
@@ -5935,11 +6847,14 @@ namespace game
             {"UNDO", 201, false},          {"NEW", 202, false},
             {"LOAD", 203, false},          {symLabel.c_str(), 205, m_symmetryCount > 1},
             {m_showCenters ? "CG:ON" : "CG:OFF", 206, m_showCenters},
-            // SAVE is the F5 verb: a design on disk is a design a VAB can be
-            // told to build. BUILD stays beside it as the test shortcut it
-            // has always been — one click from a drawing to a rocket on the
-            // pad, with no factory in between.
-            {"SAVE", 207, true},           {"BUILD", 204, true},
+            // SAVE is the ONLY thing this room does to the world, and it
+            // does it once, on this press — not on every part placed. What
+            // it produces is a DESIGN: a `.swship` on disk, registered so a
+            // VAB can be told to build it. The hangar itself has not made a
+            // rocket since F9; the button that used to is gone, because a
+            // drawing office that can also manufacture makes the factory
+            // beside it decorative.
+            {"SAVE", 207, true},
         };
         constexpr sw::f32 kButtonWidth = 0.135f;
         constexpr sw::f32 kButtonHeight = 0.072f;
@@ -5972,6 +6887,653 @@ namespace game
         hudText(std::format("WET MASS {:.1f} T  COST {:.0f}  PARTS {}",
                             wetMassKg / 1000.0, costCredits, m_blueprint.size()),
                 0.16f, -0.95f, 0.034f, textColor);
+    }
+
+    // ========================================================================
+    // MULTIPLAYER
+    // ========================================================================
+
+    bool StarWorksGame::keyPressed(sw::KeyCode key)
+    {
+        return !m_netAddressFocused && input().wasKeyPressed(key);
+    }
+
+    void StarWorksGame::refreshFlightState()
+    {
+        m_flight = FlightState{};
+
+        const sw::ecs::Entity flown = controlledEntity();
+        if (flown.isNull() || !m_world.isAlive(flown))
+        {
+            return;
+        }
+
+        // STANDING ON SOMETHING. Two spellings of the same fact: a live body
+        // resting on terrain, or — once rails warp has already converted it —
+        // a surface anchor, which has no DynamicBodyComponent at all. Testing
+        // only the first would make the gate slam shut the instant the warp
+        // it permitted took effect.
+        if (const auto* body = m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(flown))
+        {
+            m_flight.grounded = body->isGrounded != 0;
+        }
+        if (m_world.tryGetComponent<sw::phys::SurfaceAnchorComponent>(flown) != nullptr)
+        {
+            m_flight.grounded = true;
+        }
+
+        m_flight.primaryIndex = controlledPrimaryIndex();
+        if (m_flight.primaryIndex < 0)
+        {
+            return;
+        }
+
+        const auto& primary =
+            m_celestialIndex.body(static_cast<sw::usize>(m_flight.primaryIndex));
+        const sw::f64 time = m_physicsLane->presentSeconds();
+        sw::WorldVec3 primaryPosition{0.0};
+        sw::WorldVec3 primaryVelocity{0.0};
+        m_celestialIndex.stateAt(m_flight.primaryIndex, time, primaryPosition,
+                                 &primaryVelocity);
+
+        const sw::WorldVec3 position =
+            m_world.getComponent<TransformComponent>(flown).position;
+        m_flight.altitude = glm::length(position - primaryPosition) - primary.bodyRadius;
+
+        if (const auto* air =
+                m_world.tryGetComponent<sw::phys::AtmosphereComponent>(primary.entity))
+        {
+            m_flight.atmosphereTop = air->topAltitude;
+        }
+
+        if (m_flight.grounded)
+        {
+            // LEANING, AND WHETHER THAT IS A PROBLEM. Measured against the
+            // same statics the ground contact uses, so the readout and the
+            // physics can never disagree.
+            const sw::Vec3 up = glm::normalize(sw::Vec3(position - primaryPosition));
+            const auto& transform = m_world.getComponent<TransformComponent>(flown);
+            const sw::Vec3 nose = transform.rotation * sw::Vec3{0.0f, 0.0f, -1.0f};
+            m_flight.leanDegrees = static_cast<sw::f32>(
+                std::acos(std::clamp(static_cast<sw::f64>(glm::dot(nose, up)), -1.0, 1.0)) *
+                180.0 / 3.14159265358979);
+
+            const auto* hull = m_world.tryGetComponent<sw::phys::GroundHullComponent>(flown);
+            const auto* vessel = m_world.tryGetComponent<sw::parts::VesselComponent>(flown);
+            const auto* body = m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(flown);
+            if (hull != nullptr && vessel != nullptr && body != nullptr)
+            {
+                const sw::Vec3 topple = sw::phys::topplingAcceleration(
+                    *hull, transform.rotation, up, vessel->centreOfMass,
+                    vessel->inertiaKgM2, body->mass,
+                    primary.mu / (primary.bodyRadius * primary.bodyRadius));
+                m_flight.tipping = glm::length(topple) > 1.0e-6f;
+            }
+            return; // no orbit to speak of, and none needed
+        }
+
+        sw::phys::KeplerOrbit orbit{};
+        if (!sw::phys::kepler::fromStateVectors(primary.mu, position - primaryPosition,
+                                                controlledVelocity() - primaryVelocity,
+                                                time, orbit, /*allowHyperbolic=*/true))
+        {
+            return;
+        }
+        m_flight.periapsisAltitude = sw::phys::kepler::periapsis(orbit) - primary.bodyRadius;
+        m_flight.closedOrbit = !orbit.isHyperbolic();
+        if (m_flight.closedOrbit)
+        {
+            m_flight.apoapsisAltitude =
+                sw::phys::kepler::apoapsis(orbit) - primary.bodyRadius;
+        }
+    }
+
+    bool StarWorksGame::warpAllowed() const
+    {
+        // The rule itself lives in the engine (phys::warpPermitted) so it can
+        // be tested without a window; this only feeds it this frame's state.
+        return sw::phys::warpPermitted(m_flight.grounded, m_flight.closedOrbit,
+                                       m_flight.periapsisAltitude,
+                                       m_flight.atmosphereTop);
+    }
+
+    const char* StarWorksGame::warpBlockReason() const
+    {
+        if (warpAllowed())
+        {
+            return "";
+        }
+        if (!m_flight.closedOrbit)
+        {
+            return "NO CLOSED ORBIT";
+        }
+        return "PERIAPSIS IN AIR";
+    }
+
+    std::vector<sw::net::PlayerView> StarWorksGame::netRoster() const
+    {
+        if (m_netHost != nullptr)
+        {
+            return m_netHost->roster();
+        }
+        if (m_netClient != nullptr)
+        {
+            return m_netClient->roster();
+        }
+        return {};
+    }
+
+    void StarWorksGame::netHost()
+    {
+        netLeave();
+        try
+        {
+            sw::net::ReplicationSet set;
+            set.include("sw.Transform")
+                .include("phys.DynamicBody")
+                .include("phys.OnRails")
+                .include("parts.Part")
+                .include("parts.Vessel")
+                .include("game.Ship");
+
+            sw::net::PeerAddress bind{};
+            const bool parsed = sw::net::PeerAddress::parse(m_netAddress, bind);
+            const sw::u16 port = parsed && bind.port != 0 ? bind.port : sw::u16{7777};
+
+            sw::net::Host::Config config;
+            config.hostName = "host";
+            m_netHost = std::make_unique<sw::net::Host>(
+                std::make_unique<sw::net::UdpSocket>(port), m_saveSchema, set, config);
+            // Show the address the OTHER machine has to type, not the port
+            // on its own. Guessing your own LAN address out of ipconfig is
+            // the first thing that goes wrong, and the socket already knows.
+            const sw::net::PeerAddress lan = sw::net::localAddress(m_netHost->port());
+            m_netStatus = std::format("HOSTING ON {}", lan.toString());
+            SW_LOG_INFO("Game", "Multiplayer: hosting on UDP port {} — others join with {}",
+                        m_netHost->port(), lan.toString());
+
+            // THE FIREWALL, HERE AND NOWHERE ELSE. Hosting is the only thing
+            // in the game that needs an unsolicited inbound datagram, and
+            // pressing HOST is the only moment at which asking for it is
+            // both expected and explicable. The call is a no-op — no prompt,
+            // no process — when the rule already exists, so a player who
+            // accepted once never sees it again.
+            const sw::platform::FirewallRequest firewall = sw::platform::allowInboundUdp();
+            m_netFirewall = firewall;
+            m_netPublicNetwork = sw::platform::onPublicNetwork();
+            if (m_netPublicNetwork)
+            {
+                SW_LOG_WARN("Game",
+                            "Multiplayer: this machine is on a PUBLIC network profile. The "
+                            "inbound rule covers Private and Domain only, so it is inert: "
+                            "Windows will drop the connection attempt however many rules "
+                            "exist. Set-NetConnectionProfile -NetworkCategory Private.");
+            }
+            switch (firewall)
+            {
+                case sw::platform::FirewallRequest::Added:
+                    SW_LOG_INFO("Game", "Multiplayer: firewall rule added for this executable");
+                    break;
+                case sw::platform::FirewallRequest::Declined:
+                    // Hosting continues. Refusing administrator rights is a
+                    // legitimate answer, the session is perfectly playable
+                    // from this machine, and someone on the same network may
+                    // still get through if a rule exists by another route.
+                    // The verdict goes on its OWN line in the panel, not on
+                    // the end of the status: measured, "HOSTING ON
+                    // 192.168.1.61:7777 - FIREWALL REFUSED" is 0.725 NDC
+                    // wide against 0.494 of usable width.
+                    SW_LOG_WARN("Game",
+                                "Multiplayer: administrator rights refused, so no inbound rule "
+                                "was added. Players on other machines will most likely see "
+                                "NO REPLY. Run firewall.ps1 as administrator to add it later.");
+                    break;
+                case sw::platform::FirewallRequest::Failed:
+                    SW_LOG_ERROR("Game",
+                                 "Multiplayer: the inbound rule could not be added. "
+                                 "Run firewall.ps1 as administrator.");
+                    break;
+                case sw::platform::FirewallRequest::AlreadyAllowed:
+                case sw::platform::FirewallRequest::Unsupported:
+                    break;
+            }
+        }
+        catch (const sw::Exception& e)
+        {
+            m_netHost.reset();
+            m_netStatus = "HOST FAILED";
+            SW_LOG_ERROR("Game", "Could not host: {}", e.what());
+        }
+    }
+
+    void StarWorksGame::netJoin()
+    {
+        netLeave();
+        sw::net::PeerAddress address{};
+        if (!sw::net::PeerAddress::parse(m_netAddress, address) || address.port == 0)
+        {
+            m_netStatus = "BAD ADDRESS";
+            return;
+        }
+        try
+        {
+            m_netMirror.clearForRestore();
+            m_netClient = std::make_unique<sw::net::Client>(
+                std::make_unique<sw::net::UdpSocket>(0), m_saveSchema, "pilot");
+            m_netClient->connect(address, clock().totalSeconds());
+            m_netStatus = std::format("JOINING {}", address.toString());
+            SW_LOG_INFO("Game", "Multiplayer: {}", m_netStatus);
+        }
+        catch (const sw::Exception& e)
+        {
+            m_netClient.reset();
+            m_netStatus = "JOIN FAILED";
+            SW_LOG_ERROR("Game", "Could not join: {}", e.what());
+        }
+    }
+
+    void StarWorksGame::netLeave()
+    {
+        const sw::f64 now = clock().totalSeconds();
+        if (m_netClient != nullptr)
+        {
+            m_netClient->disconnect(now);
+            m_netClient.reset();
+        }
+        if (m_netHost != nullptr)
+        {
+            m_netHost->shutdown(now);
+            m_netHost.reset();
+        }
+        m_syncWarpTo = 0.0;
+        m_syncWarpPlayer = 0;
+        m_netStatus.clear();
+        m_netTimeoutLogged = false;
+        m_netFirewall = sw::platform::FirewallRequest::Unsupported;
+        m_netPublicNetwork = false;
+    }
+
+    void StarWorksGame::netSyncTo(sw::u32 playerId, sw::f64 targetSeconds)
+    {
+        // The catch-up warp is still a warp: it puts the world on rails and
+        // stops integrating, so the same rule applies. What it does bypass is
+        // the ALTITUDE ladder — a player parked in a 200 km orbit would
+        // otherwise be capped at x100 and never close a three-hour gap.
+        if (!warpAllowed())
+        {
+            m_netStatus = std::format("CANNOT SYNC - {}", warpBlockReason());
+            return;
+        }
+        if (targetSeconds <= m_physicsLane->presentSeconds())
+        {
+            m_netStatus = "ALREADY THERE";
+            return;
+        }
+        m_syncWarpTo = targetSeconds;
+        m_syncWarpPlayer = playerId;
+        m_warpToSeconds = 0.0; // one destination at a time
+        m_simulation.setPaused(false);
+        SW_LOG_INFO("Game", "Sync warp to player {} at t={:.0f}", playerId, targetSeconds);
+    }
+
+    void StarWorksGame::updateTextField()
+    {
+        if (!m_netAddressFocused)
+        {
+            return;
+        }
+        // Only what an address is made of. The HUD font has no lowercase and
+        // no underscore, so a hostname could not be displayed even if it
+        // could be typed; digits, dots and a colon are the whole alphabet.
+        for (const sw::u32 codepoint : input().charsTyped())
+        {
+            if (m_netAddress.size() >= 21)
+            {
+                break;
+            }
+            if ((codepoint >= '0' && codepoint <= '9') || codepoint == '.' ||
+                codepoint == ':')
+            {
+                m_netAddress.push_back(static_cast<char>(codepoint));
+            }
+        }
+        if (input().wasKeyPressed(sw::KeyCode::Backspace) && !m_netAddress.empty())
+        {
+            m_netAddress.pop_back();
+        }
+        if (input().wasKeyPressed(sw::KeyCode::Enter) ||
+            input().wasKeyPressed(sw::KeyCode::Escape))
+        {
+            m_netAddressFocused = false;
+        }
+    }
+
+    void StarWorksGame::updateNetwork(sw::f32 deltaSeconds)
+    {
+        (void)deltaSeconds;
+        if (!netActive())
+        {
+            return;
+        }
+
+        const sw::f64 wall = clock().totalSeconds();
+        const sw::f64 simulated = m_physicsLane->presentSeconds();
+
+        if (m_netHost != nullptr)
+        {
+            m_netHost->update(wall, m_world, simulated);
+        }
+        if (m_netClient != nullptr)
+        {
+            m_netClient->update(wall, m_netMirror, simulated);
+            if (m_netClient->state() == sw::net::ClientState::Connected)
+            {
+                m_netStatus = std::format("JOINED AS {}", m_netClient->clientId());
+            }
+            else if (m_netClient->state() == sw::net::ClientState::Rejected)
+            {
+                m_netStatus = "REJECTED";
+            }
+            else if (m_netClient->state() == sw::net::ClientState::TimedOut)
+            {
+                // A timeout has two completely different causes and the cure
+                // for one is useless against the other, so say WHICH. If not
+                // one datagram ever came back, nothing on the far side ever
+                // answered: the packets die before the host's process sees
+                // them — a firewall, a wrong address, or nobody hosting. If
+                // some arrived and then stopped, the link was alive and died.
+                const bool everHeard = m_netClient->stats().datagramsReceived > 0;
+                m_netStatus = everHeard ? "TIMED OUT - LINK LOST" : "NO REPLY - CHECK FIREWALL";
+                if (!m_netTimeoutLogged)
+                {
+                    m_netTimeoutLogged = true;
+                    if (everHeard)
+                    {
+                        SW_LOG_WARN("Game",
+                                    "Multiplayer: the host stopped answering after {} datagrams",
+                                    m_netClient->stats().datagramsReceived);
+                    }
+                    else
+                    {
+                        SW_LOG_WARN(
+                            "Game",
+                            "Multiplayer: sent {} datagrams to {} and got NOTHING back. Nothing "
+                            "at that address is answering: the host is not listening, the "
+                            "address is wrong, or inbound UDP is blocked. On the HOSTING "
+                            "machine run firewall.ps1 as administrator, and check that its "
+                            "network profile is Private and not Public.",
+                            m_netClient->stats().datagramsSent, m_netAddress);
+                    }
+                }
+            }
+        }
+
+        // A beacon: where this player's craft is, stamped with the instant it
+        // was there. Peers behind us hold it until their own clock reaches
+        // that instant — which is the whole rule, exercised on real traffic
+        // rather than only in a test.
+        if (m_netLastBeaconAt < 0.0 || wall - m_netLastBeaconAt >= 0.5)
+        {
+            m_netLastBeaconAt = wall;
+            const sw::ecs::Entity flown = controlledEntity();
+            if (!flown.isNull() && m_world.isAlive(flown))
+            {
+                const sw::WorldVec3 position =
+                    m_world.getComponent<TransformComponent>(flown).position;
+                sw::ser::BinaryWriter writer;
+                writer.write(position.x);
+                writer.write(position.y);
+                writer.write(position.z);
+                if (m_netHost != nullptr)
+                {
+                    m_netHost->broadcastEvent(simulated, kNetEventBeacon, writer.bytes());
+                }
+                else if (m_netClient != nullptr)
+                {
+                    m_netClient->sendEvent(simulated, kNetEventBeacon, writer.bytes());
+                }
+            }
+        }
+
+        // Release whatever the timeline says is due AT OUR CLOCK.
+        sw::net::Timeline* timeline = (m_netHost != nullptr) ? &m_netHost->timeline()
+                                                             : &m_netClient->timeline();
+        m_netEventsApplied += timeline->advance(simulated).size();
+    }
+
+    void StarWorksGame::collectNetPanel()
+    {
+        constexpr sw::f32 kRight = 0.97f;
+        constexpr sw::f32 kLeft = 0.44f;
+        constexpr sw::f32 kTop = -0.95f;
+        constexpr sw::f32 kPad = 0.018f;
+        constexpr sw::f32 kHeaderH = 0.086f;
+        constexpr sw::f32 kRowH = 0.062f;
+        constexpr sw::f32 kGap = 0.008f;
+
+        sw::f32 cursorX = -2.0f;
+        sw::f32 cursorY = -2.0f;
+        const bool haveCursor = hudCursor(cursorX, cursorY);
+        auto hovering = [&](sw::f32 x0, sw::f32 x1, sw::f32 y) {
+            return haveCursor && cursorX >= x0 && cursorX <= x1 && cursorY >= y &&
+                   cursorY <= y + kRowH;
+        };
+
+        const std::vector<sw::net::PlayerView> roster = netRoster();
+        const sw::u32 selfId =
+            (m_netClient != nullptr) ? m_netClient->clientId() : sw::u32{0};
+        const sw::f64 selfClock = m_physicsLane->presentSeconds();
+
+        // Height: address, buttons, status, the PILOTS label, one row per
+        // player, and the footer verdict — five fixed rows plus the roster.
+        // Counting four put the footer outside the panel, which a mock of the
+        // layout showed before the code ever ran.
+        // Plus one row while hosting, for what has actually reached the
+        // socket. That row is the only place either machine can see the
+        // difference between "the packets never arrived" and "the packets
+        // arrived and were thrown away".
+        const sw::f32 bodyRows = 5.0f + (m_netHost != nullptr ? 1.0f : 0.0f) +
+                                 static_cast<sw::f32>(roster.size());
+        const sw::f32 bottom =
+            kTop + kHeaderH + bodyRows * (kRowH + kGap) + kPad * 2.0f;
+
+        hudPanel(kLeft, kTop, kRight, bottom, hud::kPanel);
+        hudQuad(kLeft, kTop, kRight, kTop + kHeaderH - 0.006f, hud::kHeader);
+        hudText("MULTIPLAYER", kLeft + 0.022f, kTop + 0.026f, 0.048f, hud::kTitle);
+        hudText("F3", kRight - 0.075f, kTop + 0.030f, 0.036f, hud::kTextDim);
+
+        sw::f32 y = kTop + kHeaderH + kPad;
+
+        // ---- the address, typed -------------------------------------------
+        {
+            const bool hot = hovering(kLeft + kPad, kRight - kPad, y);
+            const sw::Vec4 fill = m_netAddressFocused ? hud::kRowOn
+                                  : hot                ? hud::kRowHover
+                                                       : hud::kRow;
+            hudQuad(kLeft + kPad, y, kRight - kPad, y + kRowH, fill);
+            // A caret rather than a cursor: the field only ever appends or
+            // deletes at the end, so there is nothing to move.
+            const std::string shown =
+                m_netAddressFocused ? m_netAddress + "-" : m_netAddress;
+            hudText(shown, kLeft + kPad + 0.014f, y + 0.014f, 0.034f, hud::kText);
+            m_hudButtons.push_back({kLeft + kPad, y, kRight - kPad, y + kRowH, 1003u});
+            y += kRowH + kGap;
+        }
+
+        // ---- host / join / leave -------------------------------------------
+        {
+            const sw::f32 mid = (kLeft + kRight) * 0.5f;
+            if (!netActive())
+            {
+                const bool hotHost = hovering(kLeft + kPad, mid - 0.004f, y);
+                hudQuad(kLeft + kPad, y, mid - 0.004f, y + kRowH,
+                        hotHost ? hud::kRowHover : hud::kRow);
+                hudText("HOST", kLeft + kPad + 0.030f, y + 0.014f, 0.034f, hud::kText);
+                m_hudButtons.push_back({kLeft + kPad, y, mid - 0.004f, y + kRowH, 1000u});
+
+                const bool hotJoin = hovering(mid + 0.004f, kRight - kPad, y);
+                hudQuad(mid + 0.004f, y, kRight - kPad, y + kRowH,
+                        hotJoin ? hud::kRowHover : hud::kRow);
+                hudText("JOIN", mid + 0.034f, y + 0.014f, 0.034f, hud::kText);
+                m_hudButtons.push_back({mid + 0.004f, y, kRight - kPad, y + kRowH, 1001u});
+            }
+            else
+            {
+                const bool hot = hovering(kLeft + kPad, kRight - kPad, y);
+                hudQuad(kLeft + kPad, y, kRight - kPad, y + kRowH,
+                        hot ? hud::kRowHover : hud::kRowStop);
+                hudText("LEAVE SESSION", kLeft + kPad + 0.030f, y + 0.014f, 0.034f,
+                        hud::kText);
+                m_hudButtons.push_back({kLeft + kPad, y, kRight - kPad, y + kRowH, 1002u});
+            }
+            y += kRowH + kGap;
+        }
+
+        // ---- status ---------------------------------------------------------
+        hudText(m_netStatus.empty() ? "OFFLINE" : hud::caps(m_netStatus),
+                kLeft + kPad, y + 0.012f, 0.032f, hud::kTextDim);
+        // The firewall verdict rides in the same row's spare height rather
+        // than on the end of the status line: the panel is 0.494 NDC wide
+        // and the concatenated string measured 0.725. Only shown when there
+        // is something to act on — a rule that already exists is not news.
+        if (m_netHost != nullptr)
+        {
+            if (m_netFirewall == sw::platform::FirewallRequest::Declined)
+            {
+                hudText("FIREWALL: RIGHTS REFUSED", kLeft + kPad, y + 0.044f, 0.024f,
+                        hud::kBad);
+            }
+            else if (m_netFirewall == sw::platform::FirewallRequest::Failed)
+            {
+                hudText("FIREWALL: RULE FAILED", kLeft + kPad, y + 0.044f, 0.024f, hud::kBad);
+            }
+            else if (m_netPublicNetwork)
+            {
+                // The rule covers Private and Domain. On a Public network it
+                // exists, lists as present in every tool that shows rules,
+                // and blocks the packet anyway — the single most confusing
+                // state this whole feature can be in.
+                hudText("NETWORK IS PUBLIC - RULE INACTIVE", kLeft + kPad, y + 0.044f, 0.024f,
+                        hud::kBad);
+            }
+            else if (m_netFirewall == sw::platform::FirewallRequest::Added)
+            {
+                hudText("FIREWALL: RULE ADDED", kLeft + kPad, y + 0.044f, 0.024f, hud::kOk);
+            }
+        }
+        y += kRowH + kGap;
+
+        // ---- what has actually reached the socket ---------------------------
+        // The host is the only machine that can tell the three causes of a
+        // client-side timeout apart, and until now it never said.
+        if (m_netHost != nullptr)
+        {
+            const sw::net::Host::Reception& rx = m_netHost->reception();
+            // Clamped for display. At 20 snapshots a second these counters
+            // reach seven digits in an hour, and the row is 34 characters
+            // wide — the exact total stopped being the point after the
+            // first one arrived anyway.
+            auto shortCount = [](sw::u64 value) {
+                return (value > 99999u) ? std::string("99999+") : std::format("{}", value);
+            };
+            hudText(std::format("RX {}  REFUSED {}", shortCount(rx.arrived),
+                                shortCount(rx.refused)),
+                    kLeft + kPad, y + 0.006f, 0.030f,
+                    rx.arrived == 0 ? hud::kTextDim : hud::kOk);
+
+            std::string verdict;
+            sw::Vec4 colour = hud::kTextDim;
+            if (rx.wrongVersion > 0)
+            {
+                verdict = std::format("PEER SPEAKS V{} - REBUILD IT", rx.lastForeignVersion);
+                colour = hud::kBad;
+            }
+            else if (rx.arrived == 0)
+            {
+                verdict = "NOTHING HAS REACHED THIS PC";
+                colour = hud::kWarn;
+            }
+            else if (rx.notOurs > 0 && rx.notOurs == rx.fromStrangers)
+            {
+                verdict = "TRAFFIC ARRIVES BUT IS NOT OURS";
+                colour = hud::kWarn;
+            }
+            else
+            {
+                verdict = "PACKETS ARE GETTING THROUGH";
+                colour = hud::kOk;
+            }
+            hudText(verdict, kLeft + kPad, y + 0.040f, 0.024f, colour);
+            y += kRowH + kGap;
+        }
+
+        // ---- the players, and how far apart their clocks are ---------------
+        hudText(std::format("PILOTS {}", roster.size()), kLeft + kPad, y + 0.012f, 0.032f,
+                hud::kTextDim);
+        y += kRowH + kGap;
+
+        for (sw::usize i = 0; i < roster.size(); ++i)
+        {
+            const sw::net::PlayerView& player = roster[i];
+            const bool self = (player.id == selfId);
+            const sw::f64 offset = player.simulatedSeconds - selfClock;
+            // Only a real gap is worth a button. Half a second is network
+            // jitter, not a temporality.
+            const bool ahead = !self && offset > 1.0;
+
+            const sw::f32 syncX0 = kRight - kPad - 0.15f;
+            const sw::f32 rowRight = ahead ? syncX0 - 0.008f : kRight - kPad;
+            const bool hot = hovering(kLeft + kPad, rowRight, y);
+            hudQuad(kLeft + kPad, y, rowRight, y + kRowH,
+                    self ? hud::kRowOn : (hot ? hud::kRowHover
+                                              : ((i % 2 == 0) ? hud::kRow : hud::kRowAlt)));
+            hudText(hud::caps(player.name.empty() ? std::string("PILOT") : player.name),
+                    kLeft + kPad + 0.016f, y + 0.008f, 0.032f, hud::kText);
+
+            const std::string when =
+                self ? std::string("NOW") : hud::signedDuration(offset);
+            hudText(when, kLeft + kPad + 0.016f, y + 0.036f, 0.024f,
+                    (std::abs(offset) < 1.0 || self) ? hud::kOk
+                    : (offset > 0.0)                 ? hud::kWarn
+                                                     : hud::kTextDim);
+
+            if (ahead)
+            {
+                const bool hotSync = hovering(syncX0, kRight - kPad, y);
+                const bool can = warpAllowed();
+                hudQuad(syncX0, y, kRight - kPad, y + kRowH,
+                        !can       ? sw::Vec4{0.12f, 0.14f, 0.18f, 0.90f}
+                        : hotSync  ? hud::kRowOnHover
+                                   : hud::kRowOn);
+                hudText("SYNC", syncX0 + 0.028f, y + 0.020f, 0.030f,
+                        can ? hud::kText : hud::kTextDim);
+                if (can)
+                {
+                    m_hudButtons.push_back(
+                        {syncX0, y, kRight - kPad, y + kRowH,
+                         1100u + static_cast<sw::u32>(i)});
+                }
+            }
+            y += kRowH + kGap;
+        }
+
+        // ---- footer: why you can or cannot warp ----------------------------
+        if (m_syncWarpTo > 0.0)
+        {
+            const sw::f64 remaining = m_syncWarpTo - selfClock;
+            hudText(std::format("SYNCING  T-{}", hud::signedDuration(remaining)),
+                    kLeft + kPad, y + 0.010f, 0.032f, hud::kOk);
+        }
+        else if (warpAllowed())
+        {
+            hudText(m_flight.grounded ? "WARP READY - LANDED" : "WARP READY - ORBIT",
+                    kLeft + kPad, y + 0.010f, 0.030f, hud::kOk);
+        }
+        else
+        {
+            hudText(std::format("WARP LOCKED - {}", warpBlockReason()), kLeft + kPad,
+                    y + 0.010f, 0.030f, hud::kBad);
+        }
     }
 
     void StarWorksGame::collectSasButtons()
@@ -6432,11 +7994,13 @@ namespace game
 
         sw::ecs::Entity best{};
         sw::f32 bestT = static_cast<sw::f32>(maxDistanceM);
-        m_world.forEach<TransformComponent, PreviousTransformComponent,
-                        sw::phys::HullComponent, sw::factory::BuildingComponent>(
-            [&](sw::ecs::Entity entity, TransformComponent& transform,
-                PreviousTransformComponent& previous, sw::phys::HullComponent& hull,
-                sw::factory::BuildingComponent&) {
+        // ONE RAY, TWO KINDS OF THING. `E` asks "what am I looking at", and
+        // the answer is a machine or a vessel; casting twice and comparing
+        // afterwards would be two answers to one question. The caller sorts
+        // out what to DO with whatever it hit.
+        auto cast = [&](sw::ecs::Entity entity, const TransformComponent& transform,
+                        const PreviousTransformComponent& previous,
+                        const sw::phys::HullComponent& hull) {
                 const sw::WorldVec3 position =
                     glm::mix(previous.position, transform.position, alpha64);
                 const sw::Quat rotation =
@@ -6465,7 +8029,17 @@ namespace game
                         best = entity;
                     }
                 }
-            });
+        };
+        m_world.forEach<TransformComponent, PreviousTransformComponent,
+                        sw::phys::HullComponent, sw::factory::BuildingComponent>(
+            [&](sw::ecs::Entity entity, TransformComponent& transform,
+                PreviousTransformComponent& previous, sw::phys::HullComponent& hull,
+                sw::factory::BuildingComponent&) { cast(entity, transform, previous, hull); });
+        m_world.forEach<TransformComponent, PreviousTransformComponent,
+                        sw::phys::HullComponent, sw::parts::PartComponent>(
+            [&](sw::ecs::Entity entity, TransformComponent& transform,
+                PreviousTransformComponent& previous, sw::phys::HullComponent& hull,
+                sw::parts::PartComponent&) { cast(entity, transform, previous, hull); });
         return best;
     }
 
@@ -8055,12 +9629,35 @@ namespace game
         // boxes you cannot walk through.
         (void)player;
         const sw::ecs::Entity best = hullUnderCrosshair(kConfigRangeM);
-        m_configTarget = best;
         if (best.isNull())
         {
             SW_LOG_INFO("Game", "E: nothing in front of you within {:.0f} m",
                         kConfigRangeM);
+            m_configTarget = {};
+            return;
         }
+
+        // A ROCKET IS SOMETHING YOU LOOK AT AND PRESS E ON, exactly like a
+        // machine. `P` still cycles between vessels once you are flying, but
+        // getting IN should not be a key that means something else — you are
+        // standing in front of the thing, which is the whole gesture.
+        if (const auto* part = m_world.tryGetComponent<sw::parts::PartComponent>(best))
+        {
+            const sw::ecs::Entity vessel = part->vessel;
+            if (!vessel.isNull() && m_world.isAlive(vessel) &&
+                m_world.hasComponent<ShipComponent>(vessel))
+            {
+                m_shipEntity = vessel;
+                m_evaMode = false;
+                m_sasMode = 0;
+                m_configTarget = {};
+                SW_LOG_INFO("Game", "Boarded vessel {}", vessel.index);
+                return;
+            }
+            m_configTarget = {}; // a part of something that is not a craft
+            return;
+        }
+        m_configTarget = best;
     }
 
     void StarWorksGame::collectConfigMenu()
@@ -8136,12 +9733,25 @@ namespace game
         // 0.032 the word RECIPE was drawn straight through the STOP row
         // under it, because a label needs its own height AND the gap.
         constexpr sw::f32 kLabelH = 0.050f;
-        const sw::f32 bottom =
-            listTop + (listEmpty
-                           ? 0.06f
-                           : (kLabelH + static_cast<sw::f32>(listRows + 1) *
-                                            (kRowHeight + kRowGap))) +
-            kFooterH;
+        // THE CATALOGUE COLUMN. A hall's panel is split: the list of saved
+        // designs on the left, and on the right the one that is selected —
+        // drawn, priced and weighed — with the button that actually builds
+        // it. A name and a tonne figure is not enough to choose a rocket by.
+        constexpr sw::f32 kCatalogueSplit = 0.10f;   // where the column starts
+        constexpr sw::f32 kPreviewH = 0.40f;         // the 3D box
+        constexpr sw::f32 kStatLine = 0.044f;
+        // Includes the label strip the column starts below, which the list
+        // also pays for — leaving it out put the PRODUCE button through the
+        // footer, which a mock of the layout showed before the code ran.
+        const sw::f32 columnHeight =
+            kLabelH + kPreviewH + 0.014f + 5.0f * kStatLine + 0.014f + kRowHeight;
+
+        const sw::f32 listHeight =
+            listEmpty ? 0.06f
+                      : (kLabelH +
+                         static_cast<sw::f32>(listRows + 1) * (kRowHeight + kRowGap));
+        const sw::f32 bodyHeight = hall ? std::max(listHeight, columnHeight) : listHeight;
+        const sw::f32 bottom = listTop + bodyHeight + kFooterH;
         hudPanel(kLeft, kTop, kRight, bottom, hud::kPanel);
 
         // ---- HEADER: who this is -------------------------------------------
@@ -8322,18 +9932,17 @@ namespace game
             // CLEAR, first, for the same reason STOP is: a hall with no order
             // draws its idle load and nothing else, and on a battery night
             // that is a choice worth having.
+            const sw::f32 listRight = kCatalogueSplit - 0.010f;
             {
                 const bool selected = current.empty();
-                const bool hot = hovering(rowY, kRight - kPad);
-                hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
+                const bool hot = hovering(rowY, listRight);
+                hudQuad(kLeft + kPad, rowY, listRight, rowY + kRowHeight,
                         selected ? hud::kRowStop
                                  : (hot ? hud::kRowHover : hud::kRow));
-                hudText("CLEAR ORDER", kLeft + kPad + 0.018f, rowY + 0.018f, 0.036f,
+                hudText("CLEAR ORDER", kLeft + kPad + 0.018f, rowY + 0.018f, 0.034f,
                         selected ? hud::kTitle : hud::kText);
-                hudText("SCRAPS WHAT IS ON THE SLIPWAY", kLeft + 0.34f, rowY + 0.022f,
-                        0.026f, hud::kTextDim);
                 m_hudButtons.push_back(
-                    {kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight, 899u});
+                    {kLeft + kPad, rowY, listRight, rowY + kRowHeight, 899u});
                 rowY += kRowHeight + kRowGap;
             }
 
@@ -8343,33 +9952,124 @@ namespace game
                 const sw::parts::BillOfMaterials bill =
                     sw::parts::blueprintCost(design);
                 const bool buildable = sw::parts::blueprintIsBuildable(design);
-                const bool selected = (current == design.name);
-                const bool hot = hovering(rowY, kRight - kPad);
-                hudQuad(kLeft + kPad, rowY, kRight - kPad, rowY + kRowHeight,
-                        selected ? (hot ? hud::kRowOnHover : hud::kRowOn)
-                                 : (hot ? hud::kRowHover
-                                        : ((i % 2 == 0) ? hud::kRow : hud::kRowAlt)));
-                hudText(hud::caps(design.name), kLeft + kPad + 0.018f, rowY + 0.018f,
-                        0.036f, selected ? hud::kTitle : hud::kText);
-                // The columns are placed for the WORST case, not the shipped
-                // one: a 23-character name (the field's whole width) and a
-                // five-figure bill both have to fit without touching, and a
-                // right-hand column has to end inside the panel.
-                hudText(std::format("{} PARTS   {:.0f} KG IRON   {:.0f} KG COPPER",
-                                    design.parts.size(), bill.ironKg, bill.copperKg),
-                        kLeft + 0.52f, rowY + 0.024f, 0.026f,
-                        selected ? hud::kText : hud::kTextDim);
+                const bool building_ = (current == design.name);
+                const bool picked = (m_vabSelection == static_cast<sw::i32>(i));
+                const bool hot = hovering(rowY, listRight);
+                // TWO DIFFERENT STATES, two different colours: the one being
+                // BUILT (green) and the one you are LOOKING at (highlight).
+                // They are usually the same row and must not be assumed to
+                // be — reading a catalogue is not placing an order.
+                hudQuad(kLeft + kPad, rowY, listRight, rowY + kRowHeight,
+                        building_ ? (hot ? hud::kRowOnHover : hud::kRowOn)
+                        : picked  ? hud::kRowHover
+                        : hot     ? hud::kRowHover
+                                  : ((i % 2 == 0) ? hud::kRow : hud::kRowAlt));
+                if (picked && !building_)
+                {
+                    hudQuad(kLeft + kPad, rowY, kLeft + kPad + 0.010f, rowY + kRowHeight,
+                            hud::kTitle);
+                }
+                hudText(hud::caps(design.name), kLeft + kPad + 0.022f, rowY + 0.010f,
+                        0.032f, (building_ || picked) ? hud::kTitle : hud::kText);
                 hudText(buildable ? std::format("{:.1f} T", bill.totalKg() / 1000.0)
                                   : "NO PARTS",
-                        kRight - 0.13f, rowY + 0.024f, 0.028f,
+                        kLeft + kPad + 0.022f, rowY + 0.042f, 0.024f,
                         buildable ? hud::kTextDim : hud::kBad);
-                if (buildable)
-                {
-                    m_hudButtons.push_back({kLeft + kPad, rowY, kRight - kPad,
-                                            rowY + kRowHeight,
-                                            900u + static_cast<sw::u32>(i)});
-                }
+                m_hudButtons.push_back({kLeft + kPad, rowY, listRight,
+                                        rowY + kRowHeight,
+                                        900u + static_cast<sw::u32>(i)});
                 rowY += kRowHeight + kRowGap;
+            }
+
+            // ---- THE CATALOGUE ENTRY: what you are about to build --------
+            {
+                if (m_vabSelection < 0 ||
+                    m_vabSelection >= static_cast<sw::i32>(shownDesigns))
+                {
+                    m_vabSelection = shownDesigns > 0 ? 0 : -1;
+                }
+                const sw::f32 columnLeft = kCatalogueSplit;
+                const sw::f32 columnRight = kRight - kPad;
+                sw::f32 columnY = listTop + kLabelH;
+
+                hudQuad(columnLeft, columnY, columnRight, columnY + kPreviewH,
+                        sw::Vec4{0.06f, 0.10f, 0.15f, 0.98f});
+
+                if (m_vabSelection >= 0)
+                {
+                    const sw::parts::ShipBlueprint& picked =
+                        designs[static_cast<sw::usize>(m_vabSelection)];
+                    // Wall clock, not simulation time: the model keeps
+                    // turning while the game is paused, which is exactly when
+                    // somebody is reading this panel.
+                    hudDesignPreview(picked, columnLeft + 0.010f, columnY + 0.010f,
+                                     columnRight - 0.010f, columnY + kPreviewH - 0.010f,
+                                     static_cast<sw::f32>(clock().totalSeconds()) * 0.55f);
+                    columnY += kPreviewH + 0.014f;
+
+                    const sw::parts::BillOfMaterials bill =
+                        sw::parts::blueprintCost(picked);
+                    const bool buildable = sw::parts::blueprintIsBuildable(picked);
+                    const sw::f64 iron =
+                        (inventory != nullptr)
+                            ? sw::factory::inventoryCount(*inventory,
+                                                          sw::res::Resource::Iron)
+                            : 0.0;
+                    const sw::f64 copper =
+                        (inventory != nullptr)
+                            ? sw::factory::inventoryCount(*inventory,
+                                                          sw::res::Resource::Copper)
+                            : 0.0;
+
+                    hudText(hud::caps(picked.name), columnLeft + 0.006f, columnY, 0.040f,
+                            hud::kTitle);
+                    columnY += kStatLine;
+                    hudText(std::format("{} PARTS   {:.1f} T DRY", picked.parts.size(),
+                                        bill.totalKg() / 1000.0),
+                            columnLeft + 0.006f, columnY, 0.030f, hud::kText);
+                    columnY += kStatLine;
+                    // Each metal against what is IN THE BIN, because that is
+                    // the question the player is actually asking.
+                    hudText(std::format("IRON    {:.0f} KG   HAVE {:.0f}", bill.ironKg,
+                                        iron),
+                            columnLeft + 0.006f, columnY, 0.030f,
+                            (iron >= bill.ironKg) ? hud::kOk : hud::kWarn);
+                    columnY += kStatLine;
+                    hudText(std::format("COPPER  {:.0f} KG   HAVE {:.0f}", bill.copperKg,
+                                        copper),
+                            columnLeft + 0.006f, columnY, 0.030f,
+                            (copper >= bill.copperKg) ? hud::kOk : hud::kWarn);
+                    columnY += kStatLine;
+                    const sw::f64 seconds =
+                        (assembly->buildRateKgPerSecond > 0.0)
+                            ? bill.totalKg() / assembly->buildRateKgPerSecond
+                            : 0.0;
+                    hudText(std::format("BUILD   {:.0f} S AT FULL POWER", seconds),
+                            columnLeft + 0.006f, columnY, 0.030f, hud::kTextDim);
+                    columnY += kStatLine + 0.014f;
+
+                    // ---- PRODUCE -------------------------------------------
+                    const bool hot = haveCursor && cursorX >= columnLeft &&
+                                     cursorX <= columnRight && cursorY >= columnY &&
+                                     cursorY <= columnY + kRowHeight;
+                    hudQuad(columnLeft, columnY, columnRight, columnY + kRowHeight,
+                            !buildable ? sw::Vec4{0.12f, 0.14f, 0.18f, 0.95f}
+                            : hot      ? hud::kRowOnHover
+                                       : hud::kRowOn);
+                    hudText(buildable ? "PRODUCE" : "PARTS MISSING",
+                            columnLeft + 0.026f, columnY + 0.018f, 0.036f,
+                            buildable ? hud::kTitle : hud::kBad);
+                    if (buildable)
+                    {
+                        m_hudButtons.push_back({columnLeft, columnY, columnRight,
+                                                columnY + kRowHeight, 898u});
+                    }
+                }
+                else
+                {
+                    hudText("PICK A DESIGN", columnLeft + 0.020f, columnY + 0.18f, 0.034f,
+                            hud::kTextDim);
+                }
             }
         }
         else
@@ -8615,6 +10315,38 @@ namespace game
             if (ndcX >= button.x0 && ndcX <= button.x1 && ndcY >= button.y0 &&
                 ndcY <= button.y1)
             {
+                // The multiplayer panel owns 1000+, tested first because
+                // every other range below is open-ended upward.
+                if (button.id >= 1100)
+                {
+                    const auto index = static_cast<sw::usize>(button.id - 1100u);
+                    const std::vector<sw::net::PlayerView> roster = netRoster();
+                    if (index < roster.size())
+                    {
+                        netSyncTo(roster[index].id, roster[index].simulatedSeconds);
+                    }
+                    break;
+                }
+                if (button.id == 1000)
+                {
+                    netHost();
+                    break;
+                }
+                if (button.id == 1001)
+                {
+                    netJoin();
+                    break;
+                }
+                if (button.id == 1002)
+                {
+                    netLeave();
+                    break;
+                }
+                if (button.id == 1003)
+                {
+                    m_netAddressFocused = !m_netAddressFocused;
+                    break;
+                }
                 // ---- the machine panel (E) ----------------------------------
                 // Checked FIRST: its ids sit above the build menu's, and it
                 // is the panel actually on screen when they are live.
@@ -8628,9 +10360,24 @@ namespace game
                     const sw::usize index = button.id - 900u;
                     if (index < designs.size())
                     {
-                        orderVehicle(m_configTarget, designs[index]);
+                        // A row SELECTS. Ordering is one deliberate press of
+                        // PRODUCE, next to the price and the picture — not a
+                        // side effect of reading the catalogue.
+                        m_vabSelection = static_cast<sw::i32>(index);
                     }
                     return;
+                }
+                if (button.id == 898 && !m_configTarget.isNull())
+                {
+                    const std::span<const sw::parts::ShipBlueprint> catalogue =
+                        sw::parts::blueprintCatalog();
+                    if (m_vabSelection >= 0 &&
+                        static_cast<sw::usize>(m_vabSelection) < catalogue.size())
+                    {
+                        orderVehicle(m_configTarget,
+                                     catalogue[static_cast<sw::usize>(m_vabSelection)]);
+                    }
+                    break;
                 }
                 if (button.id == 899 && !m_configTarget.isNull())
                 {
@@ -8710,8 +10457,7 @@ namespace game
                     }
                     else if (button.id == 202) { hangarNewBlueprint(); }
                     else if (button.id == 203) { hangarLoadNextVessel(); }
-                    else if (button.id == 204) { hangarBuild(); }
-                    else if (button.id == 205) // symmetry cycle
+                            else if (button.id == 205) // symmetry cycle
                     {
                         const sw::u32 options[6] = {1, 2, 3, 4, 6, 8};
                         for (sw::usize i = 0; i < 6; ++i)
@@ -9597,6 +11343,33 @@ namespace game
                 item.boundsCenter = relative;
                 item.boundsRadius = static_cast<sw::f32>(m_terrainExtent * 1.8);
                 m_drawItems.push_back(item);
+
+                // THE FIELD, in its own chunks. Same origin, same rotation —
+                // it was built in the patch's chart and must be drawn in it,
+                // or every blade would slide off the ground it stands on.
+                if (m_grassLiveCount != 0 && m_grassBody == m_terrainBody)
+                {
+                    const sw::WorldVec3 grassOrigin =
+                        bodyPosition + originRotation * m_grassOriginLocal;
+                    const sw::Vec3 grassRelative = sw::Vec3(grassOrigin - cameraPosition);
+                    for (sw::u32 chunk = 0; chunk < m_grassLiveCount; ++chunk)
+                    {
+                        const sw::u32 slot = m_grassSlots[m_grassSet][chunk];
+                        if (!m_grassChunkValid[m_grassSet][chunk] ||
+                            slot == 0xFFFFFFFFu || slot >= m_meshes.size())
+                        {
+                            continue;
+                        }
+                        sw::DrawItem blades{};
+                        blades.mesh = &m_meshes[slot];
+                        blades.transform =
+                            glm::translate(sw::Mat4{1.0f}, grassRelative) *
+                            glm::mat4_cast(sw::Quat(originRotation));
+                        blades.boundsCenter = grassRelative;
+                        blades.boundsRadius = 320.0f;
+                        m_drawItems.push_back(blades);
+                    }
+                }
             }
         }
 

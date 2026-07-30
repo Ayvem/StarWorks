@@ -16,6 +16,7 @@
 #include "Core/Types.hpp"
 
 #include <array>
+#include <span>
 
 namespace sw
 {
@@ -92,8 +93,17 @@ namespace sw
         [[nodiscard]] f32 mouseDeltaY() const { return m_mouseDeltaY; }
         [[nodiscard]] f32 scrollDeltaY() const { return m_scrollDeltaY; }
 
+        /// Characters typed since the last newFrame(), in order, already
+        /// resolved through the keyboard layout. Empty on almost every
+        /// frame; a text field drains it and nothing else looks at it.
+        [[nodiscard]] std::span<const u32> charsTyped() const
+        {
+            return std::span<const u32>(m_charsTyped.data(), m_charCount);
+        }
+
         // --- event feed (called by Application from Window callbacks) ------
         void handleKey(i32 key, i32 action);
+        void handleChar(u32 codepoint);
         void handleMouseButton(i32 button, i32 action);
         void handleCursorPos(f64 x, f64 y);
         void handleScroll(f64 xOffset, f64 yOffset);
@@ -112,6 +122,12 @@ namespace sw
         std::array<bool, kMaxMouseButtons> m_mouseButtons{};
         std::array<bool, kMaxMouseButtons> m_mouseButtonsPrevious{};
         std::array<bool, kMaxMouseButtons> m_mousePressedEvents{};
+
+        /// A frame that receives more than this many characters is a stuck
+        /// key or a paste; the excess is dropped rather than grown into.
+        static constexpr usize kMaxCharsPerFrame = 32;
+        std::array<u32, kMaxCharsPerFrame> m_charsTyped{};
+        usize m_charCount = 0;
 
         f32 m_mouseX = 0.0f;
         f32 m_mouseY = 0.0f;

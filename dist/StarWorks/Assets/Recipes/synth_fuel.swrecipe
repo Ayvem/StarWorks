@@ -1,0 +1,23 @@
+{
+  "id": 8,
+  "name": "Fuel Synthesis",
+  "requiredCategory": "refinery",
+  "inputs": [
+    {
+      "resource": "Hydrogen",
+      "unitsPerSecond": 0.25
+    },
+    {
+      "resource": "Oxygen",
+      "unitsPerSecond": 0.75
+    }
+  ],
+  "outputs": [
+    {
+      "resource": "Fuel",
+      "unitsPerSecond": 1.0
+    }
+  ],
+  "powerKw": 60.0,
+  "massLossFraction": 0.0
+}

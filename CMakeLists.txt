@@ -38,6 +38,29 @@ option(SW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(SW_BUILD_TESTS "Build the StarWorksTests unit test target" ON)
 
 # ----------------------------------------------------------------------------
+# SHIPPING THE GAME TO A MACHINE THAT IS NOT THIS ONE
+#
+# By default MSVC links the C++ runtime as DLLs, and a DEBUG build links the
+# DEBUG ones — `vcruntime140d.dll`, `msvcp140d.dll`, `ucrtbased.dll`. Those
+# are not redistributable and exist only where Visual Studio is installed, so
+# a Debug build copied to a clean machine cannot start at all: Windows
+# refuses before a single line of ours runs, which is why there is no log and
+# no error box to read.
+#
+# Turning this ON links the runtime statically. The executable grows by about
+# a megabyte and needs NOTHING installed on the target beyond a Vulkan 1.3
+# graphics driver. Off by default so a developer build stays incremental and
+# fast to link; `package.ps1` turns it on for the folder it produces.
+# ----------------------------------------------------------------------------
+option(SW_STATIC_RUNTIME "Link the C/C++ runtime statically (MSVC: /MT)" OFF)
+if(SW_STATIC_RUNTIME AND MSVC)
+    # Must be set BEFORE the dependencies are declared: glfw compiles with
+    # whatever this says, and a runtime mismatch is a link error, not a
+    # warning.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+# ----------------------------------------------------------------------------
 # Shared build flags (interface target linked by every StarWorks target)
 # ----------------------------------------------------------------------------
 add_library(StarWorksBuildFlags INTERFACE)
@@ -91,6 +114,7 @@ add_subdirectory(Engine)
 add_subdirectory(Game)
 add_subdirectory(Tools/PartStudio)
 add_subdirectory(Tools/AeroForge)
+add_subdirectory(Tools/NetProbe)
 
 if(SW_BUILD_TESTS)
     enable_testing()

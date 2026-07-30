@@ -74,6 +74,41 @@ namespace sw
         return std::filesystem::current_path();
     }
 
+    std::filesystem::path FileSystem::projectRoot()
+    {
+        std::error_code errorCode;
+        std::filesystem::path probe =
+            std::filesystem::weakly_canonical(executableDirectory(), errorCode);
+        if (errorCode)
+        {
+            probe = executableDirectory();
+        }
+
+        // Bounded by the FILESYSTEM rather than by a guessed number of
+        // levels: stop when parent_path() stops moving, which is what a root
+        // directory does on both Windows and POSIX. A fixed "five levels up"
+        // either falls short of a deep build tree or overshoots into the
+        // drive root, and both failures are silent.
+        for (int guard = 0; guard < 64; ++guard)
+        {
+            const bool hasLists =
+                std::filesystem::exists(probe / "CMakeLists.txt", errorCode);
+            const bool hasAssets =
+                std::filesystem::is_directory(probe / "Assets", errorCode);
+            if (hasLists && hasAssets)
+            {
+                return probe;
+            }
+            const std::filesystem::path parent = probe.parent_path();
+            if (parent.empty() || parent == probe)
+            {
+                break;
+            }
+            probe = parent;
+        }
+        return {};
+    }
+
     std::filesystem::path FileSystem::resolve(const std::filesystem::path& relative)
     {
         const std::filesystem::path fromExe = executableDirectory() / relative;

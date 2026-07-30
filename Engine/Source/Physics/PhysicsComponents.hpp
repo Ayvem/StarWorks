@@ -154,6 +154,114 @@ namespace sw::phys
         return static_cast<f64>(std::max(0.0f, clearance));
     }
 
+    /// WHY A LANDED ROCKET FALLS OVER — and why one standing on its tail
+    /// does not.
+    ///
+    /// Ground contact used to touch a body's VELOCITY and nothing else: the
+    /// lowest point clamped to the terrain, the impact absorbed, the sliding
+    /// rubbed off. Its ROTATION was never mentioned, and the result is the
+    /// thing you cannot un-see once you have seen it — a rocket lying across
+    /// a hillside at forty degrees, propped on the corner of its own
+    /// bounding box, still turning at whatever rate you last left it, as
+    /// though the planet under it were a rumour.
+    ///
+    /// What was missing is the oldest question in statics: does the centre
+    /// of mass fall inside the SUPPORT POLYGON? The hull corners actually
+    /// touching the ground are the support; project the centre of mass onto
+    /// the ground between them and the body stands. Push it past the edge
+    /// and gravity gets a lever, the edge becomes a pivot, and the thing
+    /// topples — faster as it goes, because the overhang grows as it turns.
+    ///
+    /// That one rule produces all of the behaviour and none of it is
+    /// scripted: a rocket on its tail is stable until it leans past its own
+    /// base radius (a 2.4 m-wide vehicle balanced 4 m up: about 17 degrees),
+    /// it accelerates over once it does, and it comes to rest on its flank
+    /// because THERE the centre of mass is back inside the support again.
+    ///
+    /// Everything is computed in MODEL space — a torque does not care which
+    /// frame it is written in, and the hull's corners are already there.
+    /// `up` is the local vertical in WORLD space; `inertia` is the body's
+    /// diagonal tensor in its own frame. Returns a BODY-FRAME angular
+    /// acceleration, exactly zero while the body is balanced.
+    [[nodiscard]] inline Vec3 topplingAcceleration(const GroundHullComponent& hull,
+                                                   const Quat& rotation, const Vec3& up,
+                                                   const Vec3& centreOfMass,
+                                                   const Vec3& inertia, f64 massKg,
+                                                   f64 gravity)
+    {
+        const Vec3 localUp = glm::normalize(glm::inverse(rotation) * up);
+
+        Vec3 corners[8];
+        f32 heights[8];
+        f32 lowest = std::numeric_limits<f32>::max();
+        for (int i = 0; i < 8; ++i)
+        {
+            corners[i] =
+                hull.centre + Vec3((i & 1) ? hull.halfExtents.x : -hull.halfExtents.x,
+                                   (i & 2) ? hull.halfExtents.y : -hull.halfExtents.y,
+                                   (i & 4) ? hull.halfExtents.z : -hull.halfExtents.z);
+            heights[i] = glm::dot(corners[i], localUp);
+            lowest = std::min(lowest, heights[i]);
+        }
+
+        // WHICH CORNERS ARE TOUCHING. A tolerance and not an equality, both
+        // because a body resting flat has four corners at one height only in
+        // exact arithmetic, and because the hull is a box standing in for a
+        // shape that is not one. It scales with the body: what means
+        // "resting flat" on a 2 m capsule is a rounding error on a 20 m
+        // booster.
+        const f32 tolerance =
+            std::max(0.05f, 0.04f * glm::length(hull.halfExtents) * 2.0f);
+        Vec3 support{0.0f};
+        u32 touching = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            if (heights[i] <= lowest + tolerance)
+            {
+                support += corners[i];
+                touching += 1;
+            }
+        }
+        if (touching == 0)
+        {
+            return Vec3(0.0f);
+        }
+        support /= static_cast<f32>(touching);
+
+        // How far the centre of mass leans, measured ALONG the ground.
+        const Vec3 offset = centreOfMass - support;
+        const Vec3 lean = offset - localUp * glm::dot(offset, localUp);
+        const f32 leanDistance = glm::length(lean);
+        if (leanDistance < 1.0e-5f)
+        {
+            return Vec3(0.0f); // balanced over the centre of its own feet
+        }
+        const Vec3 direction = lean / leanDistance;
+
+        // How far the SUPPORT reaches the same way. Inside it, the ground
+        // holds the body up and there is nothing to explain.
+        f32 reach = 0.0f;
+        for (int i = 0; i < 8; ++i)
+        {
+            if (heights[i] <= lowest + tolerance)
+            {
+                reach = std::max(reach, glm::dot(corners[i] - support, direction));
+            }
+        }
+        const f32 overhang = leanDistance - reach;
+        if (overhang <= 0.0f)
+        {
+            return Vec3(0.0f);
+        }
+
+        // Past the edge: the edge is the pivot, the overhang is the lever.
+        const Vec3 weight = -localUp * static_cast<f32>(massKg * gravity);
+        const Vec3 torque = glm::cross(direction * overhang, weight);
+        return Vec3(torque.x / std::max(inertia.x, 1.0f),
+                    torque.y / std::max(inertia.y, 1.0f),
+                    torque.z / std::max(inertia.z, 1.0f));
+    }
+
     /// v2 (hierarchical systems): the orbit is PRIMARY-RELATIVE and the
     /// component remembers which body it orbits. The RailsSystem adds the
     /// primary's current world position — so a station riding rails around
@@ -254,6 +362,29 @@ namespace sw::phys
     /// what makes surface bases save/load-proof: the body may have rotated
     /// arbitrarily far while the game was closed, the base stays exactly
     /// where it was built.
+    /// IS THE ANALYTIC WORLD A GOOD ENOUGH STAND-IN FOR THE REAL ONE HERE?
+    ///
+    /// Time warp past the physics rate switches the integrator off and puts
+    /// everything on rails. That is exact when the motion already IS a conic
+    /// clear of the air, and it is a fabrication otherwise: a suborbital arc,
+    /// a reentry or an escape trajectory all have their outcome decided by
+    /// the integration the warp would skip, and warping one hands the player
+    /// back a vehicle somewhere it could never have reached.
+    ///
+    /// Two situations qualify. Standing on something — the craft is not going
+    /// anywhere and the ground holds it up. Or a CLOSED orbit whose lowest
+    /// point clears the atmosphere: a periapsis inside the air means decay,
+    /// and decay is precisely what rails cannot express.
+    ///
+    /// Altitude alone was the old test and it is not the same question: it
+    /// happily permitted ten thousand times real time on a trajectory whose
+    /// next event was the ground.
+    [[nodiscard]] inline bool warpPermitted(bool grounded, bool closedOrbit,
+                                            f64 periapsisAltitude, f64 atmosphereTopAltitude)
+    {
+        return grounded || (closedOrbit && periapsisAltitude > atmosphereTopAltitude);
+    }
+
     struct SurfaceAnchorComponent
     {
         ecs::Entity body{};           // the gravity source this is built on

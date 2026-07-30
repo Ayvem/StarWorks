@@ -42,11 +42,25 @@ add_library(StarWorksEngine STATIC
     Source/Save/Snapshot.hpp
     Source/Serialization/Binary.hpp
 
+    # --- Network --------------------------------------------------------------
+    Source/Network/Protocol.cpp
+    Source/Network/Protocol.hpp
+    Source/Network/Replication.cpp
+    Source/Network/Replication.hpp
+    Source/Network/Session.cpp
+    Source/Network/Timeline.cpp
+    Source/Network/Timeline.hpp
+    Source/Network/Session.hpp
+    Source/Network/Transport.cpp
+    Source/Network/Transport.hpp
+
     # --- Simulation -------------------------------------------------------------
     Source/Simulation/Simulation.cpp
     Source/Simulation/Simulation.hpp
 
     # --- Platform -----------------------------------------------------------
+    Source/Platform/Firewall.cpp
+    Source/Platform/Firewall.hpp
     Source/Platform/Window.cpp
     Source/Platform/Window.hpp
 
@@ -170,6 +184,17 @@ target_link_libraries(StarWorksEngine
         GPUOpen::VulkanMemoryAllocator
         cgltf
 )
+
+# Sockets. Every other platform has them in libc; Windows keeps them in a
+# separate library and will not link UdpSocket without this.
+#
+# ole32/oleaut32 are the firewall query (INetFwPolicy2 is a COM object) and
+# shell32 is ShellExecuteEx, which is what raises the UAC prompt. Listed here
+# rather than with #pragma comment(lib) so the code links under any Windows
+# toolchain and not only MSVC.
+if(WIN32)
+    target_link_libraries(StarWorksEngine PRIVATE ws2_32 ole32 oleaut32 shell32)
+endif()
 
 set_target_properties(StarWorksEngine PROPERTIES FOLDER "Engine")
 

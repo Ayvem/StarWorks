@@ -1,0 +1,96 @@
+{
+  "id": 6,
+  "type": "DockingPort",
+  "name": "DR-1 Docking Ring",
+  "dryMassKg": 320,
+  "costCredits": 2200,
+  "volumeM3": 1,
+  "crashToleranceMps": 8,
+  "breakingForceN": 300000,
+  "dragCoefficientArea": 0.7,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "tube",
+      "position": [0, 0, 0.07999999821186066],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.800000011920929, 0.3199999928474426, 0.5199999809265137],
+      "color": [0.6000000238418579, 0.6200000047683716, 0.6600000262260437],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cone",
+      "position": [0, 0, -0.2800000011920929],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.6200000047683716, 0.12999999523162842, 0.800000011920929],
+      "color": [0.41999998688697815, 0.4399999976158142, 0.47999998927116394],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, -0.3700000047683716],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.6600000262260437, 0.03500000014901161, 0.6000000238418579],
+      "color": [0.30000001192092896, 0.8999999761581421, 0.6000000238418579],
+      "emissive": 0.5,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0.30000001192092896],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.5, 0.10000000149011612, 0],
+      "color": [0.3499999940395355, 0.36000001430511475, 0.4000000059604645],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "dock",
+      "position": [0, 0, -0.4000000059604645],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 0.800000011920929
+    },
+    {
+      "name": "bottom",
+      "position": [0, 0, 0.4000000059604645],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 0.800000011920929
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0.07999999821186066],
+      "halfExtents": [0.800000011920929, 0.800000011920929, 0.3199999928474426]
+    },
+    {
+      "center": [0, 0, -0.2800000011920929],
+      "halfExtents": [0.800000011920929, 0.800000011920929, 0.12999999523162842]
+    }
+  ]
+}

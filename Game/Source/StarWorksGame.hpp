@@ -22,6 +22,8 @@
 #include <Engine.hpp>
 
 #include <array>
+#include <memory>
+#include <string>
 #include <atomic>
 #include <string_view>
 #include <unordered_map>
@@ -267,21 +269,25 @@ namespace game
         // craft moves.
         //
         // The build itself runs on the THREAD POOL: at landing density it is
-        // ~9,400 evaluations of a 16-octave heightfield, which on the main
-        // thread is a visible stutter every time the craft crosses its own
-        // patch. The job only reads its captured parameters and writes the
+        // tens of thousands of evaluations of a 16-octave heightfield —
+        // ~37,000 at the 192-cell landing grid — which on the main thread
+        // is a visible stutter every time the craft crosses its own patch. The job only reads its captured parameters and writes the
         // pending mesh; the main thread uploads it on a later frame, so the
         // patch on screen is never the one being written.
         void updateTerrainPatch();
         void buildTerrainPatch(const sw::planet::TerrainComponent& terrain,
                                sw::i32 surfaceStyle, const sw::Vec3& centerDir,
-                               sw::f64 extent, sw::f64 radius);
+                               sw::f64 extent, sw::f64 radius, sw::u32 cellCount,
+                               const sw::Vec3& sunDirBody);
         enum class TerrainJob : sw::u32 { Idle, Running, Ready };
         std::atomic<TerrainJob> m_terrainJob{TerrainJob::Idle};
         sw::MeshData m_terrainPendingMesh;
         sw::WorldVec3 m_terrainPendingOrigin{0.0};
         sw::Vec3 m_terrainPendingCenterDir{0.0f};
         sw::f64 m_terrainPendingExtent = 0.0;
+        sw::u32 m_terrainPendingCells = 0;
+        sw::Vec3 m_terrainPendingEast{0.0f};
+        sw::Vec3 m_terrainPendingNorth{0.0f};
         sw::ecs::Entity m_terrainPendingBody{};
         sw::u32 m_terrainMeshSlot = 0xFFFFFFFFu;
         /// Two GPU meshes, used in turn: replacing the one drawn last frame
@@ -294,6 +300,59 @@ namespace game
         sw::f64 m_terrainExtent = 0.0;      // half-size, meters
         sw::WorldVec3 m_terrainOriginLocal{0.0}; // body-frame patch origin
         sw::f64 m_lastTerrainRebuildSeconds = -1.0e9;
+
+        // ---- THE GRASS, on its own clock and its own meshes -----------------
+        //
+        // The field has to follow a walking player at the scale of a field —
+        // forty metres, not the four hundred and fifty the ground is happy
+        // with. Riding on the terrain patch made every one of those a 5 MB
+        // upload on the main thread, and `uploadToBuffer` SUBMITS AND THEN
+        // WAITS ON A FENCE: the wait drains whatever the graphics queue is
+        // already holding, so the hitch is up to a whole frame of GPU work.
+        // Eleven times more often, that is a visible spike every ten seconds
+        // of walking.
+        //
+        // So the grass is its own geometry, built from the ground grid the
+        // patch already computed, cut into chunks, and uploaded ONE CHUNK PER
+        // FRAME. The stall is divided by the chunk count and spread over that
+        // many frames, and the field on screen is never incomplete: the new
+        // set fills the spare slots while the old one keeps drawing, and they
+        // swap only when the last chunk has landed.
+        static constexpr sw::u32 kGrassChunks = 6;
+        void buildGrassField(const std::vector<sw::Vertex>& groundGrid, sw::u32 cellCount,
+                             const sw::Vec3& centerDir, const sw::Vec3& east,
+                             const sw::Vec3& north, sw::f64 extent, sw::f64 radius,
+                             const sw::Vec3& fieldDir);
+        std::atomic<TerrainJob> m_grassJob{TerrainJob::Idle};
+        sw::MeshData m_grassPending[kGrassChunks];
+        /// Two sets of chunk slots: one drawn, one being filled.
+        sw::u32 m_grassSlots[2][kGrassChunks] = {
+            {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu},
+            {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu}};
+        /// A chunk can come back empty — bare rock, open water, or simply
+        /// nothing green in its sixth of the field. Its SLOT is kept (so the
+        /// mesh table does not grow a new entry on every rebuild) and only
+        /// its validity is cleared.
+        bool m_grassChunkValid[2][kGrassChunks] = {};
+        sw::u32 m_grassSet = 0;          // which set is on screen
+        sw::u32 m_grassLiveCount = 0;    // chunks of that set worth drawing
+        sw::u32 m_grassUploadCursor = 0; // next chunk to hand to the GPU
+        sw::Vec3 m_grassCenterDir{0.0f};
+        sw::Vec3 m_grassPendingCenterDir{0.0f};
+        /// The patch origin the chunk vertices are relative to — the grass
+        /// is drawn with the terrain's own transform, so it must share it.
+        sw::WorldVec3 m_grassOriginLocal{0.0};
+        sw::WorldVec3 m_grassPendingOriginLocal{0.0};
+        sw::ecs::Entity m_grassBody{};
+        /// The ground grid the last patch produced, kept so the grass can be
+        /// re-centred without rebuilding the terrain: the field then stands
+        /// on exactly the surface that is drawn, not on a second sampling of
+        /// the heightfield that would put it half a metre out.
+        std::vector<sw::Vertex> m_terrainGridVertices;
+        sw::u32 m_terrainGridCells = 0;
+        sw::Vec3 m_terrainGridEast{0.0f};
+        sw::Vec3 m_terrainGridNorth{0.0f};
+        void updateGrassField();
 
         // The HANGAR (B) — the VAB. A fully separate view; the design is a
         // BLUEPRINT (plain data, not live entities). KSP-style MOUSE
@@ -336,7 +395,6 @@ namespace game
         void collectHangarItems();
         void hangarNewBlueprint();
         void hangarLoadNextVessel();
-        void hangarBuild();
         [[nodiscard]] std::vector<OpenAttachPoint> openAttachPoints();
         /// Cursor ray in the BLUEPRINT frame (hangar display rotation undone).
         void editorCursorRay(sw::Vec3& outOrigin, sw::Vec3& outDirection);
@@ -493,7 +551,9 @@ namespace game
             std::string_view name) const;
         /// Writes the current design to Assets/Ships and registers it, so it
         /// is orderable at a VAB without a restart.
-        void hangarSaveShip();
+        /// Writes and registers the design; returns the name it was given,
+        /// or empty on failure.
+        std::string hangarSaveShip();
         /// Pours up to `availableUnits` of fuel into a vessel's tanks;
         /// returns what actually went in.
         sw::f64 fuelVessel(sw::ecs::Entity vessel, sw::f64 availableUnits);
@@ -515,6 +575,107 @@ namespace game
         std::vector<HudButton> m_hudButtons; // rebuilt each frame
         void collectSasButtons();
         void handleHudClicks();
+
+        // ====================================================================
+        // MULTIPLAYER
+        //
+        // Every player owns their own clock. One of them warping does not
+        // drag anyone else forward — that is the point of warp — so two
+        // players in one session can legitimately be hours apart, and the
+        // panel treats that difference as a first-class reading rather than
+        // a fault. What crosses the gap is a STAMPED event: it carries the
+        // instant it happened at, and a player who has not reached that
+        // instant holds it until they do (Network/Timeline.hpp).
+        // ====================================================================
+
+        /// What the piloted craft is doing, computed once per frame BEFORE
+        /// anything reads it. The warp gate and the HUD have to agree, and
+        /// the gate runs earlier in the frame than the HUD does.
+        struct FlightState
+        {
+            sw::i32 primaryIndex = -1;
+            sw::f64 altitude = 0.0;
+            sw::f64 periapsisAltitude = 0.0;
+            sw::f64 apoapsisAltitude = 0.0;
+            sw::f64 atmosphereTop = 0.0;
+            bool grounded = false;
+            bool closedOrbit = false;
+            /// Standing on something: how far the nose leans off the local
+            /// vertical, and whether the ground is still holding it up.
+            ///
+            /// This is on the HUD because the honest answer to "why is my
+            /// rocket leaning and not falling over" is usually "because it
+            /// is inside its own support polygon", and a player has no way
+            /// to see that. A number and one word turn a bug report into a
+            /// reading.
+            sw::f32 leanDegrees = 0.0f;
+            bool tipping = false;
+        };
+        FlightState m_flight{};
+        void refreshFlightState();
+
+        /// TIME WARP IS NOT FREE ANY MORE. Past physics warp (x5) the craft
+        /// must either be standing on something or be in a closed orbit
+        /// whose periapsis clears the atmosphere. Anything else — a suborbital
+        /// arc, a reentry, an escape trajectory — is a situation whose
+        /// outcome depends on the integration the warp would switch off.
+        [[nodiscard]] bool warpAllowed() const;
+        /// Why not, in three words, for the panel.
+        [[nodiscard]] const char* warpBlockReason() const;
+
+        /// Absolute simulation time a SYNC warp is aiming at, or 0.
+        /// Distinct from m_warpToSeconds (the node) because it bypasses the
+        /// altitude ladder: catching up to another player is the one warp
+        /// whose destination is not negotiable.
+        sw::f64 m_syncWarpTo = 0.0;
+        /// Who we are catching up to, for the panel's benefit.
+        sw::u32 m_syncWarpPlayer = 0;
+
+        bool m_netPanel = false;
+        std::unique_ptr<sw::net::Host> m_netHost;
+        std::unique_ptr<sw::net::Client> m_netClient;
+        /// The client's mirror of the host's world. Deliberately a SEPARATE
+        /// world from m_world: this build does not yet merge a remote world
+        /// into the local one, and decoding into the live world would fight
+        /// the local simulation for every entity.
+        sw::ecs::World m_netMirror;
+        std::string m_netAddress = "127.0.0.1:7777";
+        bool m_netAddressFocused = false;
+        std::string m_netStatus;
+        /// A timeout is diagnosed once per attempt, not once per frame — the
+        /// state is sticky and the log would otherwise fill with it.
+        bool m_netTimeoutLogged = false;
+        /// What the firewall step did the last time HOST was pressed, so the
+        /// panel can say so without asking the operating system every frame.
+        sw::platform::FirewallRequest m_netFirewall =
+            sw::platform::FirewallRequest::Unsupported;
+        /// Sampled once, when hosting starts. A Public network profile makes
+        /// the firewall rule inert without removing it, so it has to be said
+        /// out loud or it is invisible.
+        bool m_netPublicNetwork = false;
+        sw::f64 m_netLastBeaconAt = -1.0;
+        sw::u64 m_netEventsApplied = 0;
+
+        /// A key press, unless a text field has the keyboard. One place to
+        /// ask, so adding a field cannot silently leave a gameplay key live
+        /// underneath it.
+        [[nodiscard]] bool keyPressed(sw::KeyCode key);
+
+        void updateNetwork(sw::f32 deltaSeconds);
+        void updateTextField();
+        void collectNetPanel();
+        void netHost();
+        void netJoin();
+        void netLeave();
+        /// Starts a sync warp toward `targetSeconds` if the craft is allowed
+        /// to warp at all.
+        void netSyncTo(sw::u32 playerId, sw::f64 targetSeconds);
+        [[nodiscard]] bool netActive() const
+        {
+            return m_netHost != nullptr || m_netClient != nullptr;
+        }
+        /// Everyone in the session, host first, from whichever end we are.
+        [[nodiscard]] std::vector<sw::net::PlayerView> netRoster() const;
         /// A filled screen-space rectangle in NDC. Every panel, row and chip
         /// in the game goes through this one call.
         void hudQuad(sw::f32 x0, sw::f32 y0, sw::f32 x1, sw::f32 y1,
@@ -526,6 +687,23 @@ namespace game
         /// The cursor in the same NDC the buttons are laid out in, so a row
         /// can light up under it. False when there is no window yet.
         [[nodiscard]] bool hudCursor(sw::f32& outX, sw::f32& outY);
+
+        /// A DESIGN, DRAWN SOLID INSIDE A PANEL. Real part geometry, framed
+        /// to the rectangle, spinning about its own vertical — the VAB's
+        /// catalogue entry, so ordering a rocket does not mean ordering a
+        /// name and a mass.
+        ///
+        /// There is no depth buffer in the HUD pass, so hidden surfaces are
+        /// removed the two ways that need none: back faces are culled by the
+        /// pipeline (correct on its own for a convex part, which is what
+        /// almost every part is), and the parts are sorted back-to-front
+        /// among themselves here.
+        void hudDesignPreview(const sw::parts::ShipBlueprint& design, sw::f32 x0,
+                              sw::f32 y0, sw::f32 x1, sw::f32 y1, sw::f32 spinRadians);
+
+        /// Which saved design the VAB panel is showing, as an index into
+        /// sw::parts::blueprintCatalog(). -1 = none picked yet.
+        sw::i32 m_vabSelection = -1;
 
         // Visual particles: reentry plasma streaks and engine exhaust.
         struct ReentryParticle

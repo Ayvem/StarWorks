@@ -232,3 +232,119 @@ SW_TEST(TerrainPresetsAreStableAndTheLaunchSiteDoesNotMove)
     SW_CHECK_EQ(sw::planet::terrainPreset(1).seed, sw::planet::presetLuna().seed);
     SW_CHECK_EQ(sw::planet::terrainPreset(2).seed, sw::planet::presetMars().seed);
 }
+
+// ---------------------------------------------------------------------------
+// 5. THE DRAWN GROUND IS THE GROUND YOU STAND ON
+//
+// Collision samples the analytic heightfield exactly; the renderer draws a
+// grid of samples with flat triangles stretched between them. Those two
+// surfaces agree only as well as the grid is fine — and where they disagree
+// the player sees the thing they cannot un-see, a rocket half-submerged in a
+// hillside it is, as far as physics is concerned, resting neatly on top of.
+//
+// The heightfield is a RIDGED fractal: it has creases, so the error of a
+// chord across one cell falls roughly with the cell width rather than with
+// its square. That is what makes this a resolution contract and not a
+// tuning knob, and it is why the terrain patch's level of detail must be
+// chosen from height above the GROUND and never from height above the sea.
+// Standing on Terra's 1,100 m launch plateau, the sea-level reading asked
+// for a 137 m grid; the ground-level reading asks for a 15.6 m one.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    /// Worst signed gap, in metres, between the analytic surface and a mesh
+    /// of `cells` square that samples it and interpolates linearly between.
+    /// Negative means the true ground is BELOW the drawn one — you sink.
+    struct MeshGap
+    {
+        sw::f64 sink = 0.0;  // metres the collider sits below the mesh
+        sw::f64 hover = 0.0; // ...and above it
+    };
+
+    [[nodiscard]] MeshGap meshGap(const sw::planet::TerrainComponent& terrain,
+                                  const sw::Vec3& centreDir, sw::f64 extent,
+                                  sw::u32 cells, sw::f64 radius)
+    {
+        const sw::Vec3 reference =
+            (std::abs(centreDir.y) < 0.99f) ? sw::Vec3{0, 1, 0} : sw::Vec3{1, 0, 0};
+        const sw::Vec3 east = glm::normalize(glm::cross(reference, centreDir));
+        const sw::Vec3 north = glm::cross(centreDir, east);
+
+        const auto surfaceRadius = [&](sw::f64 u, sw::f64 v) {
+            const sw::WorldVec3 raw = sw::WorldVec3(centreDir) * radius +
+                                      sw::WorldVec3(east) * u + sw::WorldVec3(north) * v;
+            const sw::Vec3 dir = sw::Vec3(glm::normalize(raw));
+            return radius + sw::planet::terrainElevation(terrain, dir);
+        };
+
+        const sw::u32 verts = cells + 1;
+        std::vector<sw::f64> grid(static_cast<sw::usize>(verts) * verts);
+        for (sw::u32 j = 0; j < verts; ++j)
+        {
+            for (sw::u32 i = 0; i < verts; ++i)
+            {
+                grid[static_cast<sw::usize>(j) * verts + i] =
+                    surfaceRadius((static_cast<sw::f64>(i) / cells * 2.0 - 1.0) * extent,
+                                  (static_cast<sw::f64>(j) / cells * 2.0 - 1.0) * extent);
+            }
+        }
+
+        MeshGap out{};
+        for (sw::u32 j = 0; j < cells; ++j)
+        {
+            for (sw::u32 i = 0; i < cells; ++i)
+            {
+                const sw::f64 r00 = grid[static_cast<sw::usize>(j) * verts + i];
+                const sw::f64 r10 = grid[static_cast<sw::usize>(j) * verts + i + 1];
+                const sw::f64 r01 = grid[static_cast<sw::usize>(j + 1) * verts + i];
+                const sw::f64 r11 = grid[static_cast<sw::usize>(j + 1) * verts + i + 1];
+                for (sw::u32 b = 1; b < 3; ++b)
+                {
+                    for (sw::u32 a = 1; a < 3; ++a)
+                    {
+                        const sw::f64 fa = static_cast<sw::f64>(a) / 3.0;
+                        const sw::f64 fb = static_cast<sw::f64>(b) / 3.0;
+                        const sw::f64 drawn = (r00 * (1 - fa) + r10 * fa) * (1 - fb) +
+                                              (r01 * (1 - fa) + r11 * fa) * fb;
+                        const sw::f64 truth = surfaceRadius(
+                            ((static_cast<sw::f64>(i) + fa) / cells * 2.0 - 1.0) * extent,
+                            ((static_cast<sw::f64>(j) + fb) / cells * 2.0 - 1.0) *
+                                extent);
+                        out.sink = std::min(out.sink, truth - drawn);
+                        out.hover = std::max(out.hover, truth - drawn);
+                    }
+                }
+            }
+        }
+        return out;
+    }
+} // namespace
+
+SW_TEST(TheDrawnGroundFollowsTheColliderWhenTheCellsAreFineEnough)
+{
+    const sw::planet::TerrainComponent terra = sw::planet::presetTerra();
+    constexpr sw::f64 kTerraRadius = 6.371e6;
+    // A patch of real, creased terrain — not a smooth plain, which would
+    // pass at any resolution and prove nothing.
+    const sw::Vec3 site = glm::normalize(sw::Vec3(0.31f, 0.74f, 0.60f));
+
+    // 15.6 m cells: what the patch builds at landing extent.
+    const MeshGap fine = meshGap(terra, site, 500.0, 64, kTerraRadius);
+    SW_CHECK(-fine.sink < 0.6);
+    SW_CHECK(fine.hover < 2.6);
+
+    // 137 m cells: what the level of detail asked for while it was reading
+    // altitude from SEA level on an 1,100 m plateau. Measured across the
+    // whole patch this is metres of disagreement, and a 2.4 m rocket
+    // disappears into it.
+    const MeshGap coarse = meshGap(terra, site, 4400.0, 64, kTerraRadius);
+    SW_CHECK(-coarse.sink > 1.5);
+    SW_CHECK(-coarse.sink > -fine.sink * 3.0);
+
+    // The relationship is what matters and it must stay monotone: halving
+    // the cell must not make the agreement worse.
+    const MeshGap middle = meshGap(terra, site, 1000.0, 64, kTerraRadius);
+    SW_CHECK(-fine.sink <= -middle.sink + 0.05);
+    SW_CHECK(-middle.sink <= -coarse.sink + 0.05);
+}

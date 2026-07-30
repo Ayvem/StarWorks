@@ -206,13 +206,17 @@ namespace sw::aero
                 f32 pressureWeight = 0.0f;
                 f64 exposedArea = 0.0;
 
-                std::vector<f32> partExposure(m_parts.size(), 1.0f);
+                // Scratch that lives on the system, not on the stack: two
+                // heap allocations per vessel per tick is two too many at
+                // fifty ticks a second.
+                m_exposure.assign(m_parts.size(), 1.0f);
+                std::vector<f32>& partExposure = m_exposure;
                 {
                     // One box per part is enough to ask the question; a part
                     // with several is represented by its first, which is the
                     // one the hull builder put the bulk in.
-                    std::vector<u32> firstBox(m_parts.size(),
-                                              static_cast<u32>(m_boxes.size()));
+                    m_firstBox.assign(m_parts.size(), static_cast<u32>(m_boxes.size()));
+                    std::vector<u32>& firstBox = m_firstBox;
                     for (u32 b = 0; b < m_boxes.size(); ++b)
                     {
                         u32& slot = firstBox[m_boxes[b].ownerIndex];

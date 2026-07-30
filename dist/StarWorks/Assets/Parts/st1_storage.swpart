@@ -1,0 +1,78 @@
+{
+  "id": 103,
+  "type": "Structural",
+  "name": "ST-1 Bulk Silo",
+  "dryMassKg": 15000,
+  "costCredits": 0,
+  "volumeM3": 12,
+  "crashToleranceMps": 8,
+  "breakingForceN": 300000,
+  "dragCoefficientArea": 2,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "building": {
+    "category": "storage",
+    "footprintM": [12, 12],
+    "powerKw": -2,
+    "inventoryVolumeM3": 220,
+    "maxSlopeTangent": 0.2,
+    "minOreDensity": 0
+  },
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [0, 4, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [5, 8, 5],
+      "color": [0.7200000286102295, 0.6000000238418579, 0.2800000011920929],
+      "emissive": 0,
+      "specular": 0.25,
+      "gloss": 0.30000001192092896,
+      "segments": 20,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 8.399999618530273, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [5.199999809265137, 0.800000011920929, 5.199999809265137],
+      "color": [0.2800000011920929, 0.30000001192092896, 0.33000001311302185],
+      "emissive": 0,
+      "specular": 0.25,
+      "gloss": 0.30000001192092896,
+      "segments": 20,
+      "visible": true,
+      "collider": true
+    }
+  ],
+  "nodes": [
+    {
+      "name": "in",
+      "position": [3.6659998893737793, 0.6000000238418579, 0],
+      "direction": [1, 0, 0],
+      "type": "conveyor-in",
+      "size": 0.550000011920929
+    },
+    {
+      "name": "power",
+      "position": [-2, 8.583000183105469, 2],
+      "direction": [0, 1, 0],
+      "type": "power",
+      "size": 0.5
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 4, 0],
+      "halfExtents": [5, 5, 8]
+    },
+    {
+      "center": [0, 8.399999618530273, 0],
+      "halfExtents": [5.199999809265137, 5.199999809265137, 0.800000011920929]
+    }
+  ]
+}

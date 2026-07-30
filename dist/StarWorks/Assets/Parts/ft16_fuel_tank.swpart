@@ -1,0 +1,145 @@
+{
+  "id": 1,
+  "type": "FuelTank",
+  "name": "FT-16 Fuel Tank",
+  "dryMassKg": 900,
+  "costCredits": 1200,
+  "volumeM3": 21,
+  "crashToleranceMps": 8,
+  "breakingForceN": 400000,
+  "dragCoefficientArea": 1.6,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [
+    {
+      "resource": "Fuel",
+      "units": 16000
+    }
+  ],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.2000000476837158, 1.7000000476837158, 0],
+      "color": [0.8500000238418579, 0.8600000143051147, 0.8999999761581421],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "sphere",
+      "position": [0, 0, -1.7000000476837158],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.2000000476837158, 1.2000000476837158, 0.4000000059604645],
+      "color": [0.8500000238418579, 0.8600000143051147, 0.8999999761581421],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "sphere",
+      "position": [0, 0, 1.7000000476837158],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.2000000476837158, 1.2000000476837158, 0.4000000059604645],
+      "color": [0.8500000238418579, 0.8600000143051147, 0.8999999761581421],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 0, -1],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.215000033378601, 0.2199999988079071, 0],
+      "color": [0.8500000238418579, 0.44999998807907104, 0.11999999731779099],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 1.149999976158142],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.215000033378601, 0.14000000059604645, 0],
+      "color": [0.3499999940395355, 0.3700000047683716, 0.41999998688697815],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 0, 0.05000000074505806],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.029999999329447746, 1.2100000381469727, 1.0499999523162842],
+      "color": [0.550000011920929, 0.5699999928474426, 0.6200000047683716],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "top",
+      "position": [0, 0, -2.0999999046325684],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 1.2000000476837158
+    },
+    {
+      "name": "bottom",
+      "position": [0, 0, 2.0999999046325684],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 1.2000000476837158
+    },
+    {
+      "name": "radialA",
+      "position": [1.2000000476837158, 0, 0],
+      "direction": [1, 0, 0],
+      "type": "radial",
+      "size": 0.4000000059604645
+    },
+    {
+      "name": "radialB",
+      "position": [-1.2000000476837158, 0, 0],
+      "direction": [-1, 0, 0],
+      "type": "radial",
+      "size": 0.4000000059604645
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [1.2000000476837158, 1.2000000476837158, 1.7000000476837158]
+    },
+    {
+      "center": [0, 0, -1.7000000476837158],
+      "halfExtents": [1.2000000476837158, 1.2000000476837158, 0.4000000059604645]
+    },
+    {
+      "center": [0, 0, 1.7000000476837158],
+      "halfExtents": [1.2000000476837158, 1.2000000476837158, 0.4000000059604645]
+    }
+  ]
+}

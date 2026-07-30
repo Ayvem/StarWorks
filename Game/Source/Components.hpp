@@ -159,7 +159,11 @@ namespace game
         /// third-person walker whose body and view can disagree makes the
         /// player fight two controls to go one direction.
         sw::f32 headingRadians = 0.0f;
-        sw::f32 walkSpeed = 4.0f;      // m/s on the ground
+        /// Metres a second on the ground. Eight, not four: the outpost is
+        /// 200 m across and the pad is 120 m from the hub, and at a brisk
+        /// walk that is most of a minute of holding W to reach the rocket
+        /// you just paid for.
+        sw::f32 walkSpeed = 8.0f;
         sw::f32 turnSpeed = 1.8f;      // rad/s per unit of mouse look
         /// How hard the legs push, m/s straight up from the surface. A
         /// SPEED and not a height, because the height is the planet's

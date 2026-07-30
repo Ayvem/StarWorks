@@ -2,6 +2,8 @@
 
 #include "Physics/Aerodynamics.hpp"
 
+#include <glm/gtx/component_wise.hpp>
+
 #include "Core/Log.hpp"
 #include "Physics/HullCollision.hpp"
 #include "ECS/World.hpp"
@@ -136,6 +138,7 @@ namespace sw::phys
                 // wobbles with the local slope. Same f64 spin, same reason.
                 surface.rotation64 = spinRotation(source);
                 surface.radius = source.bodyRadius;
+                surface.mu = source.mu;
                 if (const auto* atmosphere =
                         world.tryGetComponent<AtmosphereComponent>(entity))
                 {
@@ -297,6 +300,59 @@ namespace sw::phys
                             0.0, 1.0 - m_config.groundFrictionPerSecond * dt);
                         relativeVelocity *= decay;
                         body.isGrounded = 1;
+
+                        // ---- and the SAME for the rotation -----------------
+                        //
+                        // Ground contact used to touch the velocity and stop
+                        // there, so a vehicle that came down spinning kept
+                        // spinning on the dirt for ever — the one thing that
+                        // makes a landed craft read as a prop rather than an
+                        // object. Two forces were missing, and they are the
+                        // same two the linear case already had:
+                        //
+                        //   GRAVITY, which topples a body whose centre of
+                        //   mass has passed outside the feet it is standing
+                        //   on, and does exactly nothing while it has not;
+                        //   FRICTION, which rubs the spin off against the
+                        //   ground the way it already rubs off the slide.
+                        if (hull != nullptr)
+                        {
+                            // The mass distribution, if anything knows it.
+                            // The aerodynamics pass computes a real tensor
+                            // from the parts and their fuel; anything else
+                            // gets the honest box approximation of its own
+                            // hull, which is what its hull is.
+                            Vec3 centreOfMass = hull->centre;
+                            Vec3 inertia =
+                                aero::boxInertia(body.mass, hull->halfExtents);
+                            if (const auto* air =
+                                    world.tryGetComponent<aero::AeroStateComponent>(
+                                        entity);
+                                air != nullptr &&
+                                glm::compMin(air->inertiaKgM2) > 1.0f)
+                            {
+                                centreOfMass = air->centreOfMass;
+                                inertia = air->inertiaKgM2;
+                            }
+
+                            const f64 gravity =
+                                surface.mu / std::max(distance * distance, 1.0);
+                            body.angularVelocity +=
+                                topplingAcceleration(*hull, transform.rotation,
+                                                     Vec3(up), centreOfMass, inertia,
+                                                     body.mass, gravity) *
+                                static_cast<f32>(dt);
+
+                            const f32 spinDecay = std::max(
+                                0.0f, 1.0f - static_cast<f32>(
+                                                 m_config.groundAngularFrictionPerSecond *
+                                                 dt));
+                            body.angularVelocity *= spinDecay;
+                            if (glm::length(body.angularVelocity) < 1.0e-4f)
+                            {
+                                body.angularVelocity = Vec3(0.0f); // settled
+                            }
+                        }
                     }
 
                     body.velocity = surfaceVelocity + relativeVelocity;

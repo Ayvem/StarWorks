@@ -100,6 +100,8 @@ namespace sw::aero
         std::vector<AirBody> m_bodies;                 // scratch, per tick
         std::vector<OccluderBox> m_boxes;              // scratch, per vessel
         std::vector<PartEntry> m_parts;                // scratch, per vessel
+        std::vector<f32> m_exposure;                   // scratch, per vessel
+        std::vector<u32> m_firstBox;                   // scratch, per vessel
         std::unordered_map<u32, std::vector<parts::HitBox>> m_hullCache;
     };
 } // namespace sw::aero

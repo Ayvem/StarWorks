@@ -907,3 +907,225 @@ SW_TEST(AJumpChangesOnlyTheSpeedAwayFromTheGround)
     SW_CHECK(terraHeight > 0.9 && terraHeight < 1.1);
     SW_CHECK(lunaHeight > 6.0 && lunaHeight < 6.5);
 }
+
+// ---------------------------------------------------------------------------
+// THE GROUND, AND WHAT IT DOES TO A ROTATION
+//
+// Contact used to touch a body's velocity and stop there: a rocket that came
+// down turning kept turning on the dirt for ever, and one that landed leaning
+// stayed leaning, propped on the corner of its own bounding box. Two forces
+// were missing, and they are the two the linear case already had — gravity,
+// which topples a body whose balance point has left its feet, and friction,
+// which rubs the spin off the way it already rubs off the slide.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    /// A 12 m rocket, 2.4 m across, balanced at its middle. Statics: it tips
+    /// once 6 sin(t) exceeds 1.2 — past 11.5 degrees, and not before.
+    struct GroundRig
+    {
+        ecs::World world;
+        ecs::Entity ship{};
+        GravityIntegrationSystem gravity;
+        SurfaceInteractionSystem surface{SurfaceInteractionSystem::Config{}};
+    };
+
+    void standRocket(GroundRig& rig, f32 tiltDegrees, const Vec3& spin)
+    {
+        const ecs::Entity terra = rig.world.createEntity();
+        rig.world.addComponent(terra, TransformComponent{});
+        GravitySourceComponent source{};
+        source.mu = kMuTerra;
+        source.bodyRadius = 6.371e6;
+        source.soiRadius = 9.24e8;
+        rig.world.addComponent(terra, source);
+
+        rig.ship = rig.world.createEntity();
+        TransformComponent transform{};
+        const WorldVec3 up{0.0, 1.0, 0.0};
+        transform.position = up * (6.371e6 + 6.0);
+        transform.rotation = glm::normalize(
+            glm::angleAxis(math::toRadians(tiltDegrees), Vec3(1, 0, 0)) *
+            glm::rotation(Vec3(0, 0, -1), Vec3(up)));
+        rig.world.addComponent(rig.ship, transform);
+
+        DynamicBodyComponent body{};
+        body.mass = 4000.0;
+        body.angularVelocity = spin;
+        rig.world.addComponent(rig.ship, body);
+
+        GroundHullComponent hull{};
+        hull.halfExtents = Vec3(1.2f, 1.2f, 6.0f);
+        rig.world.addComponent(rig.ship, hull);
+    }
+
+    /// Degrees between the rocket's own axis and the local vertical.
+    [[nodiscard]] f32 rocketTilt(GroundRig& rig)
+    {
+        const auto& transform = rig.world.getComponent<TransformComponent>(rig.ship);
+        const Vec3 up = Vec3(glm::normalize(transform.position));
+        const Vec3 nose = transform.rotation * Vec3(0, 0, -1);
+        return math::toDegrees(std::acos(std::clamp(glm::dot(nose, up), -1.0f, 1.0f)));
+    }
+
+    /// One tick, integrating the attitude the way the ship's own system does.
+    void groundStep(GroundRig& rig, f32 dt)
+    {
+        auto& transform = rig.world.getComponent<TransformComponent>(rig.ship);
+        auto& body = rig.world.getComponent<DynamicBodyComponent>(rig.ship);
+        const f32 rate = glm::length(body.angularVelocity);
+        if (rate > 1.0e-9f)
+        {
+            transform.rotation = glm::normalize(
+                transform.rotation *
+                glm::angleAxis(rate * dt, body.angularVelocity / rate));
+        }
+        rig.gravity.update(rig.world, dt);
+        rig.surface.update(rig.world, dt);
+    }
+
+    [[nodiscard]] f32 settledTilt(f32 startTilt, f32 seconds = 60.0f)
+    {
+        GroundRig rig{};
+        standRocket(rig, startTilt, Vec3(0.0f));
+        const int ticks = static_cast<int>(seconds / 0.02f);
+        for (int i = 0; i < ticks; ++i)
+        {
+            groundStep(rig, 0.02f);
+        }
+        return rocketTilt(rig);
+    }
+} // namespace
+
+SW_TEST(AToppleNeedsTheBalancePointOutsideTheFeet)
+{
+    // The pure function, before any world is involved. Standing square on
+    // its own feet, a body is held up by the ground and gravity has no
+    // lever at all — the answer must be EXACTLY zero, not merely small,
+    // because a rocket that creeps over while balanced is a rocket that
+    // cannot be left on a pad.
+    GroundHullComponent hull{};
+    hull.halfExtents = Vec3(1.2f, 1.2f, 6.0f);
+    const Vec3 inertia(5.0e4f, 5.0e4f, 3.0e3f);
+
+    const Quat upright = glm::rotation(Vec3(0, 0, -1), Vec3(0, 1, 0));
+    const Vec3 up(0.0f, 1.0f, 0.0f);
+    const Vec3 balanced =
+        topplingAcceleration(hull, upright, up, Vec3(0.0f), inertia, 4000.0, 9.81);
+    SW_CHECK_EQ(glm::length(balanced), 0.0f);
+
+    // Ten degrees over: 6 * sin(10) = 1.04 m of lean against 1.2 m of foot.
+    // Still inside. Still nothing.
+    const Quat leaning =
+        glm::normalize(glm::angleAxis(math::toRadians(10.0f), Vec3(1, 0, 0)) * upright);
+    SW_CHECK_EQ(glm::length(topplingAcceleration(hull, leaning, up, Vec3(0.0f), inertia,
+                                                 4000.0, 9.81)),
+                0.0f);
+
+    // Twenty degrees: 2.05 m of lean, 0.85 m of overhang. Now it falls, and
+    // it falls the way it was already leaning.
+    const Quat past =
+        glm::normalize(glm::angleAxis(math::toRadians(20.0f), Vec3(1, 0, 0)) * upright);
+    const Vec3 falling =
+        topplingAcceleration(hull, past, up, Vec3(0.0f), inertia, 4000.0, 9.81);
+    SW_CHECK(glm::length(falling) > 0.01f);
+    SW_CHECK(falling.x > 0.0f); // same sense as the lean, never against it
+
+    // Further out is faster: the overhang IS the lever.
+    const Quat further =
+        glm::normalize(glm::angleAxis(math::toRadians(35.0f), Vec3(1, 0, 0)) * upright);
+    SW_CHECK(glm::length(topplingAcceleration(hull, further, up, Vec3(0.0f), inertia,
+                                              4000.0, 9.81)) >
+             glm::length(falling));
+}
+
+SW_TEST(TheGroundTipsOverWhatItCannotHold)
+{
+    // Measured against the statics, which put the threshold at 11.5 degrees.
+    SW_CHECK(settledTilt(0.0f) < 0.5f);
+    SW_CHECK(settledTilt(5.0f) < 6.0f);
+    SW_CHECK(settledTilt(11.0f) < 12.0f); // inside the base: stands
+    SW_CHECK(settledTilt(12.0f) > 80.0f); // outside it: over it goes
+    SW_CHECK(settledTilt(25.0f) > 80.0f);
+    SW_CHECK(settledTilt(45.0f) > 80.0f);
+    // ...and it lands on its FLANK and stops there, rather than rolling on
+    // round: lying down, the balance point is inside the support again.
+    SW_CHECK(settledTilt(45.0f) < 100.0f);
+}
+
+SW_TEST(TheGroundRubsTheSpinOff)
+{
+    GroundRig rig{};
+    standRocket(rig, 0.0f, Vec3(0.0f, 0.0f, 1.0f)); // 1 rad/s about its own axis
+    auto& body = rig.world.getComponent<DynamicBodyComponent>(rig.ship);
+
+    groundStep(rig, 0.02f);
+    SW_CHECK_EQ(body.isGrounded, 1u);
+
+    for (int i = 0; i < 50; ++i) // one second
+    {
+        groundStep(rig, 0.02f);
+    }
+    SW_CHECK(glm::length(body.angularVelocity) < 0.1f);
+
+    for (int i = 0; i < 200; ++i) // and then it is simply stopped
+    {
+        groundStep(rig, 0.02f);
+    }
+    SW_CHECK_EQ(glm::length(body.angularVelocity), 0.0f);
+}
+
+SW_TEST(AnUprightRocketStaysWhereItWasPut)
+{
+    // The regression this whole pass must not become: a body that shivers,
+    // sinks or walks off its pad because contact now writes to its
+    // rotation. Thirty seconds of standing still, to the millimetre.
+    GroundRig rig{};
+    standRocket(rig, 0.0f, Vec3(0.0f));
+    for (int i = 0; i < 1500; ++i)
+    {
+        groundStep(rig, 0.02f);
+    }
+    const auto& transform = rig.world.getComponent<TransformComponent>(rig.ship);
+    const auto& body = rig.world.getComponent<DynamicBodyComponent>(rig.ship);
+
+    // The hull is 6 m from origin to tail, so the origin rests at 6 m.
+    SW_CHECK(std::abs(glm::length(transform.position) - (6.371e6 + 6.0)) < 0.001);
+    SW_CHECK(glm::length(body.velocity) < 0.001);
+    SW_CHECK_EQ(glm::length(body.angularVelocity), 0.0f);
+    SW_CHECK(rocketTilt(rig) < 0.1f);
+}
+
+// ----------------------------------------------------------------------------
+// The warp gate: when is the analytic world a good enough stand-in?
+// ----------------------------------------------------------------------------
+
+SW_TEST(WarpIsPermittedOnlyOnRailsOrOnTheGround)
+{
+    constexpr f64 kAir = 1.4e5; // Terra's atmosphere top
+
+    // Standing on something: always. Nothing is being integrated that rails
+    // would get wrong, and this is the case a player warps in most often.
+    SW_CHECK(phys::warpPermitted(true, false, -1.0e6, kAir));
+
+    // A parking orbit clear of the air.
+    SW_CHECK(phys::warpPermitted(false, true, 2.0e5, kAir));
+
+    // A closed orbit whose periapsis is INSIDE the atmosphere. Rails cannot
+    // express decay, so this is exactly the case that must be refused —
+    // and the altitude-only test used to allow it from apoapsis.
+    SW_CHECK(!phys::warpPermitted(false, true, 8.0e4, kAir));
+
+    // A suborbital arc or an ascent: the trajectory is a conic, but not a
+    // closed one that survives a lap, and its next event is the ground.
+    SW_CHECK(!phys::warpPermitted(false, false, 5.0e4, kAir));
+
+    // An escape trajectory. Hyperbolic is not closed.
+    SW_CHECK(!phys::warpPermitted(false, false, 3.0e6, kAir));
+
+    // An airless body: the bar drops to the surface, so a 3 km periapsis
+    // around Luna is a legitimate place to warp from.
+    SW_CHECK(phys::warpPermitted(false, true, 3.0e3, 0.0));
+    SW_CHECK(!phys::warpPermitted(false, true, -1.0e3, 0.0));
+}

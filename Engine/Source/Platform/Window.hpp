@@ -39,6 +39,12 @@ namespace sw
     struct WindowCallbacks
     {
         std::function<void(i32 key, i32 scancode, i32 action, i32 mods)> onKey;
+        /// A TYPED CHARACTER, already through the keyboard layout, the dead
+        /// keys and the shift state. Separate from onKey on purpose: a key
+        /// is a position on the keyboard and a character is what the user
+        /// meant, and on anything but a US layout those are different
+        /// things. Text fields want this; the flight controls want onKey.
+        std::function<void(u32 codepoint)> onChar;
         std::function<void(i32 button, i32 action, i32 mods)> onMouseButton;
         std::function<void(f64 x, f64 y)> onCursorPos;
         std::function<void(f64 xOffset, f64 yOffset)> onScroll;

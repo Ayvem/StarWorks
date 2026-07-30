@@ -87,6 +87,22 @@ namespace sw
         /// Backgrounds are 0 and text is 1, so a glyph can never end up
         /// underneath the panel it belongs to. Ignored unless `screenSpace`.
         u8 hudLayer = 0;
+        /// A SOLID screen-space item: real geometry drawn inside a panel —
+        /// the vehicle preview in the VAB. Same pipeline family as the rest
+        /// of the HUD (unlit, no depth buffer, submission order) with ONE
+        /// difference that makes 3D readable without a depth test: BACK
+        /// FACES ARE CULLED. For a convex part that alone is correct — the
+        /// front faces of a convex solid never overlap each other — and the
+        /// caller sorts the parts back-to-front among themselves.
+        ///
+        /// The transform must have the SAME HANDEDNESS as the camera's, or
+        /// the culling keeps precisely the faces it should throw away. The
+        /// camera negates Y once, at the source (Camera.cpp: `m_projection
+        /// [1][1] *= -1`), and the counter-clockwise front-face convention
+        /// was settled against that. So a preview transform is a proper
+        /// rotation times a scale with a NEGATIVE Y — the same single flip,
+        /// not zero and not two. Ignored unless `screenSpace`.
+        bool hudSolid = false;
     };
 
     struct RenderStats
@@ -219,6 +235,8 @@ namespace sw
             const Mesh* mesh = nullptr;
             u32 firstInstance = 0;
             u32 instanceCount = 0;
+            /// HUD only: this batch needs the back-face-culled pipeline.
+            bool solid = false;
             /// Distance to the nearest instance in this batch. Opaque
             /// batches are submitted in increasing order of it — the depth
             /// buffer then rejects everything they hide.
@@ -256,6 +274,8 @@ namespace sw
         std::unique_ptr<vulkan::VulkanPipeline> m_meshPipeline;
         std::unique_ptr<vulkan::VulkanPipeline> m_transparentPipeline;
         std::unique_ptr<vulkan::VulkanPipeline> m_hudPipeline;
+        /// Same, back faces culled: solid geometry inside a HUD panel.
+        std::unique_ptr<vulkan::VulkanPipeline> m_hudSolidPipeline;
 
         VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
         VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;

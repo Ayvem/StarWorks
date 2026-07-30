@@ -160,19 +160,25 @@ namespace studio
         if (sw::parts::savePartFile(m_part, path))
         {
             // The executable-side Assets/ is a BUILD MIRROR: also write the
-            // SOURCE tree copy when we can find it, so a rebuild never
+            // SOURCE tree copy when there is one, so a rebuild never
             // clobbers the user's work.
-            std::filesystem::path probe = sw::FileSystem::executableDirectory();
-            for (int up = 0; up < 5; ++up)
+            //
+            // The root is ASKED FOR, not walked to by hand. The previous
+            // version climbed a fixed five levels looking for any directory
+            // called Assets/Parts — from a project at G:\StarWorks that
+            // reaches G:\ itself, and would write into G:\Assets\Parts if
+            // such a folder happened to exist. projectRoot() requires
+            // CMakeLists.txt AND Assets together, and returns nothing for a
+            // packaged build, where there is correctly no source to update.
+            const std::filesystem::path root = sw::FileSystem::projectRoot();
+            if (!root.empty())
             {
-                probe = probe.parent_path();
-                const std::filesystem::path source = probe / "Assets" / "Parts";
+                const std::filesystem::path source = root / "Assets" / "Parts";
                 std::error_code errorCode;
                 if (std::filesystem::is_directory(source, errorCode) &&
                     !std::filesystem::equivalent(source, m_directory, errorCode))
                 {
                     (void)sw::parts::savePartFile(m_part, source / path.filename());
-                    break;
                 }
             }
             setStatus(std::format("SAVED {}", path.filename().string()));

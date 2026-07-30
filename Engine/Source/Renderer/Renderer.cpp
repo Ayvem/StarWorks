@@ -107,6 +107,19 @@ namespace sw
         m_hudPipeline =
             std::make_unique<vulkan::VulkanPipeline>(m_device->handle(), hudConfig);
 
+        // ---- HUD SOLID pipeline: the same screen-space pass, back faces
+        // culled. That one flag is what lets real geometry be drawn inside a
+        // panel with no depth buffer: a convex solid's front faces never
+        // overlap one another, so culling the back ones is a complete
+        // hidden-surface solution for a single part, and the caller orders
+        // the parts among themselves. Winding is the ordinary engine
+        // convention, which is why the caller is forbidden from flipping Y
+        // with a negative scale.
+        vulkan::VulkanPipeline::Config hudSolidConfig = hudConfig;
+        hudSolidConfig.cullMode = VK_CULL_MODE_BACK_BIT;
+        m_hudSolidPipeline =
+            std::make_unique<vulkan::VulkanPipeline>(m_device->handle(), hudSolidConfig);
+
         SW_LOG_INFO(kLogCat,
                     "Renderer initialized ({} frames in flight, reverse-Z, instanced)",
                     kFramesInFlight);
@@ -122,6 +135,7 @@ namespace sw
         destroySwapchainSemaphores();
         destroyFrameResources();
         destroyDescriptorResources();
+        m_hudSolidPipeline.reset();
         m_hudPipeline.reset();
         m_meshPipeline.reset();
         m_depthImage.reset();
@@ -300,9 +314,13 @@ namespace sw
 
                 const f32 distanceSquared =
                     glm::dot(item.boundsCenter, item.boundsCenter);
-                if (batches.empty() || batches.back().mesh != item.mesh)
+                // A batch is one mesh AND one pipeline: a solid preview part
+                // and a panel quad cannot share a draw call even when the
+                // mesh matches.
+                if (batches.empty() || batches.back().mesh != item.mesh ||
+                    batches.back().solid != item.hudSolid)
                 {
-                    batches.push_back({item.mesh, slot, 1, distanceSquared});
+                    batches.push_back({item.mesh, slot, 1, item.hudSolid, distanceSquared});
                 }
                 else
                 {
@@ -577,13 +595,40 @@ namespace sw
         }
 
         // ---- HUD pass: same rendering scope, screen-space pipeline ----------------
+        // Two pipelines interleaved in painter's order, because the vehicle
+        // preview has to sit ON the panel behind it and UNDER the text in
+        // front of it. The bind only happens where the flag changes, which
+        // for one preview is twice a frame.
         if (!m_hudBatches.empty())
         {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudPipeline->handle());
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    m_hudPipeline->layout(), 0, 1, &frame.descriptorSet, 0,
-                                    nullptr);
-            drawBatches(m_hudBatches);
+            bool solidBound = false;
+            bool anyBound = false;
+            for (const DrawBatch& batch : m_hudBatches)
+            {
+                if (!anyBound || batch.solid != solidBound)
+                {
+                    const vulkan::VulkanPipeline& pipeline =
+                        batch.solid ? *m_hudSolidPipeline : *m_hudPipeline;
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                      pipeline.handle());
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            pipeline.layout(), 0, 1, &frame.descriptorSet,
+                                            0, nullptr);
+                    solidBound = batch.solid;
+                    anyBound = true;
+                }
+                if (batch.mesh == nullptr || !batch.mesh->valid())
+                {
+                    continue;
+                }
+                const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                const VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(cmd, batch.mesh->indexBuffer(), 0,
+                                     VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(cmd, batch.mesh->indexCount(), batch.instanceCount, 0, 0,
+                                 batch.firstInstance);
+            }
         }
 
         vkCmdEndRendering(cmd);

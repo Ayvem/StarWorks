@@ -1,0 +1,90 @@
+{
+  "id": 4,
+  "type": "Battery",
+  "name": "B-800 Battery",
+  "dryMassKg": 60,
+  "costCredits": 900,
+  "volumeM3": 0.12,
+  "crashToleranceMps": 10,
+  "breakingForceN": 200000,
+  "dragCoefficientArea": 0.1,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [
+    {
+      "resource": "ElectricCharge",
+      "units": 800
+    }
+  ],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0.1599999964237213, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.1599999964237213, 0.30000001192092896, 0.3400000035762787],
+      "color": [0.1599999964237213, 0.20000000298023224, 0.25999999046325684],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [0.3400000035762787, 0.14000000059604645, 0],
+      "rotationDeg": [0, 90, 0],
+      "size": [0.10000000149011612, 0.30000001192092896, 0],
+      "color": [0.2199999988079071, 0.5, 0.30000001192092896],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 14,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0.3400000035762787, -0.14000000059604645, 0],
+      "rotationDeg": [0, 90, 0],
+      "size": [0.10000000149011612, 0.30000001192092896, 0],
+      "color": [0.2199999988079071, 0.5, 0.30000001192092896],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 14,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0.33000001311302185, 0, 0.30000001192092896],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05000000074505806, 0.05000000074505806, 0.029999999329447746],
+      "color": [0.30000001192092896, 0.949999988079071, 0.4000000059604645],
+      "emissive": 0.6000000238418579,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "mount",
+      "position": [0, 0, 0],
+      "direction": [-1, 0, 0],
+      "type": "radial",
+      "size": 0.30000001192092896
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0.1599999964237213, 0, 0],
+      "halfExtents": [0.1599999964237213, 0.30000001192092896, 0.3400000035762787]
+    }
+  ]
+}

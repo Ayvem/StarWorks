@@ -447,6 +447,36 @@ namespace sw::aero
                     {
                         continue; // a part never shadows itself
                     }
+                    // THE CHEAP NO, FIRST — and it has to be the RIGHT cheap
+                    // no. This loop is the whole cost of the aerodynamics
+                    // pass (every part against every other part's boxes,
+                    // nine rays over), and it is quadratic in the part count,
+                    // so a booster is where it hurts.
+                    //
+                    // The obvious rejection — is the box far from the ray's
+                    // LINE — is nearly worthless here, and measurably so: on
+                    // a rocket every box hugs the same axis the airflow runs
+                    // along, so almost nothing is off-line and it bought 11 %
+                    // on a 31-part vehicle. The rejection that pays is ALONG
+                    // the flow: a box the ray reaches only AFTER it has
+                    // already struck this part cannot possibly shadow it, and
+                    // flying nose-first that is half the vehicle. Both are
+                    // kept, cheapest first, because together they are still
+                    // a handful of flops against a six-plane slab test.
+                    const Vec3 toBox = boxes[i].centre - origin;
+                    const f32 along = glm::dot(toBox, flow);
+                    const f32 reachSquared =
+                        glm::dot(boxes[i].halfExtents, boxes[i].halfExtents);
+                    const f32 reach = std::sqrt(reachSquared);
+                    if (along - reach > selfNear)
+                    {
+                        continue; // downstream of the part it would have to shade
+                    }
+                    const Vec3 perpendicular = toBox - flow * along;
+                    if (glm::dot(perpendicular, perpendicular) > reachSquared)
+                    {
+                        continue; // the ray passes wide of this box's sphere
+                    }
                     f32 otherNear = 0.0f;
                     if (rayHitsBox(boxes[i], origin, flow, selfNear, otherNear) &&
                         otherNear < selfNear - 1.0e-3f)
