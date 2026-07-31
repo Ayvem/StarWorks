@@ -140,6 +140,13 @@ namespace game
         }
         if (m_shell == Shell::Menu)
         {
+            // The title screen renders the live world behind the menu, from
+            // its own slowly-orbiting camera. Only without a session: a pause
+            // menu keeps the player's frozen view — that IS their game.
+            if (!m_hasSession)
+            {
+                updateMenuCamera(deltaSeconds);
+            }
             updateTextField();
             handleHudClicks();
             // ESC backs out one level, and out of the menu entirely only if
@@ -625,7 +632,12 @@ namespace game
             renderer().renderFrame(m_hangarCamera, m_drawItems);
             return;
         }
-        const sw::Camera& activeCamera = m_mapView ? m_mapCamera : m_camera;
+        // The title screen swaps in the menu's backdrop camera; everything
+        // downstream (sun, shadow spheres, fog) reads `activeCamera` and
+        // needs no other change. A pause menu keeps the player's own view.
+        const bool menuBackdrop = m_shell == Shell::Menu && !m_hasSession;
+        const sw::Camera& activeCamera =
+            menuBackdrop ? m_menuCamera : (m_mapView ? m_mapCamera : m_camera);
         const sw::WorldVec3 cameraPosition = activeCamera.position();
 
         // Light comes from Sol's actual position (camera-relative), and
@@ -773,7 +785,7 @@ namespace game
         renderer().setTimeSeconds(static_cast<sw::f32>(
             std::fmod(m_physicsLane->presentSeconds(), 86400.0)));
 
-        collectDrawItems(activeCamera, m_mapView);
+        collectDrawItems(activeCamera, menuBackdrop ? false : m_mapView);
         renderer().renderFrame(activeCamera, m_drawItems);
     }
 } // namespace game

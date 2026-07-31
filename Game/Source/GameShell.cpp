@@ -215,6 +215,37 @@ namespace game
         m_hangarFloorMeshIndex = registerMesh(renderer().createMesh(
             sw::PrimitiveFactory::makeGridPlane(40.0f, 20, {0.2f, 0.3f, 0.38f, 1.0f})));
         m_hangarCamera.setPerspective(sw::math::toRadians(55.0f), 0.2f, 500.0f);
+
+        // The title screen's backdrop camera, and its readability scrim.
+        m_menuCamera.setPerspective(sw::math::toRadians(50.0f), 0.5f, 1.0e13f);
+        {
+            // A full-screen vertical gradient: darkest at the top where the
+            // title sits over open space, nearly clear across the middle so
+            // the planet reads, a touch darker again at the foot for the
+            // build line. hudQuad cannot do this — its unit quad is one flat
+            // colour — so the gradient lives in vertex alpha and the HUD
+            // shader's `vColor * tint` does the rest.
+            sw::MeshData scrim;
+            const sw::Vec3 normal{0.0f, 0.0f, 1.0f};
+            const sw::Vec3 shade{0.010f, 0.014f, 0.026f};
+            const auto rowAt = [&](sw::f32 y, sw::f32 alpha) {
+                scrim.vertices.push_back({{-1.0f, y, 0.0f}, normal,
+                                          {shade.x, shade.y, shade.z, alpha}, {}});
+                scrim.vertices.push_back({{1.0f, y, 0.0f}, normal,
+                                          {shade.x, shade.y, shade.z, alpha}, {}});
+            };
+            rowAt(-1.00f, 0.72f); // top (NDC y grows downward)
+            rowAt(-0.34f, 0.34f); // under the title
+            rowAt(0.42f, 0.24f);  // across the buttons
+            rowAt(1.00f, 0.42f);  // foot
+            for (sw::u32 band = 0; band < 3; ++band)
+            {
+                const sw::u32 a = band * 2;
+                scrim.indices.insert(scrim.indices.end(),
+                                     {a, a + 1, a + 2, a + 1, a + 3, a + 2});
+            }
+            m_menuScrimMeshIndex = registerMesh(renderer().createMesh(scrim));
+        }
     }
 
     void StarWorksGame::bootPrepareSaves()
@@ -246,6 +277,10 @@ namespace game
         {
             m_shell = Shell::Menu;
             m_menuPage = MenuPage::Root;
+            // The backdrop camera must be posed before the menu's FIRST
+            // rendered frame — onUpdate has already run this frame, so an
+            // unposed camera would show one frame of garbage from origin.
+            updateMenuCamera(0.0f);
             // Nothing ticks behind a menu. The world exists — it was just
             // built — but a player reading a menu is not playing, and a
             // simulation that ran underneath one would age the save they are
@@ -396,6 +431,89 @@ namespace game
         }
     }
 
+    void StarWorksGame::updateMenuCamera(sw::f32 deltaSeconds)
+    {
+        const auto* terra = m_world.tryGetComponent<TransformComponent>(m_terraEntity);
+        if (terra == nullptr)
+        {
+            return;
+        }
+        // A slow drift, on WALL time: the simulation is paused behind the
+        // menu, and this motion is presentation, not state. A full lap takes
+        // about thirteen minutes — visible if you sit there, never dizzying.
+        m_menuOrbitAngle += 0.008f * deltaSeconds;
+
+        const sw::WorldVec3 center = terra->position;
+        sw::Vec3 toSun{1.0f, 0.0f, 0.0f};
+        if (const auto* sol = m_world.tryGetComponent<TransformComponent>(m_solEntity))
+        {
+            toSun = sw::Vec3(glm::normalize(sol->position - center));
+        }
+
+        // Park the camera near the terminator, biased to the day side: the
+        // lit limb with a dark edge is the most photogenic angle a planet
+        // has, and it is stable because the azimuth is measured FROM the
+        // sun rather than from a fixed longitude.
+        const sw::Vec3 pole = sw::math::kWorldUp;
+        sw::Vec3 sunAzimuth = toSun - pole * glm::dot(toSun, pole);
+        sunAzimuth = glm::length(sunAzimuth) > 1.0e-4f ? glm::normalize(sunAzimuth)
+                                                       : sw::Vec3{1.0f, 0.0f, 0.0f};
+        const sw::Vec3 east = glm::normalize(glm::cross(pole, sunAzimuth));
+        const sw::f32 azimuth = 0.95f + m_menuOrbitAngle; // ~54 deg off subsolar
+        sw::Vec3 direction =
+            sunAzimuth * std::cos(azimuth) + east * std::sin(azimuth);
+        direction = glm::normalize(direction + pole * 0.20f); // a little north
+
+        const sw::f64 orbitRadius = kTerraRadius * 2.05; // ~6,700 km up
+        const sw::WorldVec3 position = center + sw::WorldVec3(direction) * orbitRadius;
+
+        // Aim ABOVE the planet's centre so the globe sits in the lower half
+        // of the frame and the title floats over open space and stars.
+        const sw::WorldVec3 target = center + sw::WorldVec3(pole) * (kTerraRadius * 1.15);
+        const sw::Vec3 forward = glm::normalize(sw::Vec3(target - position));
+
+        m_menuCamera.setAspectRatio(renderer().aspectRatio());
+        m_menuCamera.setPosition(position);
+        m_menuCamera.setOrientation(glm::quatLookAt(forward, pole));
+    }
+
+    void StarWorksGame::hudTextCentered(std::string_view text, sw::f32 centerX,
+                                        sw::f32 y, sw::f32 heightNdc,
+                                        const sw::Vec4& color)
+    {
+        // Visible width = (n-1) advances plus the last glyph's own width.
+        const sw::f32 aspect = renderer().aspectRatio();
+        const sw::f32 advance = sw::ui::kGlyphAdvance * heightNdc / aspect;
+        const sw::f32 glyphWidth = (5.0f / 7.0f) * heightNdc / aspect;
+        const sw::f32 width =
+            text.empty() ? 0.0f
+                         : advance * static_cast<sw::f32>(text.size() - 1) + glyphWidth;
+        hudText(text, centerX - width * 0.5f, y, heightNdc, color);
+    }
+
+    void StarWorksGame::hudTitle(sw::f32 centerX, sw::f32 topY, sw::f32 heightNdc)
+    {
+        // Passes in submission order (text keeps submission order within its
+        // layer): a faint blue glow as four SAME-SIZE offset copies, a hard
+        // dark drop shadow for contrast against the lit limb, then the face.
+        // The glow must not be a scaled-up copy: a bigger glyph has a bigger
+        // advance, so its letters drift out of register with the face's as
+        // the string runs on — offset copies share the advance and stay
+        // aligned under every letter. The 5x7 glyphs read as deliberate
+        // blockwork at this size, which suits an industrial game.
+        constexpr std::string_view kTitle = "STARWORKS";
+        const sw::f32 gx = heightNdc * 0.030f;
+        const sw::f32 gy = heightNdc * 0.038f;
+        const sw::Vec4 glow{0.40f, 0.68f, 1.00f, 0.11f};
+        hudTextCentered(kTitle, centerX - gx, topY, heightNdc, glow);
+        hudTextCentered(kTitle, centerX + gx, topY, heightNdc, glow);
+        hudTextCentered(kTitle, centerX, topY - gy, heightNdc, glow);
+        hudTextCentered(kTitle, centerX, topY + gy, heightNdc, glow);
+        hudTextCentered(kTitle, centerX + 0.006f, topY + 0.008f, heightNdc,
+                        {0.00f, 0.00f, 0.00f, 0.85f});
+        hudTextCentered(kTitle, centerX, topY, heightNdc, {0.95f, 0.97f, 1.00f, 1.0f});
+    }
+
     void StarWorksGame::collectBootBar()
     {
         // A BAR THAT MEASURES SOMETHING. Its width is steps-done over
@@ -407,7 +525,7 @@ namespace game
         const sw::f32 done = static_cast<sw::f32>(m_bootCursor) / total;
 
         hudQuad(-1.0f, -1.0f, 1.0f, 1.0f, sw::Vec4{0.035f, 0.045f, 0.06f, 1.0f});
-        hudText("STARWORKS", -0.30f, -0.22f, 0.16f, hud::kTitle);
+        hudTitle(0.0f, -0.30f, 0.17f);
 
         constexpr sw::f32 kX0 = -0.42f;
         constexpr sw::f32 kX1 = 0.42f;
@@ -430,30 +548,96 @@ namespace game
             return;
         }
 
-        // A full-screen wash rather than a panel: behind this the world is
-        // frozen mid-frame, and a half-transparent menu over a paused world
-        // invites clicking on things that will not answer.
-        hudQuad(-1.0f, -1.0f, 1.0f, 1.0f, sw::Vec4{0.03f, 0.04f, 0.055f, 0.94f});
-        hudText("STARWORKS", -0.94f, -0.90f, 0.10f, hud::kTitle);
+        // THE BACKDROP IS THE GAME. On the title screen the world renders
+        // behind this from the menu's own orbiting camera, so the cover is a
+        // vertical gradient scrim — darkest over the space the title floats
+        // in, nearly clear over the planet — not a wash that hides the very
+        // image the screen is built around. A pause menu keeps the heavier
+        // wash: its backdrop is a frozen mid-game frame, and half-visible
+        // clickable-looking machinery under a menu invites clicks that will
+        // not answer.
+        const bool titleScreen = !m_hasSession;
+        if (titleScreen && m_menuScrimMeshIndex != 0xFFFFFFFFu)
+        {
+            sw::DrawItem scrim{};
+            scrim.mesh = &m_meshes[m_menuScrimMeshIndex];
+            scrim.transform = sw::Mat4{1.0f};
+            scrim.screenSpace = true;
+            scrim.tint = {1.0f, 1.0f, 1.0f, 1.0f};
+            m_drawItems.push_back(scrim);
+        }
+        else if (!titleScreen)
+        {
+            hudQuad(-1.0f, -1.0f, 1.0f, 1.0f, sw::Vec4{0.02f, 0.03f, 0.045f, 0.90f});
+        }
+
+        // THE TITLE, big and centred — the identity of the screen on the
+        // title screen, a header on the pause menu.
+        const sw::f32 titleHeight = titleScreen ? 0.235f : 0.130f;
+        const sw::f32 titleTop = titleScreen ? -0.80f : -0.88f;
+        hudTitle(0.0f, titleTop, titleHeight);
+        if (titleScreen)
+        {
+            if (m_menuPage == MenuPage::Root)
+            {
+                hudTextCentered("AN INDUSTRIAL SPACE PROGRAM", 0.0f,
+                                titleTop + titleHeight + 0.045f, 0.032f,
+                                {0.62f, 0.74f, 0.88f, 0.92f});
+            }
+            hudTextCentered("PRE-ALPHA BUILD - CUSTOM ENGINE", 0.0f, 0.93f, 0.024f,
+                            {0.55f, 0.65f, 0.78f, 0.65f});
+        }
 
         sw::f32 cursorX = -2.0f;
         sw::f32 cursorY = -2.0f;
         const bool haveCursor = hudCursor(cursorX, cursorY);
-        constexpr sw::f32 kX0 = -0.42f;
-        constexpr sw::f32 kX1 = 0.42f;
-        constexpr sw::f32 kRow = 0.088f;
-        constexpr sw::f32 kGap = 0.016f;
-        sw::f32 y = -0.52f;
+        // The root page is a tight centred column of short verbs; the sub
+        // pages hold tabular rows (a save's name, age and size) and get a
+        // wider one.
+        const bool rootPage = m_menuPage == MenuPage::Root;
+        const sw::f32 kX0 = rootPage ? -0.26f : -0.36f;
+        const sw::f32 kX1 = -kX0;
+        constexpr sw::f32 kRow = 0.082f;
+        constexpr sw::f32 kGap = 0.018f;
+        sw::f32 y = rootPage ? -0.16f : -0.44f;
 
         const auto row = [&](std::string_view label, sw::u32 id, bool enabled) {
             const bool hot = enabled && haveCursor && cursorX >= kX0 && cursorX <= kX1 &&
                              cursorY >= y && cursorY <= y + kRow;
+            const sw::Vec4 base = titleScreen ? sw::Vec4{0.05f, 0.09f, 0.14f, 0.70f}
+                                              : sw::Vec4(hud::kRow);
             hudQuad(kX0, y, kX1, y + kRow,
-                    !enabled ? sw::Vec4{0.09f, 0.10f, 0.12f, 0.95f}
+                    !enabled ? sw::Vec4{0.06f, 0.07f, 0.09f, titleScreen ? 0.45f : 0.95f}
                     : hot    ? hud::kRowOnHover
-                             : hud::kRow);
-            hudText(label, kX0 + 0.045f, y + 0.026f, 0.044f,
-                    enabled ? hud::kText : hud::kTextDim);
+                             : base);
+            // A label longer than its row shrinks to fit rather than
+            // spilling — measured with the same advance the renderer uses,
+            // the discipline every HUD overflow in this project has taught.
+            sw::f32 textHeight = rootPage ? 0.042f : 0.038f;
+            const sw::f32 available = (kX1 - kX0) - 0.070f;
+            const sw::f32 aspect = renderer().aspectRatio();
+            const auto widthOf = [&](sw::f32 h) {
+                return label.empty()
+                           ? 0.0f
+                           : (sw::ui::kGlyphAdvance * static_cast<sw::f32>(label.size() - 1) +
+                              5.0f / 7.0f) *
+                                 h / aspect;
+            };
+            if (widthOf(textHeight) > available)
+            {
+                textHeight *= available / widthOf(textHeight);
+            }
+            const sw::f32 textY = y + (kRow - textHeight) * 0.5f - 0.006f;
+            if (rootPage)
+            {
+                hudTextCentered(label, 0.0f, textY, textHeight,
+                                enabled ? hud::kText : hud::kTextDim);
+            }
+            else
+            {
+                hudText(label, kX0 + 0.040f, textY, textHeight,
+                        enabled ? hud::kText : hud::kTextDim);
+            }
             if (enabled)
             {
                 m_hudButtons.push_back({kX0, y, kX1, y + kRow, id});
@@ -465,7 +649,10 @@ namespace game
         {
             case MenuPage::Root:
                 if (m_hasSession) { row("CONTINUE", 2000u, true); }
-                row(m_hasSession ? "NEW GAME (ABANDONS THIS ONE)" : "NEW GAME", 2001u, true);
+                // A dash, not parentheses: the 5x7 charset has no '(' — the
+                // old label was silently rendering "NEW GAME  ABANDONS...".
+                row(m_hasSession ? "NEW GAME - ABANDONS THIS ONE" : "NEW GAME", 2001u,
+                    true);
                 row("LOAD GAME", 2002u, !m_saveSlots.empty());
                 if (m_hasSession) { row("SAVE GAME", 2003u, true); }
                 row("SETTINGS", 2004u, true);
@@ -473,7 +660,7 @@ namespace game
                 break;
 
             case MenuPage::Load:
-                hudText("LOAD GAME", kX0, -0.60f, 0.050f, hud::kTitle);
+                hudTextCentered("LOAD GAME", 0.0f, -0.53f, 0.048f, hud::kTitle);
                 if (m_saveSlots.empty())
                 {
                     hudText("NO SAVES YET", kX0 + 0.045f, y + 0.026f, 0.040f,
@@ -492,7 +679,7 @@ namespace game
 
             case MenuPage::Save:
             {
-                hudText("SAVE GAME", kX0, -0.60f, 0.050f, hud::kTitle);
+                hudTextCentered("SAVE GAME", 0.0f, -0.53f, 0.048f, hud::kTitle);
                 // The name field, on the same machinery as the multiplayer
                 // address box: click to focus, type, ESC to cancel.
                 const bool hot = haveCursor && cursorX >= kX0 && cursorX <= kX1 &&
@@ -509,7 +696,7 @@ namespace game
             }
 
             case MenuPage::Settings:
-                hudText("SETTINGS", kX0, -0.60f, 0.050f, hud::kTitle);
+                hudTextCentered("SETTINGS", 0.0f, -0.53f, 0.048f, hud::kTitle);
                 // DELIBERATELY EMPTY, and it says so. A settings page that
                 // silently has nothing in it reads as a page that failed to
                 // load; one that admits it is a promise.
@@ -524,7 +711,8 @@ namespace game
 
         if (!m_shellStatus.empty())
         {
-            hudText(hud::caps(m_shellStatus), kX0, y + 0.030f, 0.034f, hud::kTextDim);
+            hudTextCentered(hud::caps(m_shellStatus), 0.0f, y + 0.030f, 0.034f,
+                            hud::kTextDim);
         }
     }
 } // namespace game

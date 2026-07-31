@@ -714,15 +714,20 @@ namespace game
             collectBuildGhost(activeCamera);
         }
         // Beacons overlay both views; the HUD is drawn last so its panels
-        // stay on top of them.
-        collectBeacons(activeCamera, mapView);
-        collectHud();
+        // stay on top of them. NOT while the menu is up: the title screen's
+        // scrim is deliberately light so the planet shows through, and a
+        // throttle readout glowing through a title screen reads as a bug.
+        // (The old opaque wash merely hid the HUD; now it is not collected.)
+        if (m_shell != Shell::Menu)
+        {
+            collectBeacons(activeCamera, mapView);
+            collectHud();
+        }
 
-        // AND THE MENU OVER ALL OF IT. Last, so it covers the world and the
-        // HUD both — and after collectHud, whose sub-collectors are what
-        // clear and refill m_hudButtons. Clearing again here makes the
-        // menu's own buttons the ONLY ones on the list while it is up:
-        // anything left behind would still be clickable through the wash.
+        // AND THE MENU OVER ALL OF IT. Last, so it covers the world — and
+        // m_hudButtons is cleared here so the menu's own buttons are the
+        // ONLY ones on the list while it is up: anything left behind would
+        // still be clickable through the backdrop.
         if (m_shell == Shell::Menu)
         {
             m_hudButtons.clear();

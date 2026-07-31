@@ -626,6 +626,16 @@ namespace game
         void collectShellHud();
         void handleShellClick(sw::u32 id);
         void collectBootBar();
+        /// The title screen's backdrop camera: a slow orbit of Terra along
+        /// the terminator, so the menu sits over a live image of the game
+        /// rather than a black wash. Runs on WALL time — the simulation is
+        /// paused behind the menu, and the drift is presentation, not state.
+        void updateMenuCamera(sw::f32 deltaSeconds);
+        /// hudText, centred on `centerX` (metrics from the glyph advance).
+        void hudTextCentered(std::string_view text, sw::f32 centerX, sw::f32 y,
+                             sw::f32 heightNdc, const sw::Vec4& color);
+        /// The big three-pass title (halo, shadow, face), centred.
+        void hudTitle(sw::f32 centerX, sw::f32 topY, sw::f32 heightNdc);
         void newGame();
         void continueGame();
         void openMenu(MenuPage page);
@@ -647,6 +657,16 @@ namespace game
         bool m_saveNameFocused = false;
         /// What the last save or load did, shown under the menu's buttons.
         std::string m_shellStatus;
+        /// The title screen's own camera (see updateMenuCamera). Used as the
+        /// render camera whenever the menu is up with no session behind it;
+        /// a pause menu keeps the player's frozen view instead.
+        sw::Camera m_menuCamera;
+        /// Where the backdrop orbit currently is, radians about Terra's axis.
+        sw::f32 m_menuOrbitAngle = 0.0f;
+        /// Full-screen vertical gradient (dark up top for the title, clear
+        /// at the bottom so the planet stays visible). Vertex alpha does the
+        /// gradient; hudQuad cannot, its unit quad is one flat colour.
+        sw::u32 m_menuScrimMeshIndex = 0xFFFFFFFFu;
         [[nodiscard]] std::filesystem::path savesDirectory() const;
         [[nodiscard]] std::filesystem::path quickSavePath() const;
         void saveGameTo(const std::filesystem::path& path);

@@ -1134,5 +1134,41 @@ be trapped. The rule this earns: **an adversarial test is part of the suite in e
 build type, so a guard it exercises must behave identically in every build type** —
 `SW_ASSERT` belongs on our own invariants, never on the wire's.
 
+### F13c — a title screen worth the planet behind it (done)
+
+**The background image is not an image — it is the game.** The engine has no
+texture pipeline (everything is vertex colour plus procedural shading), so a
+splash PNG was never on the table. It was also never needed: F13 already builds
+the scene *before* the menu, so the title screen simply renders the world from a
+camera of its own — a slow orbit of Terra at ~6,700 km, parked ~54° off the
+subsolar point where the lit limb is at its most photogenic, drifting a full lap
+every thirteen minutes on WALL time, because the simulation stays paused and the
+motion is presentation, not state. Everything downstream of `activeCamera` —
+sun, shadow spheres, aerial perspective — needed no change; the render path
+cannot tell a menu camera from a chase camera. A pause menu deliberately keeps
+the player's own frozen view instead: that is *their* game behind the wash.
+
+**The title is three passes of the same glyphs.** A faint blue glow as four
+same-size offset copies, a hard drop shadow, then the face — and the glow must
+NOT be a scaled-up copy, because a bigger glyph has a bigger advance, so its
+letters drift out of register as the string runs on (measured on the first
+attempt: visibly ghosting by the K). Same-size offsets share the advance and
+stay aligned under every letter.
+
+**The scrim is a gradient, because the wash was hiding the point.** The old
+menu covered the frame in a 94 %-opaque quad; over the new backdrop, a
+four-band vertex-alpha gradient (0.72 over the title's open space, 0.24 across
+the planet) keeps the text readable without burying the planet the screen is
+built around. The flight HUD is no longer merely *hidden* behind the menu — it
+is not collected at all, since a throttle readout glowing through a light scrim
+reads as a bug.
+
+And two rows of housekeeping the layout pass surfaced: menu labels now
+**shrink-to-fit their row** — measured with the same glyph advance the renderer
+uses, the arithmetic that has now caught its fifth HUD overflow
+(`NEW GAME (ABANDONS THIS ONE)` spilled both edges of the pause menu's centred
+column) — and that label lost its parentheses, because the 5x7 charset never
+had `(` and had been silently rendering spaces in their place since F9.
+
 ### Milestone 32+ — candidates (remaining)
 F4 exploitation UI, part fabrication and real conveyor transport. A rename field for designs (the character path exists now). Fuel and crew as build inputs rather than pad stock. Also: impact-driven joint breakage (fields ready), per-Mach aero tables (the format has room; the runtime call site would not change), reentry heating driven by the same dynamic pressure, control surfaces that deflect, placeholder cleanup. Multiplayer next steps: interest management (per-client relevance by distance and attachment), drawing other players' craft from the mirror world, the rest of the stamped-event vocabulary (staging, construction, resource transfer), and client-side interpolation between snapshots.

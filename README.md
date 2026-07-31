@@ -12,7 +12,11 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F13b: The code learns to be found
+## Current state — F13c: A title screen worth the planet behind it
+
+**The menu's background image is not an image — it is the game.** The engine has no texture pipeline and never needed one for this: the scene is already built before the menu appears, so the title screen renders the live world from a camera of its own — a slow orbit of Terra at ~6,700 km, parked near the terminator where the lit limb is at its most photogenic, drifting a full lap every thirteen minutes while the simulation stays paused. **STARWORKS** stands across the middle in three passes of the same 5x7 blockwork — glow, shadow, face — over a gradient scrim that darkens the space the title floats in and leaves the planet alone. The buttons are a centred column; a pause menu keeps your own frozen view behind it instead, because that is *your* game back there. Two small things the layout pass caught: labels now shrink to fit their row (the fifth HUD overflow found by arithmetic), and `(` never existed in the 5x7 charset — the pause menu had been silently rendering spaces for parentheses since F9.
+
+## Previously — F13b: The code learns to be found
 
 **`StarWorksGame.cpp` was 12,407 lines — a quarter of the project in one file.** It is now thirteen, one theme per translation unit, same class: the core keeps the constructor and the frame loop, and `GameShell`, `GameScene`, `GameTerrain`, `GameSaveLoad`, `GameFlight`, `GameHangar`, `GameFactory`, `GameFactoryUi`, `GameNetwork`, `GameHud` and `GameMap` each own the methods their name promises. The 750-line anonymous namespace that fed all of them became `GameInternal.hpp`. Nothing was rewritten — every line of the original landed exactly once, checked mechanically — and the map lives in `Game/Source/README.md` so the next method knows where it goes. Incremental builds stop paying for the whole game layer on every edit.
 
