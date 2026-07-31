@@ -302,16 +302,22 @@ namespace game
                                    sw::phys::DynamicBodyComponent& body,
                                    ShipComponent& ship,
                                    const ShipControlsComponent& controls) {
-                // ---- attitude (RCS): integrate body-frame angular velocity --
+                // ---- attitude (RCS): COMMAND the body-frame angular rate ----
                 //
-                // The spin now has TWO authors: this system and the
-                // atmosphere. So the rate limit has to tell them apart. It
-                // caps what the PILOT may command — a ship cannot out-turn
-                // its own thrusters — while leaving alone any rate the
-                // vehicle ALREADY had, because the air is under no
-                // obligation to respect an RCS rating. Clamping the total
-                // would have made a rocket flipping in the airstream
-                // quietly stop flipping the moment it passed 0.8 rad/s.
+                // This system no longer turns the ship: it only says how
+                // fast the ship should be turning. AngularIntegrationSystem,
+                // which runs immediately after, is the single author of
+                // rotation-from-angular-velocity for every dynamic body in
+                // the world. See its comment for why that had to move.
+                //
+                // The spin has TWO authors: this system and the atmosphere.
+                // So the rate limit has to tell them apart. It caps what the
+                // PILOT may command — a ship cannot out-turn its own
+                // thrusters — while leaving alone any rate the vehicle
+                // ALREADY had, because the air is under no obligation to
+                // respect an RCS rating. Clamping the total would have made
+                // a rocket flipping in the airstream quietly stop flipping
+                // the moment it passed 0.8 rad/s.
                 const sw::f32 inherited = glm::length(body.angularVelocity);
                 body.angularVelocity += controls.rotationInput * ship.angularAccel *
                                         deltaSeconds;
@@ -326,34 +332,6 @@ namespace game
                 if (commanded > limit)
                 {
                     body.angularVelocity *= limit / commanded;
-                }
-                const sw::f32 angularSpeed = glm::length(body.angularVelocity);
-                if (angularSpeed > 1.0e-6f)
-                {
-                    const sw::Vec3 axis = body.angularVelocity / angularSpeed;
-                    const sw::Quat step =
-                        glm::angleAxis(angularSpeed * deltaSeconds, axis);
-                    // Body-frame rotation: post-multiply.
-                    const sw::Quat before = transform.rotation;
-                    transform.rotation = glm::normalize(transform.rotation * step);
-
-                    // A VEHICLE TURNS ABOUT ITS BALANCE POINT, not about
-                    // whichever part its builder happened to start from. The
-                    // transform's origin is the root part, so the position
-                    // is shifted by exactly as much as the rotation moved
-                    // the centre of mass — leaving that point where it was.
-                    // On a 20 m rocket, turning about the nose instead of
-                    // the middle swings the tail ten metres, and that is the
-                    // difference between a flip that looks like physics and
-                    // one that looks like a bug.
-                    if (const auto* vessel =
-                            world.tryGetComponent<sw::parts::VesselComponent>(entity);
-                        vessel != nullptr && vessel->partCount > 0)
-                    {
-                        transform.position +=
-                            sw::WorldVec3(before * vessel->centreOfMass) -
-                            sw::WorldVec3(transform.rotation * vessel->centreOfMass);
-                    }
                 }
 
                 // ---- throttle limiter (Shift/Ctrl held) ---------------------
@@ -408,6 +386,57 @@ namespace game
                         static_cast<sw::f64>(ship.throttle) * thrustNewtons / body.mass;
                     body.velocity += sw::WorldVec3(forward) * acceleration *
                                      static_cast<sw::f64>(deltaSeconds);
+                }
+            });
+    }
+
+    void AngularIntegrationSystem::update(sw::ecs::World& world, sw::f32 deltaSeconds)
+    {
+        world.forEach<TransformComponent, sw::phys::DynamicBodyComponent>(
+            [deltaSeconds, &world](sw::ecs::Entity entity, TransformComponent& transform,
+                                   sw::phys::DynamicBodyComponent& body) {
+                // A WALKING SUIT DOES NOT TUMBLE.
+                //
+                // The capsule carries a hull, so the ground writes toppling
+                // spin into it like it does for any other solid — but its
+                // attitude is AUTHORED, not simulated: CapsuleMovementSystem
+                // stands it upright and points it where the camera looks.
+                // Integrating here and having that overwritten a few systems
+                // later is work nobody reads, and the moment the two ever
+                // ran in the other order the player would be lying on the
+                // floor. Skipping is the honest statement of who owns it.
+                if (world.tryGetComponent<CapsuleComponent>(entity) != nullptr)
+                {
+                    return;
+                }
+
+                const sw::f32 angularSpeed = glm::length(body.angularVelocity);
+                if (angularSpeed <= 1.0e-6f)
+                {
+                    return;
+                }
+                const sw::Vec3 axis = body.angularVelocity / angularSpeed;
+                const sw::Quat step = glm::angleAxis(angularSpeed * deltaSeconds, axis);
+                // Body-frame rotation: post-multiply.
+                const sw::Quat before = transform.rotation;
+                transform.rotation = glm::normalize(transform.rotation * step);
+
+                // A VEHICLE TURNS ABOUT ITS BALANCE POINT, not about
+                // whichever part its builder happened to start from. The
+                // transform's origin is the root part, so the position
+                // is shifted by exactly as much as the rotation moved
+                // the centre of mass — leaving that point where it was.
+                // On a 20 m rocket, turning about the nose instead of
+                // the middle swings the tail ten metres, and that is the
+                // difference between a flip that looks like physics and
+                // one that looks like a bug.
+                if (const auto* vessel =
+                        world.tryGetComponent<sw::parts::VesselComponent>(entity);
+                    vessel != nullptr && vessel->partCount > 0)
+                {
+                    transform.position +=
+                        sw::WorldVec3(before * vessel->centreOfMass) -
+                        sw::WorldVec3(transform.rotation * vessel->centreOfMass);
                 }
             });
     }

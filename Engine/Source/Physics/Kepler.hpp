@@ -64,8 +64,31 @@ namespace sw::phys
                                             f64 epochSeconds, KeplerOrbit& out,
                                             bool allowHyperbolic = false);
 
+        /// MEAN ANOMALY FROM TRUE ANOMALY ON A HYPERBOLA, asymptote included.
+        ///
+        /// Its own entry point because the whole content of it is a guard,
+        /// and a guard nothing can call is a guard nothing can test. A
+        /// hyperbola only reaches out to nu_inf = acos(-1/e), where the atanh
+        /// argument is exactly 1 — and fromStateVectors' radial-trajectory
+        /// check keeps every state IT accepts a MEASURED six orders of
+        /// magnitude short of that: 1 - argument >= 1e-6 * e/sqrt(e^2-1), so
+        /// 3.28e-6 at e = 1.05 and 1.00e-6 at e = 100, against a clamp that
+        /// engages at 1e-12. The cliff is unreachable from there, reachable
+        /// from here, and here is where it is proved harmless. `eccentricity`
+        /// must be > 1; at or past the asymptote the answer is the one AT the
+        /// clamp rather than an infinity or a NaN.
+        [[nodiscard]] f64 hyperbolicMeanAnomaly(f64 eccentricity, f64 trueAnomaly);
+
         /// PRIMARY-RELATIVE position (and optionally velocity) at time t.
-        void evaluate(const KeplerOrbit& orbit, f64 timeSeconds, WorldVec3& outPosition,
+        ///
+        /// Returns FALSE, writes zeros and logs, for an orbit that is not one
+        /// — mu <= 0, a degenerate semi-latus rectum, a non-finite element.
+        /// A default-constructed `KeplerOrbit` is exactly that case and it
+        /// used to answer with a NaN velocity, which the rails->dynamic
+        /// hand-off wrote straight into a DynamicBodyComponent. Deliberately
+        /// NOT [[nodiscard]]: most callers only want a position and a zero is
+        /// a safe one, but anything taking a VELOCITY from it must check.
+        bool evaluate(const KeplerOrbit& orbit, f64 timeSeconds, WorldVec3& outPosition,
                       WorldVec3* outVelocity = nullptr);
 
         /// Orbital period; only meaningful for elliptic orbits.
@@ -93,8 +116,15 @@ namespace sw::phys
                                             f64 fraction);
 
         /// Circular-orbit speed at radius r around a body of parameter mu.
+        /// Zero for a body that is not there or a radius that is not one:
+        /// sqrt(0/0) is a NaN, and a NaN speed handed to a manoeuvre planner
+        /// propagates further than the mistake that produced it.
         [[nodiscard]] inline f64 circularOrbitSpeed(f64 mu, f64 radius)
         {
+            if (!(mu > 0.0) || !(radius > 0.0))
+            {
+                return 0.0;
+            }
             return std::sqrt(mu / radius);
         }
     } // namespace kepler

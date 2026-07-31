@@ -5,6 +5,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 
 namespace sw::phys::kepler
@@ -91,6 +92,44 @@ namespace sw::phys::kepler
         return orbit;
     }
 
+    f64 hyperbolicMeanAnomaly(f64 eccentricity, f64 trueAnomaly)
+    {
+        // nu -> H -> M (hyperbolic).
+        //
+        // THE ASYMPTOTE IS A CLIFF, and atanh goes over it silently. A
+        // hyperbola only reaches true anomalies out to nu_inf = acos(-1/e),
+        // and AT that angle sqrt((e-1)/(e+1)) * tan(nu/2) is exactly 1:
+        // atanh is +infinity there and NaN one ulp past it. A NaN mean
+        // anomaly is the worst possible thing to hand back, because it is
+        // stored, not used — every position the rails ever evaluate from
+        // that orbit is NaN afterwards, and the first visible sign is a
+        // vessel that has left the world.
+        //
+        // MEASURED, nothing that comes through fromStateVectors reaches it,
+        // and not by a little: its radial-trajectory guard needs
+        // h > 1e-6 * r * v, which on a hyperbola is exactly
+        // sqrt(e^2-1)/(e cosh H - 1) > 1e-6, and that holds the argument to
+        // 1 - argument >= 1e-6 * e/sqrt(e^2-1). Bisected against the real
+        // function, the closest state it will ACCEPT sits at 1 - argument =
+        // 3.2796e-6 for e = 1.05, 1.3416e-6 for e = 1.5 and 1.0000e-6 for
+        // e = 100 — six orders of magnitude short of this clamp, and none of
+        // it this code's doing: the guard's threshold was picked for an
+        // entirely different reason and the argument is 1 - p/r, so it is
+        // one bad guard away from the cliff. Hence the clamp, and hence
+        // this being a function anyone can call: a guard whose only caller
+        // cannot reach it is a guard no test can hold to account.
+        //
+        // The clamp costs nothing where it does not engage and stays in f64
+        // where it does: at 1 - 1e-12 the anomaly is H = 28.324190 and
+        // sinh(H) = 1.000022e12, so M = 1.500033e12 for e = 1.5 — a large
+        // number, but a number.
+        const f64 factor = std::sqrt((eccentricity - 1.0) / (eccentricity + 1.0));
+        const f64 tanHalfNu = std::tan(0.5 * trueAnomaly);
+        const f64 argument = std::clamp(factor * tanHalfNu, -1.0 + 1.0e-12, 1.0 - 1.0e-12);
+        const f64 hyperbolicAnomaly = 2.0 * std::atanh(argument);
+        return eccentricity * std::sinh(hyperbolicAnomaly) - hyperbolicAnomaly;
+    }
+
     bool fromStateVectors(f64 mu, const WorldVec3& relativePosition,
                           const WorldVec3& relativeVelocity, f64 epochSeconds,
                           KeplerOrbit& out, bool allowHyperbolic)
@@ -147,12 +186,7 @@ namespace sw::phys::kepler
         f64 meanAnomaly = 0.0;
         if (hyperbolic)
         {
-            // nu -> H -> M (hyperbolic).
-            const f64 factor = std::sqrt((eccentricity - 1.0) / (eccentricity + 1.0));
-            const f64 tanHalfNu = std::tan(0.5 * trueAnomaly);
-            const f64 hyperbolicAnomaly = 2.0 * std::atanh(factor * tanHalfNu);
-            meanAnomaly =
-                eccentricity * std::sinh(hyperbolicAnomaly) - hyperbolicAnomaly;
+            meanAnomaly = hyperbolicMeanAnomaly(eccentricity, trueAnomaly);
         }
         else
         {
@@ -176,10 +210,49 @@ namespace sw::phys::kepler
         return true;
     }
 
-    void evaluate(const KeplerOrbit& orbit, f64 timeSeconds, WorldVec3& outPosition,
+    bool evaluate(const KeplerOrbit& orbit, f64 timeSeconds, WorldVec3& outPosition,
                   WorldVec3* outVelocity)
     {
         const f64 e = orbit.eccentricity;
+
+        // A DEFAULT-CONSTRUCTED ORBIT IS NOT AN ORBIT, and it used to be
+        // possible to ask one for a velocity and be told a NaN with a
+        // straight face. `KeplerOrbit{}` has mu = 0 and a = 0, so the
+        // semi-latus rectum below is 0 and the speed factor is sqrt(0/0):
+        // the position came back as the origin, which at least looks wrong,
+        // but the VELOCITY came back NaN — and the one caller that asks for
+        // a velocity is the bubble's rails->dynamic hand-off, which writes
+        // it straight into a DynamicBodyComponent. From there the integrator
+        // multiplies the NaN by a timestep every tick for ever, the entity's
+        // position is NaN, its transform is NaN, and the first visible sign
+        // is a mesh that has vanished from the world with nothing in the log.
+        //
+        // So it refuses, says so, and hands back zeros rather than poison.
+        // The caller decides what to do about it; PhysicsSystems declines to
+        // convert the entity at all, which leaves it on rails where it was.
+        const f64 semiLatus = orbit.semiMajorAxis * (1.0 - e * e); // >0 both conics
+        if (!(orbit.mu > 0.0) || !(semiLatus > 0.0) || !std::isfinite(orbit.meanMotion) ||
+            !std::isfinite(orbit.meanAnomalyAtEpoch))
+        {
+            outPosition = WorldVec3{0.0};
+            if (outVelocity != nullptr)
+            {
+                *outVelocity = WorldVec3{0.0};
+            }
+            // Once. This is called from a per-tick system over every railed
+            // entity in the game; a degenerate orbit would otherwise write a
+            // line of log per body per tick and bury whatever came next.
+            static std::atomic<bool> reported{false};
+            if (!reported.exchange(true))
+            {
+                SW_LOG_ERROR("Kepler",
+                             "Refusing to evaluate a degenerate orbit (mu={}, a={}, e={}): "
+                             "a default-constructed KeplerOrbit has no velocity to give",
+                             orbit.mu, orbit.semiMajorAxis, e);
+            }
+            return false;
+        }
+
         const f64 meanAnomaly =
             orbit.meanAnomalyAtEpoch + orbit.meanMotion * (timeSeconds - orbit.epochSeconds);
 
@@ -208,11 +281,11 @@ namespace sw::phys::kepler
 
         if (outVelocity != nullptr)
         {
-            const f64 semiLatus = orbit.semiMajorAxis * (1.0 - e * e); // >0 both conics
             const f64 speedFactor = std::sqrt(orbit.mu / semiLatus);
             *outVelocity = orbit.basisP * (-speedFactor * sinNu) +
                            orbit.basisQ * (speedFactor * (e + cosNu));
         }
+        return true;
     }
 
     f64 timeAtArcFraction(const KeplerOrbit& orbit, f64 t0, f64 t1, f64 fraction)

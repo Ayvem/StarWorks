@@ -1173,3 +1173,456 @@ SW_TEST(TheJumpWindowCoversARealHopOnEveryBodyYouCanStandOn)
     // unbounded — the gate must still close eventually.
     SW_CHECK(phys::jumpHangSeconds(kJumpSpeed, 1.0e-4) <= 60.0);
 }
+
+// ---------------------------------------------------------------------------
+// WHAT THE TOPPLING MODEL GETS WRONG WHEN NOBODY IS WATCHING
+//
+// The statics above are right — a body stands while its balance point is over
+// its feet and falls when it is not — and three separate things underneath
+// them were not. A body hinged on an edge does not resist like a body
+// spinning about its own centre; the contact tolerance grew without limit
+// until it could not tell the top of a hull from the bottom; and the orbit
+// code beside all of it would answer a question it had no answer to with a
+// NaN rather than a refusal.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    [[nodiscard]] bool allFinite(const Vec3& v)
+    {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    }
+
+    [[nodiscard]] bool allFinite(const WorldVec3& v)
+    {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    }
+
+    /// Diagonal inertia of a solid box about its own centre. Written out
+    /// rather than borrowed from aero::boxInertia so that the expected value
+    /// below is arithmetic this file can be read to check, not a call into
+    /// the code under test.
+    [[nodiscard]] Vec3 boxInertiaHere(f64 massKg, const Vec3& halfExtents)
+    {
+        const f64 x = 2.0 * static_cast<f64>(halfExtents.x);
+        const f64 y = 2.0 * static_cast<f64>(halfExtents.y);
+        const f64 z = 2.0 * static_cast<f64>(halfExtents.z);
+        const f64 k = massKg / 12.0;
+        return Vec3(static_cast<f32>(k * (y * y + z * z)),
+                    static_cast<f32>(k * (x * x + z * z)),
+                    static_cast<f32>(k * (x * x + y * y)));
+    }
+} // namespace
+
+SW_TEST(ATopplingBodyHingesOnItsEdgeNotOnItsOwnCentre)
+{
+    // The rocket is not spinning in place while it goes over; it is swinging
+    // on the edge of its own tail, and every gram of it is out on an arm as
+    // long as the vehicle is tall. That is Huygens-Steiner — I about the
+    // pivot is I about the centre of mass PLUS m*d^2 — and leaving the second
+    // term out made the whole thing four times too eager.
+    GroundHullComponent hull{};
+    hull.halfExtents = Vec3(1.2f, 1.2f, 6.0f); // the 12 m x 2.4 m test rocket
+    constexpr f64 kMass = 4000.0;
+    constexpr f64 kGravity = 9.81;
+    const Vec3 inertia = boxInertiaHere(kMass, hull.halfExtents); // x: 49 920 kg m^2
+
+    const Vec3 up(0.0f, 1.0f, 0.0f);
+    const Quat upright = glm::rotation(Vec3(0, 0, -1), Vec3(0, 1, 0));
+    const Quat leaning =
+        glm::normalize(glm::angleAxis(math::toRadians(20.0f), Vec3(1, 0, 0)) * upright);
+
+    // The closed form, in the plane of the lean and with nothing borrowed
+    // from the code under test. At 20 degrees the tail edge is the hinge,
+    // the balance point hangs 0.9245 m outside it, and it stands 6.0486 m
+    // above the ground.
+    constexpr f64 kPi = 3.14159265358979323846;
+    const f64 tilt = 20.0 * kPi / 180.0;
+    const f64 overhang = 6.0 * std::sin(tilt) - 1.2 * std::cos(tilt);
+    const f64 height = 6.0 * std::cos(tilt) + 1.2 * std::sin(tilt);
+    const f64 torque = kMass * kGravity * overhang;
+    const f64 aboutTheCentre = static_cast<f64>(inertia.x);
+    const f64 aboutThePivot =
+        aboutTheCentre + kMass * (overhang * overhang + height * height);
+
+    const f64 measured = static_cast<f64>(
+        glm::length(topplingAcceleration(hull, leaning, up, Vec3(0.0f), inertia, kMass,
+                                         kGravity)));
+    // 36 277 N m / 199 683 kg m^2 = 0.181675 rad/s^2.
+    SW_CHECK(std::abs(measured - torque / aboutThePivot) < 1.0e-3 * (torque / aboutThePivot));
+    // ...and emphatically NOT 36 277 / 49 920 = 0.726702 rad/s^2, which is
+    // what came out while the parallel-axis term was missing. m*d^2 is
+    // 149 763 kg m^2 here — three times the tensor it was being left out of.
+    SW_CHECK(measured < 0.3 * (torque / aboutTheCentre));
+    SW_CHECK(std::abs(torque / aboutTheCentre / measured - 4.0) < 0.05);
+
+    // The same thing seen from the far end, through the system that uses it:
+    // a rocket left leaning 12 degrees takes MEASURED 14.98 s to end up on
+    // its side, against 5.46 s before. More than the factor of four in the
+    // acceleration alone, because the ground friction now has time to work
+    // on the spin while the rocket is going over.
+    GroundRig rig{};
+    standRocket(rig, 12.0f, Vec3(0.0f));
+    int ticks = 0;
+    while (ticks < 3000 && rocketTilt(rig) < 80.0f)
+    {
+        groundStep(rig, 0.02f);
+        ++ticks;
+    }
+    const f32 seconds = static_cast<f32>(ticks) * 0.02f;
+    SW_CHECK(rocketTilt(rig) >= 80.0f); // it still goes over: this is not a stall
+    SW_CHECK(seconds > 8.0f);           // 5.46 s before the fix
+    SW_CHECK(seconds < 25.0f);
+}
+
+SW_TEST(TheContactToleranceCannotSwallowTheHullItIsMeasuring)
+{
+    // A landing deck: 16 m x 16 m and 0.8 m thick. The old tolerance was
+    // 0.04 * the box diagonal * 2 = 0.9057 m — larger than the ENTIRE
+    // thickness of the hull — so corners of the TOP face counted as resting
+    // on the ground alongside the bottom one, and `support` stopped being
+    // the face the deck stands on.
+    GroundHullComponent deck{};
+    deck.halfExtents = Vec3(8.0f, 0.4f, 8.0f);
+    constexpr f64 kMass = 6000.0;
+    constexpr f64 kGravity = 9.81;
+    const Vec3 inertia = boxInertiaHere(kMass, deck.halfExtents);
+    const Vec3 up(0.0f, 1.0f, 0.0f);
+
+    // Propped on one edge, one degree over, with the centre of mass at the
+    // hull centre — which is exactly what SurfaceInteractionSystem passes for
+    // anything without a parts list. The ground must pull it back down. It
+    // used to get EXACTLY zero, and the mechanism MEASURED, with the old
+    // 0.9057 m of slop, is not the one this test used to claim: SIX corners
+    // landed in the contact set — the four of the bottom face plus the two
+    // top-face corners on the low side — their centroid sat 2.667 m from the
+    // hull centre toward the low edge, and a 2.665 m lean against a 10.670 m
+    // reach took the `overhang <= 0` early-out. Zero at every lean from 0 to
+    // 3.00 degrees; at 3.25 the set fell to the four corners of the low edge
+    // face, reach collapsed from 10.670 m to 0.0227 m, and the answer jumped
+    // to 0.9133 rad/s^2. The deck sat propped on a corner doing nothing at
+    // all and then snapped.
+    const Quat leaning = glm::normalize(glm::angleAxis(math::toRadians(1.0f), Vec3(1, 0, 0)));
+    const Vec3 settling =
+        topplingAcceleration(deck, leaning, up, Vec3(0.0f), inertia, kMass, kGravity);
+    SW_CHECK(allFinite(settling));
+    SW_CHECK(glm::length(settling) > 0.5f); // MEASURED 0.9164537 rad/s^2
+    SW_CHECK(settling.x < 0.0f);            // and it pulls DOWN the raised side
+
+    // Stood on its own edge face, the deck is a 0.8 m-wide body 16 m tall,
+    // and it has a threshold like anything else: atan(0.4 / 8) = 2.8624
+    // degrees away from that face's vertical, which is 87.1376 degrees of
+    // lean. Inside it the deck stands on edge; outside it, over it goes —
+    // and "over" here means back down flat, which is the same statics read
+    // the other way round.
+    for (f32 degrees : {87.2f, 88.0f, 89.0f})
+    {
+        const Quat q = glm::normalize(glm::angleAxis(math::toRadians(degrees), Vec3(1, 0, 0)));
+        SW_CHECK_EQ(
+            glm::length(topplingAcceleration(deck, q, up, Vec3(0.0f), inertia, kMass, kGravity)),
+            0.0f);
+    }
+    for (f32 degrees : {87.0f, 85.0f, 70.0f})
+    {
+        const Quat q = glm::normalize(glm::angleAxis(math::toRadians(degrees), Vec3(1, 0, 0)));
+        const Vec3 over = topplingAcceleration(deck, q, up, Vec3(0.0f), inertia, kMass, kGravity);
+        SW_CHECK(glm::length(over) > 0.0f); // MEASURED 0.0022059 at 87 degrees
+        SW_CHECK(over.x < 0.0f);
+    }
+
+    // The statics the tolerance exists to serve still hold. Lying flat, the
+    // deck stands while its balance point is inside the 8 m half-width of its
+    // own footprint and goes over the moment it is not — 10 cm either side of
+    // the edge is the whole of the difference.
+    const Quat flat{1.0f, 0.0f, 0.0f, 0.0f};
+    const Vec3 inside =
+        topplingAcceleration(deck, flat, up, Vec3(7.9f, 3.0f, 0.0f), inertia, kMass, kGravity);
+    const Vec3 outside =
+        topplingAcceleration(deck, flat, up, Vec3(8.1f, 3.0f, 0.0f), inertia, kMass, kGravity);
+    SW_CHECK_EQ(glm::length(inside), 0.0f);
+    SW_CHECK(glm::length(outside) > 0.0f);
+    SW_CHECK(allFinite(outside));
+    SW_CHECK(outside.z < 0.0f); // over the +x edge, which is a turn about -z
+
+    // And the cap must not disturb the body the rule was tuned on, NOR THE
+    // SAME BODY AT ANOTHER SIZE, which is the part an absolute half-metre
+    // bound cannot do: a rocket's threshold is atan(halfWidth / comHeight)
+    // = 11.3099 degrees at 2.4 m across and 11.3099 degrees at 4 m across,
+    // because a threshold is an ANGLE and the shape is the same shape. The
+    // 20 m hull is the one that caught it out — its raw tolerance is
+    // 0.8314 m, the absolute cap chopped that to 0.5 m, and inside its own
+    // support polygon it then answered 0.0416551 rad/s^2 at 8 degrees,
+    // 0.0164931 at 10 and 0.0039027 at 11, all of them RESTORING torques on
+    // a vehicle that was standing still and safe. Exactly zero is the only
+    // acceptable answer there: a rocket that creeps while balanced cannot be
+    // left on a pad.
+    //
+    // The third hull is the one that says the fix is the FOOTPRINT and not
+    // merely the removal of an absolute bound: 2.4 m across and 7.2 m tall,
+    // a 3:1 body whose threshold is atan(1.2 / 3.6) = 18.4349 degrees. Slop
+    // scaled off the box DIAGONAL gives it 0.31840 m where the spread across
+    // its own base at that lean is 0.75895 m, so it never sees its own feet
+    // and answers before its threshold whatever the bound is; scaled off the
+    // footprint it gets 1.73842 m and starts answering at 18.43495 degrees,
+    // which is the true value to five decimals.
+    const Quat upright = glm::rotation(Vec3(0, 0, -1), Vec3(0, 1, 0));
+    struct Standing
+    {
+        Vec3 halfExtents;
+        f32 thresholdDegrees;
+    };
+    const Standing bodies[] = {
+        {Vec3(1.2f, 1.2f, 6.0f), 11.309932f},  // the 12 m test rocket
+        {Vec3(2.0f, 2.0f, 10.0f), 11.309932f}, // 20 m: same shape, same angle
+        {Vec3(1.2f, 1.2f, 3.6f), 18.434949f},  // 3:1, comfortably past sqrt(3)
+    };
+    for (const Standing& body : bodies)
+    {
+        GroundHullComponent hull{};
+        hull.halfExtents = body.halfExtents;
+        const Vec3 hullInertia = boxInertiaHere(4000.0, hull.halfExtents);
+        for (f32 fraction : {0.4f, 0.7f, 0.88f, 0.97f, 0.999f})
+        {
+            const Quat q = glm::normalize(
+                glm::angleAxis(math::toRadians(fraction * body.thresholdDegrees),
+                               Vec3(1, 0, 0)) *
+                upright);
+            SW_CHECK_EQ(glm::length(topplingAcceleration(hull, q, up, Vec3(0.0f), hullInertia,
+                                                         4000.0, kGravity)),
+                        0.0f);
+        }
+        for (f32 fraction : {1.001f, 1.02f, 1.06f, 1.8f})
+        {
+            const Quat q = glm::normalize(
+                glm::angleAxis(math::toRadians(fraction * body.thresholdDegrees),
+                               Vec3(1, 0, 0)) *
+                upright);
+            const Vec3 over =
+                topplingAcceleration(hull, q, up, Vec3(0.0f), hullInertia, 4000.0, kGravity);
+            SW_CHECK(glm::length(over) > 0.0f);
+            SW_CHECK(over.x > 0.0f); // and it goes the way it was leaning
+        }
+    }
+}
+
+SW_TEST(KeplerRefusesADegenerateOrbitInsteadOfInventingOne)
+{
+    // `KeplerOrbit{}` has mu = 0 and a = 0, so the semi-latus rectum is zero
+    // and the speed factor is sqrt(0/0). The POSITION that came back was the
+    // origin, which is at least visibly wrong; the VELOCITY was a NaN, and
+    // the one caller that asks for a velocity writes it straight into a
+    // DynamicBodyComponent, from which it never comes out again.
+    const KeplerOrbit dead{};
+    WorldVec3 position{1.0, 2.0, 3.0};
+    WorldVec3 velocity{4.0, 5.0, 6.0};
+    SW_CHECK(!kepler::evaluate(dead, 1234.0, position, &velocity));
+    SW_CHECK(allFinite(position));
+    SW_CHECK(allFinite(velocity));
+    SW_CHECK_EQ(glm::length(velocity), 0.0);
+    SW_CHECK_EQ(glm::length(position), 0.0);
+
+    // An orbit that IS one is untouched.
+    const KeplerOrbit real =
+        kepler::fromElements(kMuTerra, kLeoRadius, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    SW_CHECK(kepler::evaluate(real, 0.0, position, &velocity));
+    SW_CHECK(std::abs(glm::length(velocity) -
+                      kepler::circularOrbitSpeed(kMuTerra, kLeoRadius)) < 1.0e-6);
+
+    // The hyperbolic branch has its own cliff: at the asymptote
+    // nu_inf = acos(-1/e) the atanh argument is exactly 1, so atanh is
+    // infinity there and NaN one ulp past it, and the NaN would be STORED in
+    // the orbit's mean anomaly. Stand ON the asymptote and past it, both
+    // signs, and the answer must still be a number. This calls the clamped
+    // conversion DIRECTLY, because that is the only way to reach the clamp:
+    // see the walk below for what fromStateVectors will and will not accept.
+    const f64 eccentricity = 1.5;
+    const f64 asymptote = std::acos(-1.0 / eccentricity);
+    for (f64 nu : {asymptote, -asymptote, asymptote + 1.0e-9, asymptote + 0.1,
+                   -asymptote - 0.1})
+    {
+        const f64 mean = kepler::hyperbolicMeanAnomaly(eccentricity, nu);
+        SW_CHECK(std::isfinite(mean));     // unclamped: atanh(>= 1) is inf, then NaN
+        SW_CHECK(std::abs(mean) > 1.0e11); // and it is the value AT the clamp,
+                                           // MEASURED 1.500033e12 for e = 1.5
+    }
+    // Inside the asymptote it is untouched, and it arrives there from below:
+    // the clamped answer is the limit of the honest ones, not a discontinuity
+    // pasted over the top.
+    f64 previous = 0.0;
+    for (f64 shortfall : {1.0e-1, 1.0e-3, 1.0e-5, 1.0e-7, 1.0e-9})
+    {
+        const f64 nu = asymptote - shortfall;
+        const f64 mean = kepler::hyperbolicMeanAnomaly(eccentricity, nu);
+        // Same conversion written out by hand: nu -> H -> M, no clamp needed
+        // this far in.
+        const f64 argument =
+            std::sqrt((eccentricity - 1.0) / (eccentricity + 1.0)) * std::tan(0.5 * nu);
+        const f64 anomaly = 2.0 * std::atanh(argument);
+        const f64 expected = eccentricity * std::sinh(anomaly) - anomaly;
+        SW_CHECK(std::isfinite(mean));
+        SW_CHECK(std::abs(mean - expected) < 1.0e-9 * std::abs(expected));
+        SW_CHECK(mean > previous); // monotone in toward the asymptote
+        previous = mean;
+    }
+    SW_CHECK(kepler::hyperbolicMeanAnomaly(eccentricity, asymptote) > previous);
+
+    // And now the walk through fromStateVectors, which is a test of ITS
+    // guards and not of the clamp — it cannot reach the clamp and that is
+    // worth pinning down. Its radial-trajectory check needs h > 1e-6 * r * v,
+    // which on a hyperbola is sqrt(e^2-1)/(e cosh H - 1) > 1e-6, so the
+    // argument it will accept is held to 1 - argument >= 1e-6 * e/sqrt(e^2-1)
+    // — MEASURED, 1.3416e-6 at e = 1.5, against a clamp that engages at
+    // 1e-12. So: everything from a tenth of a radian short of the asymptote
+    // down to 1e-5 must come back as ELEMENTS THAT ARE NUMBERS, and
+    // everything from 1e-6 in must be REFUSED. Not "refused or fine" —
+    // refused, because a loop that accepts silence accepts anything.
+    constexpr f64 kSemiLatus = 1.25e7;
+    int accepted = 0;
+    for (f64 shortfall : {1.0e-1, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-7, 1.0e-9,
+                          1.0e-11, 1.0e-13})
+    {
+        const f64 nu = asymptote - shortfall;
+        const f64 radius = kSemiLatus / (1.0 + eccentricity * std::cos(nu));
+        const f64 speedFactor = std::sqrt(kMuTerra / kSemiLatus);
+        const WorldVec3 r{radius * std::cos(nu), 0.0, radius * std::sin(nu)};
+        const WorldVec3 v{-speedFactor * std::sin(nu), 0.0,
+                          speedFactor * (eccentricity + std::cos(nu))};
+        KeplerOrbit built{};
+        const bool ok =
+            kepler::fromStateVectors(kMuTerra, r, v, 0.0, built, /*allowHyperbolic=*/true);
+        SW_CHECK(ok == (shortfall >= 1.0e-5));
+        if (!ok)
+        {
+            continue; // past the radial guard: refused outright, and it says so
+        }
+        ++accepted;
+        SW_CHECK(std::isfinite(built.meanAnomalyAtEpoch));
+        SW_CHECK(std::isfinite(built.meanMotion));
+        SW_CHECK(std::isfinite(built.semiMajorAxis));
+        WorldVec3 p{};
+        WorldVec3 vv{};
+        SW_CHECK(kepler::evaluate(built, 0.0, p, &vv));
+        SW_CHECK(allFinite(p));
+        SW_CHECK(allFinite(vv));
+    }
+    SW_CHECK_EQ(accepted, 5);
+}
+
+SW_TEST(TheBubbleWillNotHandOutANaNVelocity)
+{
+    // The failure this prevents, end to end: an entity carrying a rails
+    // component nobody filled in drifts into the bubble, the hand-off asks
+    // its orbit for a velocity, and what it gets is a NaN. Nothing complains.
+    // The integrator then multiplies that NaN by a timestep for ever, the
+    // transform goes NaN, and the vessel is simply no longer anywhere.
+    ecs::World world;
+    ecs::EntityCommandBuffer commands;
+    sim::Simulation simulation({{"Logistics", 10.0f, 4}});
+
+    const ecs::Entity terra = world.createEntity();
+    world.addComponent(terra, TransformComponent{});
+    world.addComponent(terra, GravitySourceComponent{kMuTerra});
+
+    // 4 km off the primary, and that offset is the whole test: a refusal and
+    // a silent evaluation of a dead orbit BOTH hand back zeros, so an entity
+    // parked at the origin — where a zeroed primary-relative position puts
+    // it anyway — cannot tell them apart. Standing somewhere the two answers
+    // differ, it can: refused, it stays where it is; evaluated, it is
+    // snapped onto Terra.
+    const WorldVec3 kParked{4.0e3, 0.0, 0.0};
+    const ecs::Entity stray = world.createEntity();
+    TransformComponent strayTransform{};
+    strayTransform.position = kParked;
+    world.addComponent(stray, strayTransform);
+    world.addComponent(stray, PreviousTransformComponent{});
+    OnRailsComponent rails{}; // never populated: mu = 0, a = 0
+    rails.primary = terra;
+    world.addComponent(stray, rails);
+
+    SimulationBubbleSystem::Config config{};
+    config.enterRadius = 1.0e4;
+    config.exitRadius = 1.5e4;
+    sim::SimulationLane& lane = *simulation.findLane("Logistics");
+    lane.scheduler().addSystem(std::make_unique<RailsSystem>(lane));
+    auto bubble = std::make_unique<SimulationBubbleSystem>(commands, lane, config);
+    auto* bubblePtr = bubble.get();
+    lane.scheduler().addSystem(std::move(bubble));
+
+    bubblePtr->setFocus(WorldVec3{0.0, 0.0, 0.0}); // 4 km away: well inside
+    simulation.advance(world, 0.1f, nullptr);
+    commands.playback(world);
+
+    // It DECLINES the hand-off. Not "declines or produces a number" — the
+    // only number it could produce is the zero velocity evaluate() writes on
+    // its way to saying no, and accepting that is accepting a vessel that
+    // has been given a made-up state vector because its orbit had none.
+    SW_CHECK(!world.hasComponent<DynamicBodyComponent>(stray));
+    SW_CHECK(world.hasComponent<OnRailsComponent>(stray)); // left where it was
+    if (world.hasComponent<DynamicBodyComponent>(stray))
+    {
+        SW_CHECK(allFinite(world.getComponent<DynamicBodyComponent>(stray).velocity));
+    }
+
+    // And the rails refresh declines too, which is a separate guard on the
+    // same orbit: a dead orbit evaluates to a zero PRIMARY-RELATIVE position,
+    // and adding the primary's own position to that teleports the entity to
+    // the centre of Terra rather than leaving it alone.
+    const WorldVec3 parked = world.getComponent<TransformComponent>(stray).position;
+    SW_CHECK(allFinite(parked));
+    SW_CHECK_EQ(glm::length(parked - kParked), 0.0);
+}
+
+SW_TEST(NoPhysicsEntryPointAnswersADegenerateQuestionWithANaN)
+{
+    // The blanket rule, because every one of the NaNs fixed above reached
+    // the world the same way: something asked a reasonable-looking question
+    // of a default-constructed or empty object and got a NaN back instead of
+    // a refusal, and a NaN is the one wrong answer that does not stay local.
+    // Every public entry point in this corner of the engine, at its most
+    // degenerate input.
+    SW_CHECK_EQ(kepler::circularOrbitSpeed(0.0, 0.0), 0.0);
+    SW_CHECK_EQ(kepler::circularOrbitSpeed(kMuTerra, 0.0), 0.0);
+    SW_CHECK_EQ(kepler::circularOrbitSpeed(0.0, kLeoRadius), 0.0);
+
+    const KeplerOrbit dead{};
+    SW_CHECK(std::isfinite(kepler::periapsis(dead)));
+    SW_CHECK(std::isfinite(kepler::apoapsis(dead)));
+    SW_CHECK(std::isfinite(kepler::timeAtArcFraction(dead, 0.0, 100.0, 0.5)));
+    WorldVec3 p{};
+    WorldVec3 v{};
+    kepler::evaluate(dead, 0.0, p, &v);
+    SW_CHECK(allFinite(p));
+    SW_CHECK(allFinite(v));
+
+    // The toppling statics, on a hull with no size, no mass, no gravity and
+    // no attitude worth the name.
+    const GroundHullComponent empty{};
+    const Quat identity{1.0f, 0.0f, 0.0f, 0.0f};
+    const Vec3 up(0.0f, 1.0f, 0.0f);
+    SW_CHECK(allFinite(
+        topplingAcceleration(empty, identity, up, Vec3(0.0f), Vec3(0.0f), 0.0, 0.0)));
+    SW_CHECK(allFinite(
+        topplingAcceleration(empty, identity, up, Vec3(1.0f), Vec3(0.0f), 1.0e6, 9.81)));
+    GroundHullComponent flat{};
+    flat.halfExtents = Vec3(5.0f, 0.0f, 5.0f); // a hull with no thickness at all
+    SW_CHECK(allFinite(
+        topplingAcceleration(flat, identity, up, Vec3(9.0f, 0.0f, 0.0f), Vec3(0.0f), 100.0,
+                             9.81)));
+
+    // ...and the rest of the header, which all take the same kind of input.
+    SW_CHECK(std::isfinite(groundClearance(empty, identity, up)));
+    SW_CHECK(std::isfinite(footprintReach(nullptr, identity, up)));
+    SW_CHECK(std::isfinite(footprintReach(&empty, identity, up)));
+    SW_CHECK(std::isfinite(jumpHangSeconds(0.0, 0.0)));
+    SW_CHECK(allFinite(surfaceJumpVelocity(WorldVec3{0.0}, WorldVec3{0.0},
+                                           WorldVec3{0.0, 1.0, 0.0}, 0.0)));
+    const GravitySourceComponent nowhere{};
+    const glm::dquat spin = spinRotation(nowhere);
+    SW_CHECK(std::isfinite(spin.w) && std::isfinite(spin.x) && std::isfinite(spin.y) &&
+             std::isfinite(spin.z));
+    GravitySourceComponent noAxis{};
+    noAxis.spinAxis = WorldVec3{0.0, 0.0, 0.0}; // an axis that is not one
+    const glm::dquat degenerate = spinRotationAt(noAxis, 0.5);
+    SW_CHECK(std::isfinite(degenerate.w) && std::isfinite(degenerate.x) &&
+             std::isfinite(degenerate.y) && std::isfinite(degenerate.z));
+}

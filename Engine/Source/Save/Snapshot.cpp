@@ -4,6 +4,8 @@
 #include "ECS/World.hpp"
 #include "Simulation/Simulation.hpp"
 
+#include <algorithm>
+#include <format>
 #include <unordered_map>
 
 namespace sw::save
@@ -37,6 +39,59 @@ namespace sw::save
             }
         }
         return nullptr;
+    }
+
+    std::vector<std::string> unsaveableComponents(const ecs::World& world,
+                                                  const Schema& schema)
+    {
+        std::vector<std::string> missing;
+        for (const ecs::Archetype* archetype : world.archetypeList())
+        {
+            // An archetype with no entities has no data to write, and
+            // saveWorld skips it — so it is not a problem and must not be
+            // reported as one. Registering a component just because some
+            // empty archetype mentions it is how a false alarm becomes a
+            // habit of ignoring the alarm.
+            if (archetype->entityCount() == 0)
+            {
+                continue;
+            }
+            for (u32 column = 0; column < archetype->columnCount(); ++column)
+            {
+                const ecs::ComponentInfo& info = archetype->columnInfoAt(column);
+                if (schema.findByTypeId(info.id) != nullptr)
+                {
+                    continue;
+                }
+                // NAME ITS NEIGHBOURS. A runtime component id is assigned
+                // by order of first use and means nothing to a human — the
+                // last time this fired, "runtime id 13, size 200" took
+                // several minutes and a generated sizeof probe to identify.
+                // The components sharing its archetype ARE named, and they
+                // pin it down immediately: a 200-byte stranger sitting with
+                // sw.Transform and phys.GroundHull on a building is not hard
+                // to recognise.
+                std::string company;
+                for (u32 other = 0; other < archetype->columnCount(); ++other)
+                {
+                    const ecs::ComponentInfo& neighbour = archetype->columnInfoAt(other);
+                    if (const Schema::Entry* known = schema.findByTypeId(neighbour.id))
+                    {
+                        if (!company.empty()) { company += ", "; }
+                        company += known->name;
+                    }
+                }
+                std::string entry =
+                    std::format("runtime id {} ({} bytes), on an entity that also has [{}]",
+                                info.id, info.size,
+                                company.empty() ? std::string("nothing else named") : company);
+                if (std::find(missing.begin(), missing.end(), entry) == missing.end())
+                {
+                    missing.push_back(std::move(entry));
+                }
+            }
+        }
+        return missing;
     }
 
     void saveWorld(const ecs::World& world, const Schema& schema, ser::BinaryWriter& writer)

@@ -44,7 +44,14 @@ namespace sw::net
     /// and is discarded without further parsing. A public UDP port receives
     /// scanner noise constantly and none of it should reach the decoder.
     constexpr u32 kProtocolMagic = 0x53574E54u;
-    constexpr u16 kProtocolVersion = 2;
+    /// Bumped to 3 for the connect challenge: the handshake gained a message
+    /// type and a cookie field, so a version-2 client and a version-3 host
+    /// would talk past each other forever — the client resending a request
+    /// with no cookie in it, the host challenging a client that does not know
+    /// what a challenge is. Refusing the datagram outright at readHeader
+    /// turns that silent deadlock into the "different builds" message the
+    /// host already knows how to print.
+    constexpr u16 kProtocolVersion = 3;
 
     /// Total size of one datagram, header included. 1200 bytes clears every
     /// path MTU that matters (1500-byte Ethernet less IPv6, UDP and any
@@ -63,6 +70,32 @@ namespace sw::net
     /// Largest slice of a fragmented reliable message.
     constexpr usize kMaxFragmentPayload =
         kMaxDatagramBytes - kHeaderBytes - kFragmentHeaderBytes;
+
+    /// Ceiling on ONE reassembled reliable message, and therefore on the
+    /// memory a peer can pin by sending fragments of a message it never
+    /// finishes. Without it the receiver's partial buffer grows by up to
+    /// kMaxFragmentPayload for every datagram a hostile peer cares to send,
+    /// forever, because nothing in the old code ever gave up on a
+    /// reassembly.
+    ///
+    /// EIGHT MEBIBYTES IS NOT ARBITRARY. The largest thing this protocol
+    /// legitimately fragments is the full world snapshot sent at join.
+    /// MEASURED against this build: a full snapshot of 20,000 entities each
+    /// carrying a 24-byte position and a 12-byte link encodes to 1,080,036
+    /// bytes, i.e. 54.00 bytes per entity, so 8 MiB covers 155,339
+    /// replicated entities — far more than this game puts in one world, and
+    /// still small enough that a peer holding one hostage costs less than a
+    /// single texture.
+    constexpr usize kMaxReassemblyBytes = 8u * 1024u * 1024u;
+
+    /// The same ceiling expressed as fragments, which is what the wire
+    /// actually carries. The SENDER refuses to build a message needing more
+    /// than this for exactly the reason the receiver refuses to accept one:
+    /// a message the far side will throw away is a message that must never
+    /// be put on the wire, and finding that out at queue time names the
+    /// caller instead of blaming the network.
+    constexpr u16 kMaxFragments =
+        static_cast<u16>(kMaxReassemblyBytes / kMaxFragmentPayload);
 
     /// How many reliable datagrams may be in flight unacknowledged.
     ///
@@ -83,6 +116,12 @@ namespace sw::net
         ConnectAccept,
         /// host -> client, reliable. A human-readable reason.
         ConnectReject,
+        /// host -> client, UNRELIABLE and STATELESS. Carries the cookie the
+        /// source address must echo before the host will spend a byte of
+        /// memory or a kilobyte of upstream on it. Sent by hand, without a
+        /// Connection behind it, because allocating one is precisely what
+        /// this message exists to defer.
+        ConnectChallenge,
         /// either direction, reliable. Also sent as a courtesy on quit so
         /// the peer does not have to wait out a timeout.
         Disconnect,
@@ -113,6 +152,42 @@ namespace sw::net
     };
 
     [[nodiscard]] std::string_view messageTypeName(MessageType type);
+
+    /// Refuses a count read off the wire that the bytes still in hand could
+    /// not possibly describe. Throws sw::Exception, which every parser in
+    /// this stack already catches.
+    ///
+    /// THE FAILURE THIS PREVENTS. Every count in every message is chosen by
+    /// whoever sent the datagram, and every one of them drove a loop that
+    /// allocates — a snapshot's spawn count grows the mirror's slot table, a
+    /// table's component count builds a std::string per entry. Unbounded,
+    /// those loops run until the reader happens to hit the end of the
+    /// message, which means the world has already been half-modified by a
+    /// snapshot that was never valid, and it means the work is done before
+    /// the lie is discovered rather than instead of it.
+    ///
+    /// The bound is arithmetic, not a guess: N elements need at least
+    /// N * minElementBytes bytes still unread, so any larger count is a lie
+    /// and is refused before the first iteration.
+    ///
+    /// Where a count feeds a single `resize` or `reserve` directly — the
+    /// Roster and the Event payload in Session.cpp — the check is written
+    /// out at the call site instead, non-throwing and counted, because there
+    /// the interesting failure is not an exception at all: a count the
+    /// allocator can SATISFY (measured: 20,000,000 roster entries is
+    /// 1,120,000,000 bytes, and reserve succeeds) throws nothing and so can
+    /// never be caught.
+    void requireWireCount(u64 count, usize minElementBytes, usize remaining,
+                          std::string_view what);
+
+    /// Builds one complete datagram with NO Connection behind it.
+    ///
+    /// Exists for the single case that must not allocate per-address state:
+    /// answering an address that has not proven it can receive what it asks
+    /// for. Sequence zero, no acknowledgement, no retransmission — there is
+    /// nothing on the host holding this conversation, and that is the point.
+    void buildBareDatagram(MessageType type, std::span<const u8> payload,
+                           std::vector<u8>& out);
 
     /// Wrap-safe comparison of 16-bit sequence numbers. `a` is newer than
     /// `b` when the shortest way round the circle from `b` to `a` goes
@@ -195,8 +270,15 @@ namespace sw::net
         /// Unreliable datagrams discarded for being older than one already
         /// applied. The honest measure of reordering on the path.
         u64 staleDropped = 0;
-        /// Datagrams rejected before decoding: bad magic, bad version, runt.
+        /// Datagrams rejected before decoding: bad magic, bad version, runt,
+        /// or longer than a datagram of this protocol can be.
         u64 malformedDropped = 0;
+        /// Reassemblies thrown away part-built because the fragment that
+        /// should have continued them named another message, arrived out of
+        /// order, or would have pushed the buffer past kMaxReassemblyBytes.
+        /// Non-zero against a peer that is not on a broken path means that
+        /// peer is lying to you.
+        u64 fragmentsRejected = 0;
         /// Reliable messages queued but not yet sent because the window is
         /// full. Sustained non-zero means the link cannot keep up.
         u32 reliableBacklog = 0;
@@ -296,6 +378,10 @@ namespace sw::net
         void applyAck(f64 nowSeconds, u16 ack, u32 ackBits);
         void ackOne(f64 nowSeconds, u16 sequence);
         void drainInOrder();
+        /// Appends one fragment to the reassembly in progress, or refuses it
+        /// and throws the reassembly away. False means nothing was appended.
+        bool acceptFragment(const PendingIn& slot);
+        void abandonReassembly();
 
         Config m_config{};
         // --- outgoing -------------------------------------------------------
@@ -323,9 +409,25 @@ namespace sw::net
         std::vector<PendingIn> m_received{kHoldingPen};
         /// A fragmented message is carried by CONSECUTIVE sequences, so
         /// walking the reliable channel in order accumulates its pieces in
-        /// order — no reassembly table, no message-id bookkeeping, and no
-        /// way to hand up half a message.
+        /// order. That keeps the reassembly table down to ONE entry — there
+        /// is structurally never a second message in flight on this channel
+        /// — but it is not the same thing as trusting what arrives.
+        ///
+        /// An honest sender emits index 0..count-1 of one message id back to
+        /// back. A hostile one emits index 1 of count 3 forever: the old code
+        /// only cleared the buffer on index 0, so that grew m_partial without
+        /// limit and never completed anything. It also never compared the
+        /// message id the header carries, so the tail of one message
+        /// concatenated onto the head of another and was handed up as a
+        /// single believable payload. The four fields below are what make
+        /// both of those impossible: a fragment is appended only when it
+        /// continues the reassembly already running, in the right message, at
+        /// the next index, within kMaxReassemblyBytes.
         std::vector<u8> m_partial;
+        bool m_partialActive = false;
+        u16 m_partialMessageId = 0;
+        u16 m_partialCount = 0;
+        u16 m_partialNextIndex = 0;
         /// Newest unreliable sequence applied, per message type — that is
         /// what makes the channel SEQUENCED rather than merely unreliable.
         u16 m_newestUnreliable[static_cast<usize>(MessageType::Count)]{};

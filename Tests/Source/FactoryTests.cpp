@@ -64,6 +64,78 @@ SW_TEST(RefineryConservesMatterAndStallsWhenFull)
     SW_CHECK(inventoryCount(inv, Resource::Iron) == ironBefore);
 }
 
+// A REFINERY MAY NOT INVENT MATTER, AND MAY NOT POISON ITS OWN BIN.
+//
+// `conversionRatio` is the one production number in the factory that nothing
+// validates on the way in. The recipe loader refuses a .swrecipe whose
+// outputs outweigh its inputs, but this component is not a recipe: it is
+// written by the asteroid rig, restored by the save loader, and reachable by
+// anything that can set an f64. The three values that hurt are the three
+// pinned here — a ratio above unity (matter from nowhere), a ratio at or
+// below zero (the divide on the consumption line), and NaN, which is by far
+// the worst of them because `inventoryAdd` has no defence against it and one
+// tick turns every slot in the bin into a quiet NaN that then spreads down
+// the belt to everything downstream.
+SW_TEST(RefineryRatioIsBoundedAndACorruptRatioIsInert)
+{
+    // A ratio of 2 asks for two kilograms of iron out of one of ore. Iron ore
+    // and iron are both 1 kg per unit, so the honest ceiling is 1.0 and the
+    // machine is held to it: ten units in, at most ten units out.
+    {
+        ecs::World world;
+        const ecs::Entity plant = world.createEntity();
+        InventoryComponent inventory{};
+        inventory.volumeCapacityM3 = 100.0;
+        world.addComponent(plant, inventory);
+        world.addComponent(plant, RefineryComponent{Resource::IronOre, Resource::Iron,
+                                                    10.0, 2.0, 0.0});
+        auto& inv = world.getComponent<InventoryComponent>(plant);
+        inventoryAdd(inv, Resource::IronOre, 100.0);
+
+        RefinerySystem refinery;
+        refinery.update(world, 1.0f);
+
+        const f64 ore = inventoryCount(inv, Resource::IronOre);
+        const f64 iron = inventoryCount(inv, Resource::Iron);
+        const f64 consumed = 100.0 - ore;
+        SW_CHECK(std::abs(consumed - 10.0) < 1.0e-9);
+        SW_CHECK(std::abs(iron - 10.0) < 1.0e-9); // NOT 20
+        // The clamp is written back, so the panel and the save file quote the
+        // number the simulation actually honoured.
+        SW_CHECK(std::abs(world.getComponent<RefineryComponent>(plant).conversionRatio -
+                          1.0) < 1.0e-12);
+    }
+
+    // Zero, negative and NaN are INERT: the hopper is untouched, nothing is
+    // produced, and — the part that matters — no slot in the bin has been
+    // turned into a NaN that would spread through every inventory the belts
+    // touch.
+    const f64 nan = std::nan("");
+    for (const f64 ratio : {0.0, -0.5, nan})
+    {
+        ecs::World world;
+        const ecs::Entity again = world.createEntity();
+        InventoryComponent inventory{};
+        inventory.volumeCapacityM3 = 100.0;
+        world.addComponent(again, inventory);
+        world.addComponent(again, RefineryComponent{Resource::IronOre, Resource::Iron,
+                                                    10.0, ratio, 0.0});
+        auto& inv = world.getComponent<InventoryComponent>(again);
+        inventoryAdd(inv, Resource::IronOre, 100.0);
+        RefinerySystem refinery;
+        refinery.update(world, 1.0f);
+
+        SW_CHECK(std::isfinite(inventoryCount(inv, Resource::IronOre)));
+        SW_CHECK(std::isfinite(inventoryVolume(inv)));
+        SW_CHECK(std::abs(inventoryCount(inv, Resource::IronOre) - 100.0) < 1.0e-12);
+        SW_CHECK(inventoryCount(inv, Resource::Iron) == 0.0);
+        const auto& after = world.getComponent<RefineryComponent>(again);
+        SW_CHECK(after.totalRefined == 0.0);
+        SW_CHECK(std::isfinite(after.conversionRatio));
+        SW_CHECK(after.conversionRatio == 0.0); // normalised, not left as NaN
+    }
+}
+
 SW_TEST(FullProductionChainThroughSimulationLanes)
 {
     // Miner (asteroid) --link--> refinery --link--> storage, driven by the

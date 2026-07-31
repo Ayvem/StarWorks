@@ -22,6 +22,7 @@
 #include <Engine.hpp>
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <atomic>
@@ -567,6 +568,90 @@ namespace game
 
         // SAS + clickable HUD buttons.
         sw::u32 m_sasMode = 0; // mirrors the ship's SasComponent
+        // ------------------------------------------------------------------
+        // THE SHELL: what the player is looking at before, and around, a game
+        //
+        // The game used to be the only thing there was. It opened straight
+        // into a world that had already been built during the constructor —
+        // a second or two of a black window with no way to tell a slow load
+        // from a hang — and ESC quit it on the spot, with no way back and no
+        // chance to save. Everything below is that missing frame around the
+        // game, and it is a STATE MACHINE rather than a set of flags because
+        // "loading" and "menu" and "playing" are mutually exclusive by
+        // nature, and flags let you be two of them at once.
+        // ------------------------------------------------------------------
+        enum class Shell : sw::u8
+        {
+            Booting, // work is being done, a bar says how much is left
+            Menu,    // nothing is simulated; the player is choosing
+            Playing,
+        };
+        enum class MenuPage : sw::u8
+        {
+            Root,
+            Load,
+            Save,     // typing a name for a long save
+            Settings, // deliberately empty for now
+        };
+
+        Shell m_shell = Shell::Booting;
+        MenuPage m_menuPage = MenuPage::Root;
+        /// True once a world has been played or loaded. It decides whether
+        /// the root page offers CONTINUE, and whether NEW GAME has to throw
+        /// a world away before building one.
+        bool m_hasSession = false;
+        /// One unit of start-up work: a name to show and the thing to do.
+        /// Split up so the bar MEASURES something — a bar driven by a timer
+        /// while the main thread blocks is a decoration, not information.
+        struct BootStep
+        {
+            const char* label;
+            void (StarWorksGame::*run)();
+        };
+        std::vector<BootStep> m_bootSteps;
+        sw::usize m_bootCursor = 0;
+        /// The step whose name is on screen: the one ABOUT to run, because a
+        /// step that has finished is not what the player is waiting for.
+        std::string m_bootLabel = "STARTING";
+        void buildBootPlan();
+        void bootLoadParts();
+        void bootLoadAero();
+        void bootLoadRecipes();
+        void bootLoadDesigns();
+        void bootBuildScene();
+        void bootWireSystems();
+        void bootBuildInstruments();
+        void bootPrepareSaves();
+        void updateBoot();
+        void collectShellHud();
+        void handleShellClick(sw::u32 id);
+        void collectBootBar();
+        void newGame();
+        void continueGame();
+        void openMenu(MenuPage page);
+        /// Saves found on disk, newest first. Rebuilt when the Load page is
+        /// opened rather than every frame: it touches the filesystem.
+        struct SaveSlot
+        {
+            std::string name;      // what the player typed, or "QUICKSAVE"
+            std::filesystem::path path;
+            sw::u64 bytes = 0;
+            std::string when;      // local time, as text
+            bool quick = false;
+        };
+        std::vector<SaveSlot> m_saveSlots;
+        void refreshSaveSlots();
+        /// The long save's name, typed on the Save page. Shares the text
+        /// field machinery the multiplayer address box already uses.
+        std::string m_saveName;
+        bool m_saveNameFocused = false;
+        /// What the last save or load did, shown under the menu's buttons.
+        std::string m_shellStatus;
+        [[nodiscard]] std::filesystem::path savesDirectory() const;
+        [[nodiscard]] std::filesystem::path quickSavePath() const;
+        void saveGameTo(const std::filesystem::path& path);
+        void loadGameFrom(const std::filesystem::path& path);
+
         struct HudButton
         {
             sw::f32 x0, y0, x1, y1; // NDC (y down)

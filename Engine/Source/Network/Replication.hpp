@@ -204,6 +204,14 @@ namespace sw::net
         /// its baseline is not the snapshot we hold — which happens whenever
         /// a snapshot is lost, and is not an error: our acknowledgement still
         /// names the state we do have, and the host re-bases onto it.
+        ///
+        /// ALL OR NOTHING. A snapshot that turns out to be malformed part
+        /// way through leaves the mirror byte for byte as it was, and leaves
+        /// `appliedSnapshotId` naming the state the mirror really holds. It
+        /// has to: the caller catches the throw and drops the datagram, so a
+        /// half-applied snapshot would not crash anything — it would just
+        /// make the mirror permanently, silently wrong, with every later
+        /// delta diffed against a baseline nobody has.
         bool apply(ecs::World& world, ser::BinaryReader& reader);
 
         [[nodiscard]] u32 appliedSnapshotId() const { return m_applied; }

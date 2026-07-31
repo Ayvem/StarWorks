@@ -11,6 +11,35 @@
 
 namespace sw::factory
 {
+    namespace
+    {
+        /// Is there ANYWHERE in this inventory for `resource` to go — an
+        /// existing stack of it, or an empty slot?
+        ///
+        /// Deliberately not a volume question. `inventoryFreeUnits` answers
+        /// both at once, which is exactly wrong for a machine that is about
+        /// to consume its inputs first: the slot layout is a fact about the
+        /// bin right now, while the free volume is a fact about the bin
+        /// AFTER the feedstock leaves it. Mixing the two made a full bin
+        /// look permanently jammed.
+        [[nodiscard]] bool inventoryHasSlotFor(const InventoryComponent& inventory,
+                                               res::Resource resource)
+        {
+            if (resource == res::Resource::Count)
+            {
+                return false;
+            }
+            for (const InventorySlot& slot : inventory.slots)
+            {
+                if (slot.resource == resource || slot.resource == res::Resource::Count)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    } // namespace
+
     void MinerSystem::update(ecs::World& world, f32 deltaSeconds)
     {
         const f64 dt = static_cast<f64>(deltaSeconds);
@@ -27,6 +56,52 @@ namespace sw::factory
         const f64 dt = static_cast<f64>(deltaSeconds);
         world.forEach<RefineryComponent, InventoryComponent>(
             [dt](ecs::Entity, RefineryComponent& refinery, InventoryComponent& inventory) {
+                // THE RATIO IS NOT TRUSTED, because nothing checks it on the
+                // way in. `loadRecipeFile` refuses a recipe that creates
+                // matter, but this component is not a recipe: it is written
+                // by the asteroid rig, by the save loader, and by anything
+                // that can set an f64 — and a save file with a corrupt or
+                // absent field lands here as 0, as garbage, or as NaN.
+                //
+                // Two separate hazards, so two separate guards.
+                //
+                //  * ZERO OR NEGATIVE is INERT. The consumption below divides
+                //    by this number, so zero is an infinity that empties the
+                //    hopper into nothing, and a negative ratio adds negative
+                //    output (a no-op) and then REMOVES a negative amount of
+                //    input, which `inventoryRemove` refuses — leaving a plant
+                //    that runs forever on ore it never eats. Neither is a
+                //    refinery. A machine set up to convert nothing converts
+                //    nothing.
+                //  * TOO LARGE CREATES MATTER. One unit in may not become
+                //    more KILOGRAMS out than it arrived with, which is the
+                //    same rule `RecipesConserveMatter` holds every recipe in
+                //    the catalogue to. Iron ore and iron are both 1 kg per
+                //    unit, so the ceiling there is 1.0; a resource pair with
+                //    different unit masses gets the mass-honest ceiling
+                //    rather than a hard-coded one.
+                //
+                // The clamp is written BACK, not applied privately at the use
+                // site, so that the machine panel, the save file and the
+                // arithmetic below all quote the same number. A ratio the
+                // simulation refuses to honour must not keep being displayed.
+                if (!(refinery.conversionRatio > 0.0)) // false for NaN too
+                {
+                    refinery.conversionRatio = 0.0;
+                    return; // inert, not a divide-by-zero
+                }
+                const f64 inputMassPerUnit =
+                    res::definition(refinery.input).massPerUnitKg;
+                const f64 outputMassPerUnit =
+                    res::definition(refinery.output).massPerUnitKg;
+                if (outputMassPerUnit > 0.0)
+                {
+                    refinery.conversionRatio =
+                        std::min(refinery.conversionRatio,
+                                 inputMassPerUnit / outputMassPerUnit);
+                }
+                const f64 ratio = refinery.conversionRatio;
+
                 const f64 wantedInput = refinery.inputUnitsPerSecond * dt;
                 const f64 availableInput =
                     std::min(wantedInput, inventoryCount(inventory, refinery.input));
@@ -36,7 +111,7 @@ namespace sw::factory
                 }
 
                 // Reserve output space FIRST: never destroy matter.
-                const f64 wantedOutput = availableInput * refinery.conversionRatio;
+                const f64 wantedOutput = availableInput * ratio;
                 const f64 acceptedOutput =
                     inventoryAdd(inventory, refinery.output, wantedOutput);
                 if (acceptedOutput <= 0.0)
@@ -44,7 +119,7 @@ namespace sw::factory
                     return; // output full: stall
                 }
 
-                const f64 consumedInput = acceptedOutput / refinery.conversionRatio;
+                const f64 consumedInput = acceptedOutput / ratio;
                 inventoryRemove(inventory, refinery.input, consumedInput);
                 refinery.totalRefined += acceptedOutput;
             });
@@ -194,9 +269,41 @@ namespace sw::factory
                     // vertical (see placeBuilding), so this IS the local
                     // vertical — no need to go back to the anchor for it.
                     const Vec3 worldUp = transform.rotation * Vec3{0.0f, 1.0f, 0.0f};
+
+                    // WHICH WAY THE GROUND UNDER THE PANEL IS TURNING, so the
+                    // sunlight can be averaged over the tick rather than
+                    // sampled at the instant it starts (see
+                    // averageSolarFactor — this is the F3 bug that made a
+                    // warping player's base generate a whole day of power
+                    // from a moment that happened to be noon).
+                    //
+                    // The route is site -> body because that is the only
+                    // statement of what a building is STANDING ON that the
+                    // factory layer has; a hall with no site, or a site on no
+                    // body, is treated as not turning, which is exactly right
+                    // for an orbital platform and harmless for anything else.
+                    WorldVec3 spinCentre{0.0};
+                    WorldVec3 spin{0.0};
+                    if (const auto* site =
+                            world.tryGetComponent<SiteComponent>(building.site))
+                    {
+                        if (const auto* body =
+                                world.tryGetComponent<phys::GravitySourceComponent>(
+                                    site->body))
+                        {
+                            spin = body->angularVelocity;
+                            if (const auto* centre =
+                                    world.tryGetComponent<TransformComponent>(site->body))
+                            {
+                                spinCentre = centre->position;
+                            }
+                        }
+                    }
+
                     power.actualProducedKw =
                         power.producedKw *
-                        solarFactor(transform.position, worldUp, starPosition, occluders);
+                        averageSolarFactor(transform.position, worldUp, starPosition,
+                                           occluders, spinCentre, spin, dt);
                 }
                 grid.producedKw += power.actualProducedKw;
 
@@ -403,8 +510,25 @@ namespace sw::factory
                     }
                     netVolumePerSecond += output.unitsPerSecond *
                                           res::definition(output.resource).volumePerUnitM3;
-                    // Each product also needs somewhere to sit.
-                    if (inventoryFreeUnits(inventory, output.resource) <= 0.0)
+                    // Each product also needs a SLOT to sit in — and that is
+                    // the only per-product question left, because the volume
+                    // is the net one below.
+                    //
+                    // Asking `inventoryFreeUnits` here instead was a deadlock,
+                    // and a nasty one because it looked like caution. It
+                    // measures the room that exists NOW, before the inputs
+                    // are removed; a smelter whose bin has filled to the brim
+                    // with its own ore therefore has zero free units of iron,
+                    // reports BLOCKED and stops — forever, because the only
+                    // thing that could ever free that volume is the smelt it
+                    // just refused to run. Ore packs at 2,500 kg/m^3 and iron
+                    // at 7,870, so the smelt would have freed volume rather
+                    // than needing any: the machine starved to death in front
+                    // of a full larder. The net-volume test below asks the
+                    // question that actually matters — will the products fit
+                    // in what is free PLUS what the feedstock vacates — and a
+                    // slot is a separate, genuinely current fact.
+                    if (!inventoryHasSlotFor(inventory, output.resource))
                     {
                         fraction = 0.0;
                         blocked = true;
@@ -506,57 +630,111 @@ namespace sw::factory
                     return;
                 }
 
-                // ROOM FOR THE FINISHED HULL, asked before a gram of metal is
-                // worked. A hall that spent twelve tonnes of iron and then
-                // found nowhere to put the rocket would have destroyed it.
-                if (inventoryFreeUnits(inventory, res::Resource::Vehicle) < 1.0)
+                // THE TICK'S WHOLE BUDGET, spent until it is gone.
+                //
+                // This used to work one hull per call and drop whatever was
+                // left over, which is a bug the Automation lane's bulk
+                // catch-up turns into a disaster rather than a rounding
+                // error: at warp the lane hands this system a single tick
+                // standing for eight hours.
+                //
+                // MEASURED, on a 40 kg/s hall with a 12-tonne bill (9,600 kg
+                // of iron and 2,400 of copper) handed one 28,800 s tick: the
+                // budget is 1,152,000 kg, which is ninety-six airframes. The
+                // old code finished ONE, spent 12,000 kg, and dropped the
+                // other 1,140,000 kg of budget on the floor — the factory
+                // ran at 1/96th speed for exactly as long as the player
+                // warped, which is the one thing warp is supposed to be free
+                // of. With the loop, that single tick finishes 96 hulls and
+                // spends 921,600.000000 kg of iron, which is what 28,800
+                // ticks of one second spend, to the last printed digit.
+                //
+                // So it is a loop, and the loop's exit conditions are the
+                // real ones: the budget runs out, the metal runs out, the
+                // bin has no room for another crate, or the apron is full.
+                // Everything below the loop is per-hull and unchanged; what
+                // changed is that it may happen more than once.
+                f64 budget = assembly.buildRateKgPerSecond * dt * satisfaction;
+                if (!(budget > 0.0)) // false for NaN, which must not reach the cast
                 {
-                    assembly.state = RecipeStateComponent::kBlocked;
-                    return;
+                    budget = 0.0;
                 }
 
-                const f64 remainingIron =
-                    std::max(0.0, assembly.ironNeededKg - assembly.ironPaidKg);
-                const f64 remainingCopper =
-                    std::max(0.0, assembly.copperNeededKg - assembly.copperPaidKg);
-                const f64 remaining = remainingIron + remainingCopper;
+                // HOW MANY HULLS THIS TICK COULD POSSIBLY FINISH — the bound
+                // that makes the loop provably terminate. The metal that can
+                // be worked is what is already on the slipway (strictly less
+                // than one bill) plus this tick's budget, so one bill's worth
+                // of budget is one extra hull and the carry-over is the +1.
+                // Without a bound, a degenerate order whose bill is smaller
+                // than the completion tolerance would finish for free, reset
+                // the slipway and finish again, and the tick would never end.
+                constexpr f64 kGram = 1.0e-3;
+                const f64 hullsFromBudget =
+                    std::floor(budget / std::max(needed, 2.0 * kGram));
+                const u32 hullLimit =
+                    static_cast<u32>(std::min(hullsFromBudget, 1.0e6)) + 1u;
 
                 bool starved = false;
-                if (remaining > 1.0e-9)
+                bool blocked = false;
+                u32 finished = 0;
+                while (finished < hullLimit)
                 {
-                    // Both metals at once, in the proportion of what is LEFT
-                    // to pay. Pouring the iron first would let a hall with no
-                    // copper drain every smelter in the base and then stop
-                    // one gram short, which reads as a supply fault where
-                    // there is none.
-                    const f64 budget =
-                        std::max(0.0, assembly.buildRateKgPerSecond) * dt * satisfaction;
-                    const f64 wanted = std::min(budget, remaining);
-                    const f64 wantIron = wanted * (remainingIron / remaining);
-                    const f64 wantCopper = wanted - wantIron;
+                    // ROOM FOR THE FINISHED HULL, asked before a gram of
+                    // metal is worked. A hall that spent twelve tonnes of
+                    // iron and then found nowhere to put the rocket would
+                    // have destroyed it.
+                    if (inventoryFreeUnits(inventory, res::Resource::Vehicle) < 1.0)
+                    {
+                        blocked = true;
+                        break;
+                    }
 
-                    const f64 gotIron =
-                        inventoryRemove(inventory, res::Resource::Iron, wantIron);
-                    const f64 gotCopper =
-                        inventoryRemove(inventory, res::Resource::Copper, wantCopper);
-                    assembly.ironPaidKg += gotIron;
-                    assembly.copperPaidKg += gotCopper;
-                    starved = (gotIron + 1.0e-9 < wantIron) ||
-                              (gotCopper + 1.0e-9 < wantCopper);
-                }
+                    const f64 remainingIron =
+                        std::max(0.0, assembly.ironNeededKg - assembly.ironPaidKg);
+                    const f64 remainingCopper =
+                        std::max(0.0, assembly.copperNeededKg - assembly.copperPaidKg);
+                    const f64 remaining = remainingIron + remainingCopper;
 
-                // ---- is it finished? -------------------------------------
-                constexpr f64 kGram = 1.0e-3;
-                if (assembly.ironPaidKg + kGram >= assembly.ironNeededKg &&
-                    assembly.copperPaidKg + kGram >= assembly.copperNeededKg)
-                {
+                    if (remaining > 1.0e-9)
+                    {
+                        if (budget <= 0.0)
+                        {
+                            break; // out of tick, not out of anything real
+                        }
+                        // Both metals at once, in the proportion of what is
+                        // LEFT to pay. Pouring the iron first would let a
+                        // hall with no copper drain every smelter in the base
+                        // and then stop one gram short, which reads as a
+                        // supply fault where there is none.
+                        const f64 wanted = std::min(budget, remaining);
+                        const f64 wantIron = wanted * (remainingIron / remaining);
+                        const f64 wantCopper = wanted - wantIron;
+
+                        const f64 gotIron =
+                            inventoryRemove(inventory, res::Resource::Iron, wantIron);
+                        const f64 gotCopper =
+                            inventoryRemove(inventory, res::Resource::Copper, wantCopper);
+                        assembly.ironPaidKg += gotIron;
+                        assembly.copperPaidKg += gotCopper;
+                        budget -= gotIron + gotCopper;
+                        starved = (gotIron + 1.0e-9 < wantIron) ||
+                                  (gotCopper + 1.0e-9 < wantCopper);
+                    }
+
+                    // ---- is it finished? ---------------------------------
+                    if (assembly.ironPaidKg + kGram < assembly.ironNeededKg ||
+                        assembly.copperPaidKg + kGram < assembly.copperNeededKg)
+                    {
+                        break; // still on the slipway: starved, or out of tick
+                    }
+
                     auto* queue = world.tryGetComponent<VehicleQueueComponent>(entity);
                     if (queue != nullptr && queue->count >= kVehicleQueueSlots)
                     {
                         // Eight unclaimed hulls on the apron: stop, rather
                         // than ship a rocket whose design nobody recorded.
-                        assembly.state = RecipeStateComponent::kBlocked;
-                        return;
+                        blocked = true;
+                        break;
                     }
                     const f64 crated =
                         inventoryAdd(inventory, res::Resource::Vehicle, 1.0);
@@ -566,8 +744,8 @@ namespace sw::factory
                         // but if it ever does, the metal stays on the
                         // slipway rather than evaporating.
                         inventoryRemove(inventory, res::Resource::Vehicle, crated);
-                        assembly.state = RecipeStateComponent::kBlocked;
-                        return;
+                        blocked = true;
+                        break;
                     }
                     if (queue != nullptr)
                     {
@@ -576,12 +754,17 @@ namespace sw::factory
                     assembly.ironPaidKg = 0.0;
                     assembly.copperPaidKg = 0.0;
                     ++assembly.completed;
-                    assembly.state = RecipeStateComponent::kRunning;
-                    return;
+                    ++finished;
                 }
 
-                assembly.state = starved ? RecipeStateComponent::kStarved
-                                         : RecipeStateComponent::kRunning;
+                // BLOCKED outranks STARVED, and both outrank RUNNING: a hall
+                // that finished four hulls and then ran out of somewhere to
+                // put the fifth is blocked NOW, and that is what the panel
+                // must say. Reporting the four it managed would send the
+                // player looking somewhere else entirely.
+                assembly.state = blocked  ? RecipeStateComponent::kBlocked
+                                 : starved ? RecipeStateComponent::kStarved
+                                           : RecipeStateComponent::kRunning;
             });
     }
 

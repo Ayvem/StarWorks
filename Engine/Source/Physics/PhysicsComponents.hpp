@@ -209,11 +209,64 @@ namespace sw::phys
         // WHICH CORNERS ARE TOUCHING. A tolerance and not an equality, both
         // because a body resting flat has four corners at one height only in
         // exact arithmetic, and because the hull is a box standing in for a
-        // shape that is not one. It scales with the body: what means
-        // "resting flat" on a 2 m capsule is a rounding error on a 20 m
-        // booster.
+        // shape that is not one.
+        //
+        // AND IT IS THE FOOTPRINT IT SCALES WITH, not the diagonal. What the
+        // tolerance has to cover is the height spread ACROSS THE FACE THE
+        // BODY IS STANDING ON — that face's width times the sine of its lean
+        // — because the whole face is what holds the body up and a rule that
+        // sees only the lowest edge of it has a support polygon of zero
+        // width, which means a NONZERO answer at every lean, in either
+        // direction, for a body that is standing perfectly safely. The width
+        // across the ground is therefore the right yardstick, and the box
+        // diagonal is the wrong one twice over: on a tall body it is driven
+        // by the LENGTH, which nothing rests on, and being an absolute length
+        // it does not scale — the same shape twice the size needs twice the
+        // slop and got the same 0.5 m.
+        //
+        // The cap is what keeps the slop from swallowing the hull it is
+        // measuring: half the hull's own height above its lowest corner. It
+        // is not a taste judgement, it is a proof. Write d_k for the height
+        // spread each axis contributes, 2 * halfExtent_k * |up_k|; every
+        // corner sits at a subset sum of those three above the lowest one,
+        // the face we want is the one perpendicular to the LARGEST d, and
+        // every corner NOT on it is at least d_max up. The cap is exactly
+        // (d_x + d_y + d_z) / 4 <= (3/4) d_max, so the far face can never
+        // join the contact set and `support` can never drift to the centroid
+        // of the solid. On a 16 m x 16 m deck 0.8 m thick that is the whole
+        // ballgame: the uncapped rule gave 0.9057 m of slop against 0.8 m of
+        // hull, and MEASURED, the deck answered EXACTLY 0 at every lean from
+        // 0 to 3.00 deg — not because the support had become the box centre,
+        // but because SIX corners were in the set, their centroid sat
+        // 2.667 m from the hull centre toward the low edge, and a 2.665 m
+        // lean against a 10.670 m reach took the `overhang <= 0` early-out
+        // every time. At 3.25 deg the set fell to the four corners of the
+        // low edge face, reach collapsed from 10.670 m to 0.0227 m, and the
+        // answer jumped to 0.9133 rad/s^2. Capped, the deck leaning 1 deg
+        // gets 0.9164537 rad/s^2 and the curve is continuous from there out.
+        //
+        // What the two together buy, MEASURED by bisecting for the first lean
+        // that is not exactly 0.0: it lands within 1e-5 deg of the true
+        // atan(halfWidth/comHeight) threshold for every box at least sqrt(3)
+        // times taller than it is wide — which is the condition
+        // d_max >= 3 * (the other two) written out — and it does so at any
+        // SIZE, a 2.4 m-wide hull and a 4 m-wide one of the same proportions
+        // giving the same threshold to five decimals. The 12 m test rocket
+        // and a 20 m one both come out at 11.309942 deg against a true
+        // 11.309932, where the old absolute cap left the 20 m one answering
+        // 0.0417 rad/s^2 at 8 deg of perfectly stable lean. At exactly
+        // sqrt(3) the margin is 2.4e-4 deg; squatter than that the cap binds
+        // first and the body gets a small RESTORING answer somewhat before
+        // its true threshold (a 1:1 cube at 18.43 deg against a true 45) —
+        // it settles flat, which is the right direction; it just does not get
+        // there by standing perfectly still.
+        const f32 verticalHalf = glm::dot(hull.centre, localUp) - lowest;
+        const Vec3 axisUp = glm::abs(localUp);
+        const Vec3 acrossGround =
+            glm::sqrt(glm::max(Vec3(0.0f), Vec3(1.0f) - axisUp * axisUp));
+        const f32 footprint = 2.0f * glm::dot(hull.halfExtents, acrossGround);
         const f32 tolerance =
-            std::max(0.05f, 0.04f * glm::length(hull.halfExtents) * 2.0f);
+            std::min(std::max(0.05f, 0.25f * footprint), 0.5f * verticalHalf);
         Vec3 support{0.0f};
         u32 touching = 0;
         for (int i = 0; i < 8; ++i)
@@ -259,9 +312,34 @@ namespace sw::phys
         // Past the edge: the edge is the pivot, the overhang is the lever.
         const Vec3 weight = -localUp * static_cast<f32>(massKg * gravity);
         const Vec3 torque = glm::cross(direction * overhang, weight);
-        return Vec3(torque.x / std::max(inertia.x, 1.0f),
-                    torque.y / std::max(inertia.y, 1.0f),
-                    torque.z / std::max(inertia.z, 1.0f));
+
+        // ...AND THE INERTIA IS ABOUT THE PIVOT, NOT ABOUT THE CENTRE OF
+        // MASS. `inertia` is the body's own tensor about its own centre,
+        // which is the right number for a body turning in free flight and
+        // the wrong one for a body hinged on the edge of its foot. The body
+        // is not spinning in place: every gram of it is swinging on an arm
+        // that reaches from the ground edge up to wherever it sits, and the
+        // resistance to that is Huygens-Steiner, I_pivot = I_com + m d^2,
+        // with d the distance from the centre of mass to the pivot EDGE —
+        // the overhang across the ground and the height above it.
+        //
+        // Leaving it out is not a small error, because d is the size of the
+        // vehicle and the vehicle is mostly tall. MEASURED on the 12 m test
+        // rocket (2.4 m across, 4 t, centre of mass at its middle) leaning
+        // 20 deg: it stands 6.048580 m above the ground and hangs 0.924490 m
+        // outside the tail edge, so the arm to that edge is 6.118824 m and
+        // m*d^2 is 1.4976e5 kg m^2 against an I_com of 4.992e4 — the true
+        // resistance is 4.00x what was being used, and it is 4.00x across
+        // the whole 12-30 deg range. The acceleration at 20 deg is 0.181675
+        // rad/s^2 where it used to be 0.726702, and through the ground system
+        // itself a rocket left leaning 12 deg now takes 14.98 s to end up on
+        // its side instead of 5.46 s. It used to slam over.
+        const f32 height = std::max(0.0f, glm::dot(centreOfMass, localUp) - lowest);
+        const f32 pivotArmSq = overhang * overhang + height * height;
+        const f32 huygens = static_cast<f32>(massKg) * pivotArmSq;
+        return Vec3(torque.x / (std::max(inertia.x, 1.0f) + huygens),
+                    torque.y / (std::max(inertia.y, 1.0f) + huygens),
+                    torque.z / (std::max(inertia.z, 1.0f) + huygens));
     }
 
     /// v2 (hierarchical systems): the orbit is PRIMARY-RELATIVE and the

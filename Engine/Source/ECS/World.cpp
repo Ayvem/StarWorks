@@ -1,5 +1,7 @@
 #include "ECS/World.hpp"
 
+#include "Core/Error.hpp"
+
 namespace sw::ecs
 {
     World::World()
@@ -178,6 +180,17 @@ namespace sw::ecs
     Entity World::mirrorEntity(Entity entity)
     {
         SW_ASSERT(!entity.isNull(), "mirrorEntity on a null handle");
+        if (entity.index > kMaxMirrorIndex)
+        {
+            // Not an assert: the caller is the network decoder and the value
+            // came off a wire anyone can write to, so this is a hostile input
+            // to be refused, not a bug in our own code to be trapped. Throwing
+            // sw::Exception puts it in the same bucket as every other
+            // malformed-snapshot rejection, which the session already drops
+            // the datagram for.
+            SW_THROW("mirrorEntity asked for index {}, past the {} a mirror will grow to",
+                     entity.index, kMaxMirrorIndex);
+        }
         if (entity.index >= m_records.size())
         {
             m_records.resize(static_cast<usize>(entity.index) + 1);

@@ -284,3 +284,84 @@ SW_TEST(SurfaceAnchorCoRotatesAndSurvivesSnapshot)
     SW_CHECK(glm::length(loaded.getComponent<TransformComponent>(base).position -
                          expectedAfter) < 1.0e-3);
 }
+
+// ----------------------------------------------------------------------------
+// A component in the world but not in the schema
+// ----------------------------------------------------------------------------
+
+SW_TEST(AnUnregisteredComponentIsNamedBeforeItCanBreakASave)
+{
+    // THE BUG THIS EXISTS FOR. AssemblyComponent and VehicleQueueComponent
+    // were added to every assembly hall — so to the starting outpost, on the
+    // first frame of a new game — and neither was registered in the game's
+    // save schema. saveWorld throws on the first column it cannot name and
+    // writes nothing, so NO save could be made from the very first minute,
+    // and the only evidence was one "Save failed" line in the log.
+    //
+    // The cure is not a bigger try/catch, it is asking the question EARLY.
+    ecs::World world;
+    save::Schema schema = makeTestSchema();
+
+    // A clean world first: the check must be silent when there is nothing
+    // wrong, or nobody will believe it when there is.
+    const ecs::Entity known = world.createEntity();
+    world.addComponent(known, TransformComponent{});
+    world.addComponent(known, factory::InventoryComponent{});
+    SW_CHECK(save::unsaveableComponents(world, schema).empty());
+    {
+        ser::BinaryWriter writer;
+        save::saveWorld(world, schema, writer);
+        SW_CHECK(writer.size() > 0);
+    }
+
+    // Now the situation the game was in. VehicleQueueComponent stands in for
+    // "a real component someone forgot"; nothing about the test depends on
+    // which one it is.
+    const ecs::Entity hall = world.createEntity();
+    world.addComponent(hall, TransformComponent{});
+    world.addComponent(hall, factory::VehicleQueueComponent{});
+
+    const std::vector<std::string> missing = save::unsaveableComponents(world, schema);
+    // EXACTLY ONE, and it must not sweep up the components that ARE
+    // registered on the same archetype — a report that names everything
+    // names nothing.
+    SW_CHECK_EQ(missing.size(), usize{1});
+    if (!missing.empty())
+    {
+        SW_CHECK(missing[0].find(std::to_string(sizeof(factory::VehicleQueueComponent))) !=
+                 std::string::npos);
+    }
+
+    // ...and it is the same condition that stops the save, not a separate
+    // opinion about it. If these two ever disagree the early check is
+    // worthless.
+    bool threw = false;
+    try
+    {
+        ser::BinaryWriter writer;
+        save::saveWorld(world, schema, writer);
+    }
+    catch (const Exception&)
+    {
+        threw = true;
+    }
+    SW_CHECK(threw);
+
+    // Registering it makes both agree again.
+    schema.registerComponent<factory::VehicleQueueComponent>("factory.VehicleQueue", 1);
+    SW_CHECK(save::unsaveableComponents(world, schema).empty());
+    {
+        ser::BinaryWriter writer;
+        save::saveWorld(world, schema, writer);
+        SW_CHECK(writer.size() > 0);
+    }
+
+    // An EMPTY archetype is not a problem: saveWorld skips it, so reporting
+    // it would be a false alarm, and a false alarm teaches people to ignore
+    // the real one. Destroying the only holder leaves exactly that shape.
+    const ecs::Entity doomed = world.createEntity();
+    world.addComponent(doomed, factory::AssemblyComponent{});
+    SW_CHECK_EQ(save::unsaveableComponents(world, schema).size(), usize{1});
+    world.destroyEntity(doomed);
+    SW_CHECK(save::unsaveableComponents(world, schema).empty());
+}

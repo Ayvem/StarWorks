@@ -371,7 +371,14 @@ namespace sw::phys
             [time, &world](ecs::Entity, TransformComponent& transform,
                            PreviousTransformComponent& previous, OnRailsComponent& rails) {
                 WorldVec3 relative{};
-                kepler::evaluate(rails.orbit, time, relative);
+                if (!kepler::evaluate(rails.orbit, time, relative))
+                {
+                    // Not an orbit. Snapping the entity to the primary's
+                    // centre — which is what a zeroed relative position does
+                    // — is a worse answer than leaving the transform alone,
+                    // and it is the answer that used to be given silently.
+                    return;
+                }
 
                 // World position = primary's CURRENT position + the relative
                 // conic. The primary was moved earlier this tick by the
@@ -485,7 +492,15 @@ namespace sw::phys
                 // position and velocity, in the WORLD frame.
                 WorldVec3 relative{};
                 WorldVec3 relativeVelocity{};
-                kepler::evaluate(rails.orbit, time, relative, &relativeVelocity);
+                if (!kepler::evaluate(rails.orbit, time, relative, &relativeVelocity))
+                {
+                    // The orbit is degenerate and has no velocity to give.
+                    // Converting anyway handed the new DynamicBody a NaN,
+                    // which the integrator then carried for ever and which
+                    // showed up as a vessel that had silently left the world.
+                    // Leaving the entity on rails costs one missed hand-off.
+                    return;
+                }
 
                 WorldVec3 position = relative;
                 WorldVec3 velocity = relativeVelocity;

@@ -453,7 +453,7 @@ The join panel distinguishes the two failures, because the cure for one is usele
 
 ## Running the tests
 
-190 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
+223 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
 
 ```powershell
 ctest --test-dir build/windows -C Debug --output-on-failure   # Windows
@@ -486,7 +486,9 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 **Multiplayer (`F3`):** the panel on the right. Type an address into the field (click it, then digits, `.` and `:`), `HOST` or `JOIN`, and the pilot list shows everyone in the session **with the gap between their clock and yours** — because a warp here is personal, and two players can legitimately be hours apart. `SYNC` on anyone ahead of you warps you forward until you reach their instant, bypassing the altitude cap (up to ×10,000,000) but not the orbit-or-ground rule. Measured: a three-hour gap closes in 46 real seconds, a year in 110. `HOST` prints the address the other machine should type — read off the routing table, not guessed — and asks Windows once for the firewall rule that lets that machine through (see *Playing over the local network*).
 
-**Files:** `F5` saves, `F9` loads, `Esc` quits.
+**Menus:** the game boots into a **loading bar** that measures real work — seven named steps, one per frame — then a **main menu**: NEW GAME, LOAD GAME, SETTINGS, QUIT. `Esc` in flight opens that same menu rather than quitting (it used to close the window on the spot, with no chance to save); `Esc` again backs out. **SAVE GAME** writes a *named* save into `Saves\<name>.sav` — type a name, or keep the suggested one. `F5`/`F9` are still the quicksave pair, unchanged, into `starworks.sav`. The load list shows every save newest first, with its age and size.
+
+**Files:** `F5` quicksaves, `F9` quickloads, `Esc` opens the menu.
 
 ## Useful flags
 

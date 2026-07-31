@@ -63,6 +63,21 @@ namespace sw::save
         std::vector<Entry> m_entries;
     };
 
+    /// Components present in the world that the schema cannot name, as
+    /// "runtime id N (M bytes)" — empty when the world is saveable.
+    ///
+    /// WHY THIS IS SEPARATE FROM saveWorld. A component added to a live
+    /// entity but never registered does not corrupt a save; it makes saving
+    /// IMPOSSIBLE, because saveWorld throws on the first column it cannot
+    /// name and writes no file at all. Discovering that when the player
+    /// presses F5, hours in, is the worst possible moment — and the log line
+    /// they get says only that the save failed.
+    ///
+    /// So the same question can be asked in advance, cheaply, of a world
+    /// that has just been built. See StarWorksGame's startup check.
+    [[nodiscard]] std::vector<std::string> unsaveableComponents(const ecs::World& world,
+                                                               const Schema& schema);
+
     /// Serializes every entity/component of the world (columns memcpy'd).
     void saveWorld(const ecs::World& world, const Schema& schema, ser::BinaryWriter& writer);
 

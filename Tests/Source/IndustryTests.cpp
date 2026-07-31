@@ -2,7 +2,7 @@
 // IndustryTests.cpp — the F1 contract: data-driven industry that cannot
 // cheat physics.
 //
-// Three promises are pinned here.
+// Five promises are pinned here.
 //
 //   1. MATTER IS CONSERVED. Every recipe in the catalogue — built-in or
 //      loaded from Assets/Recipes — is weighed: outputs may never exceed
@@ -14,6 +14,15 @@
 //   3. THE EXECUTOR IS WARP-EXACT. One tick of an hour and three thousand
 //      ticks of 1.2 s must produce the same goods to the unit, because the
 //      Automation lane will hand it either one.
+//   4. SO IS EVERY OTHER MACHINE. The assembly hall and the solar grid are
+//      held to the same standard as the executor, on the same intervals,
+//      because "warp-exact" is a property of the SIMULATION and not of one
+//      system that happened to get tested. Both of them failed it, and both
+//      failures were invisible to a test that only ever called update(1.0f).
+//   5. A FULL BIN IS NOT A DEAD FACTORY. Room for a machine's products is
+//      measured against the bin as it will be after the feedstock leaves it,
+//      never as it is before — otherwise a smelter can starve in front of a
+//      larder full of the ore it eats.
 // ============================================================================
 
 #include "TestFramework.hpp"
@@ -23,7 +32,9 @@
 #include <Factory/FactorySystems.hpp>
 #include <Factory/Recipes.hpp>
 #include <Factory/Conveyor.hpp>
+#include <Physics/PhysicsComponents.hpp>
 #include <Planet/Deposits.hpp>
+#include <Scene/TransformComponents.hpp>
 
 #include <cmath>
 
@@ -48,6 +59,89 @@ namespace
         inventory.volumeCapacityM3 = volumeM3;
         world.addComponent(entity, inventory);
         return entity;
+    }
+
+    // ---- the warp-exactness fixtures ------------------------------------
+    constexpr sw::f64 kTerraRadius = 6.371e6;
+    constexpr sw::f64 kTerraSpin = 7.29e-5;   // rad/s: the game's Terra
+    constexpr sw::f64 kStarDistance = 1.496e11; // 1 AU
+
+    /// The local vertical of an equatorial site `seconds` into the rotation.
+    /// A +Y angular velocity turns +X toward -Z (right-handed), so this is
+    /// the SAME motion the grid infers from the body's spin — get the sign
+    /// wrong here and the test measures the integral of the wrong interval.
+    sw::WorldVec3 siteUpAt(sw::f64 seconds)
+    {
+        const sw::f64 angle = kTerraSpin * seconds;
+        return sw::WorldVec3{std::cos(angle), 0.0, -std::sin(angle)};
+    }
+
+    /// A rotation standing the model's +Y on `up`, built exactly the way
+    /// placeBuilding does, because the grid reads the panel's world up out
+    /// of it.
+    sw::Quat standUp(const sw::Vec3& up)
+    {
+        const sw::Vec3 y{0.0f, 1.0f, 0.0f};
+        const sw::f32 d = glm::clamp(glm::dot(y, up), -1.0f, 1.0f);
+        if (d > 0.9999f)
+        {
+            return sw::Quat{1.0f, 0.0f, 0.0f, 0.0f};
+        }
+        if (d < -0.9999f)
+        {
+            return glm::angleAxis(3.14159265f, sw::Vec3{1.0f, 0.0f, 0.0f});
+        }
+        return glm::angleAxis(std::acos(d), glm::normalize(glm::cross(y, up)));
+    }
+
+    /// Kilowatt-hours a 180 kW panel on a turning Terra generates over
+    /// [start, start + spanSeconds], stepped at `dt`.
+    sw::f64 solarEnergyKwh(sw::f64 dt, sw::f64 spanSeconds, sw::f64 start)
+    {
+        sw::ecs::World world;
+
+        const sw::ecs::Entity body = world.createEntity();
+        world.addComponent(body, sw::TransformComponent{});
+        sw::phys::GravitySourceComponent gravity{};
+        gravity.bodyRadius = kTerraRadius;
+        gravity.angularVelocity = sw::WorldVec3{0.0, kTerraSpin, 0.0};
+        world.addComponent(body, gravity);
+
+        const sw::ecs::Entity hub = world.createEntity();
+        sw::factory::SiteComponent site{};
+        site.body = body;
+        world.addComponent(hub, site);
+
+        const sw::ecs::Entity panel = world.createEntity();
+        world.addComponent(panel, sw::TransformComponent{});
+        sw::factory::BuildingComponent building{};
+        building.category = sw::factory::BuildingCategory::Solar;
+        building.site = hub;
+        world.addComponent(panel, building);
+        sw::factory::PowerComponent power{};
+        power.producedKw = 180.0;
+        world.addComponent(panel, power);
+
+        const sw::ecs::Entity star = world.createEntity();
+        sw::TransformComponent starTransform{};
+        starTransform.position = sw::WorldVec3{kStarDistance, 0.0, 0.0};
+        world.addComponent(star, starTransform);
+        sw::factory::PowerGridSystem grid{star};
+
+        sw::f64 kilowattSeconds = 0.0;
+        const int steps = static_cast<int>(spanSeconds / dt);
+        for (int step = 0; step < steps; ++step)
+        {
+            const sw::WorldVec3 up = siteUpAt(start + static_cast<sw::f64>(step) * dt);
+            auto& transform = world.getComponent<sw::TransformComponent>(panel);
+            transform.position = up * kTerraRadius;
+            transform.rotation = standUp(sw::Vec3(up));
+            grid.update(world, static_cast<sw::f32>(dt));
+            kilowattSeconds +=
+                world.getComponent<sw::factory::PowerComponent>(panel).actualProducedKw *
+                dt;
+        }
+        return kilowattSeconds / 3600.0;
     }
 
     sw::Vec3 sampleDirection(sw::u32 i)
@@ -231,6 +325,81 @@ SW_TEST(ProductionIsExactUnderTimeWarp)
     SW_CHECK(std::abs(slow - bulk) < 1.0e-6);
     // Half density in the ground, half the yield: 1 u/s * 0.5 * 3600 s.
     SW_CHECK(std::abs(bulk - 1800.0) < 1.0e-6);
+}
+
+// A FULL BIN OF ITS OWN ORE MUST NOT DEADLOCK A SMELTER.
+//
+// This is the deadlock that "reserve the room first" quietly created. Room
+// was measured with `inventoryFreeUnits` BEFORE the inputs were removed, so a
+// smelter whose bin had filled to the brim with the ore it is meant to eat
+// found zero free units of iron, declared itself BLOCKED, and stopped — for
+// good, because the only event that could ever free that volume was the smelt
+// it had just refused to run. It is the cruellest possible failure: the
+// machine starves in front of a full larder, and the player sees a mine, a
+// belt and a smelter all working correctly and a factory that has stopped.
+//
+// The physics says it can never happen. Ore packs at 2,500 kg/m^3 and iron at
+// 7,870, so a smelt VACATES volume; the executor removes the inputs before it
+// adds the outputs, so what they vacate is room the products may use. Space
+// therefore has to be measured against the bin as it will be AFTER the
+// feedstock leaves it.
+SW_TEST(ASmelterFullOfItsOwnOreSmeltsInsteadOfDeadlocking)
+{
+    sw::ecs::World world;
+    const sw::ecs::Entity smelter = makeMachine(
+        world, sw::factory::BuildingCategory::Refinery, sw::factory::kRecipeSmeltIron,
+        1.0);
+    auto& inventory = world.getComponent<sw::factory::InventoryComponent>(smelter);
+    // Filled to the last cubic centimetre: 1 m^3 of ore is 2,500 units.
+    const sw::f64 filled =
+        sw::factory::inventoryAdd(inventory, sw::res::Resource::IronOre, 1.0e9);
+    SW_CHECK(std::abs(filled - 2500.0) < 1.0e-6);
+    SW_CHECK(sw::factory::inventoryFreeUnits(inventory, sw::res::Resource::Iron) == 0.0);
+
+    sw::factory::ProductionSystem production;
+    production.update(world, 1.0f);
+
+    const auto& state = world.getComponent<sw::factory::RecipeStateComponent>(smelter);
+    const auto& after = world.getComponent<sw::factory::InventoryComponent>(smelter);
+    // SmeltIron eats 3 units of ore a second and makes 1.8 of iron.
+    SW_CHECK_EQ(state.state, sw::factory::RecipeStateComponent::kRunning);
+    SW_CHECK(std::abs(sw::factory::inventoryCount(after, sw::res::Resource::IronOre) -
+                      2497.0) < 1.0e-9);
+    SW_CHECK(std::abs(sw::factory::inventoryCount(after, sw::res::Resource::Iron) - 1.8) <
+             1.0e-9);
+    // ...and it has made ROOM by running: 3 units of ore at 1/2500 m^3 freed
+    // 0.00120 m^3 and 1.8 of iron at 1/7870 took 0.000229 back.
+    SW_CHECK(sw::factory::inventoryVolume(after) < 1.0);
+    SW_CHECK(std::abs(sw::factory::inventoryVolume(after) - 0.99903) < 1.0e-5);
+
+    // It keeps running, tick after tick, rather than jamming a second later.
+    for (int tick = 0; tick < 100; ++tick)
+    {
+        production.update(world, 1.0f);
+    }
+    SW_CHECK_EQ(world.getComponent<sw::factory::RecipeStateComponent>(smelter).state,
+                sw::factory::RecipeStateComponent::kRunning);
+
+    // A machine with no SLOT for its product is a different and real jam, and
+    // must still be reported: eight distinct goods already stacked, and iron
+    // is not one of them.
+    const sw::ecs::Entity crowded = makeMachine(
+        world, sw::factory::BuildingCategory::Refinery, sw::factory::kRecipeSmeltIron,
+        1000.0);
+    auto& packed = world.getComponent<sw::factory::InventoryComponent>(crowded);
+    const sw::res::Resource clutter[] = {
+        sw::res::Resource::IronOre,  sw::res::Resource::CopperOre,
+        sw::res::Resource::WaterIce, sw::res::Resource::Copper,
+        sw::res::Resource::Water,    sw::res::Resource::Hydrogen,
+        sw::res::Resource::Oxygen,   sw::res::Resource::Fuel};
+    for (const sw::res::Resource resource : clutter)
+    {
+        SW_CHECK(sw::factory::inventoryAdd(packed, resource, 10.0) > 0.0);
+    }
+    production.update(world, 1.0f);
+    SW_CHECK_EQ(world.getComponent<sw::factory::RecipeStateComponent>(crowded).state,
+                sw::factory::RecipeStateComponent::kBlocked);
+    SW_CHECK(sw::factory::inventoryCount(packed, sw::res::Resource::Iron) == 0.0);
 }
 
 SW_TEST(ProductionStopsInsteadOfDestroyingMatter)
@@ -613,4 +782,256 @@ SW_TEST(LinkThroughputIsTheAverageItActuallyMoves)
     SW_CHECK(sw::factory::linkFlow(
                  world.getComponent<sw::factory::ItemLinkComponent>(depot),
                  sw::res::Resource::IronOre) < 1.0e-3);
+}
+
+// ============================================================================
+// WARP EXACTNESS, THE PART F5's OWN TESTS DID NOT COVER.
+//
+// Every existing assembly-hall test drives the system at update(1.0f) and
+// then asks whether the books balance. They do — and they did while the hall
+// was throwing away 99% of every warped tick, because a ledger that balances
+// says nothing at all about a budget that was never spent. The hole is
+// exactly the shape of the bug: nobody ever asked the hall to do a WHOLE
+// interval in one call and compared it against the same interval done a
+// thousand times.
+//
+// MEASURED, on this build: a 40 kg/s hall with a 12-tonne bill (9,600 kg of
+// iron and 2,400 of copper) handed one tick standing for eight hours has a
+// budget of 1,152,000 kg — ninety-six airframes. Before the fix that tick
+// produced ONE and dropped the other 1,140,000 kg of budget on the floor;
+// after it, the bulk tick and 28,800 one-second ticks both finish 96 hulls
+// and both spend 921,600.000000 kg of iron, to the last printed digit.
+// ============================================================================
+SW_TEST(TheAssemblyHallIsExactUnderTimeWarp)
+{
+    struct Run
+    {
+        sw::u32 completed;
+        sw::f64 crates;
+        sw::f64 ironLeft;
+        sw::f64 copperLeft;
+        sw::f64 slipwayIron;
+        sw::f64 slipwayCopper;
+    };
+
+    // Metal for two hundred hulls, and a bin with room for every crate, so
+    // that the only thing that can stop the hall is the clock.
+    constexpr sw::f64 kIronPerHull = 9600.0;
+    constexpr sw::f64 kCopperPerHull = 2400.0;
+    auto run = [](sw::f32 step, int ticks) {
+        sw::ecs::World world;
+        const sw::ecs::Entity hall = world.createEntity();
+
+        sw::factory::AssemblyComponent assembly{};
+        sw::factory::assemblyOrder(assembly, "HEAVY", kIronPerHull, kCopperPerHull);
+        assembly.buildRateKgPerSecond = 40.0;
+        world.addComponent(hall, assembly);
+        // No apron queue: its eight slots are a real limit and they are
+        // pinned in their own test below. Here the ONLY thing allowed to
+        // stop the hall is the clock.
+
+        sw::factory::InventoryComponent bin{};
+        bin.volumeCapacityM3 = 40000.0;
+        sw::factory::inventoryAdd(bin, sw::res::Resource::Iron, kIronPerHull * 200.0);
+        sw::factory::inventoryAdd(bin, sw::res::Resource::Copper, kCopperPerHull * 200.0);
+        world.addComponent(hall, bin);
+
+        sw::factory::AssemblySystem system;
+        for (int i = 0; i < ticks; ++i)
+        {
+            system.update(world, step);
+        }
+        const auto& built = world.getComponent<sw::factory::AssemblyComponent>(hall);
+        const auto& after = world.getComponent<sw::factory::InventoryComponent>(hall);
+        return Run{built.completed,
+                   sw::factory::inventoryCount(after, sw::res::Resource::Vehicle),
+                   sw::factory::inventoryCount(after, sw::res::Resource::Iron),
+                   sw::factory::inventoryCount(after, sw::res::Resource::Copper),
+                   built.ironPaidKg,
+                   built.copperPaidKg};
+    };
+
+    // THE SAME EIGHT HOURS, four different ways of being handed it. The step
+    // sizes are exact in binary so the comparison is about the executor and
+    // not about f32 rounding.
+    const Run bulk = run(28800.0f, 1);      // one warped tick: 8 h
+    const Run hourly = run(3600.0f, 8);     // eight hours
+    const Run minutely = run(60.0f, 480);   // eight hours of minutes
+    const Run realTime = run(1.0f, 28800);  // 1x, second by second
+
+    // 40 kg/s for 28,800 s is 1,152,000 kg of budget; a hull costs 12,000.
+    SW_CHECK_EQ(bulk.completed, 96u);
+    SW_CHECK_EQ(hourly.completed, bulk.completed);
+    SW_CHECK_EQ(minutely.completed, bulk.completed);
+    SW_CHECK_EQ(realTime.completed, bulk.completed);
+
+    // ...and the METAL agrees, not just the count. A hall that built the
+    // right number of rockets out of the wrong amount of iron would be a
+    // different bug wearing this one's clothes.
+    for (const Run& other : {hourly, minutely, realTime})
+    {
+        SW_CHECK(std::abs(other.crates - bulk.crates) < 1.0e-9);
+        SW_CHECK(std::abs(other.ironLeft - bulk.ironLeft) < 1.0e-6);
+        SW_CHECK(std::abs(other.copperLeft - bulk.copperLeft) < 1.0e-6);
+        SW_CHECK(std::abs(other.slipwayIron - bulk.slipwayIron) < 1.0e-6);
+        SW_CHECK(std::abs(other.slipwayCopper - bulk.slipwayCopper) < 1.0e-6);
+    }
+
+    // The ledger closes exactly: every kilogram missing from the bin is in a
+    // finished hull or still on the slipway.
+    const sw::f64 ironSpent = kIronPerHull * 200.0 - bulk.ironLeft;
+    const sw::f64 copperSpent = kCopperPerHull * 200.0 - bulk.copperLeft;
+    const sw::f64 hulls = static_cast<sw::f64>(bulk.completed);
+    SW_CHECK(std::abs(ironSpent - (kIronPerHull * hulls + bulk.slipwayIron)) < 1.0e-6);
+    SW_CHECK(std::abs(copperSpent - (kCopperPerHull * hulls + bulk.slipwayCopper)) <
+             1.0e-6);
+    SW_CHECK(std::abs(bulk.crates - hulls) < 1.0e-9); // one crate per hull, never a part
+}
+
+// A HALL DOES NOT BUILD PAST THE ROOM IT HAS, however long the tick is.
+//
+// The loop that spends a warped tick's whole budget is also the loop that
+// could spend it into a bin with nowhere to put the results, so the two
+// limits that stop it are pinned here at warp: the crate bin, and the eight
+// slots of the apron queue that carry the designs' names.
+SW_TEST(AWarpedTickStillStopsAtTheBinAndTheApron)
+{
+    constexpr sw::f64 kIronPerHull = 9600.0;
+    constexpr sw::f64 kCopperPerHull = 2400.0;
+
+    // A bin with room for exactly three crates (60 m^3 each) once the metal
+    // for a hundred hulls is in it, and no queue at all.
+    {
+        sw::ecs::World world;
+        const sw::ecs::Entity hall = world.createEntity();
+        sw::factory::AssemblyComponent assembly{};
+        sw::factory::assemblyOrder(assembly, "HEAVY", kIronPerHull, kCopperPerHull);
+        assembly.buildRateKgPerSecond = 40.0;
+        world.addComponent(hall, assembly);
+
+        sw::factory::InventoryComponent bin{};
+        bin.volumeCapacityM3 = 40000.0; // roomy while the metal goes in...
+        sw::factory::inventoryAdd(bin, sw::res::Resource::Iron, kIronPerHull * 100.0);
+        sw::factory::inventoryAdd(bin, sw::res::Resource::Copper, kCopperPerHull * 100.0);
+        // ...then exactly three 60 m^3 cradles' worth of spare room.
+        bin.volumeCapacityM3 = sw::factory::inventoryVolume(bin) + 3.0 * 60.0;
+        world.addComponent(hall, bin);
+
+        sw::factory::AssemblySystem system;
+        system.update(world, 28800.0f); // eight hours in one tick
+
+        const auto& built = world.getComponent<sw::factory::AssemblyComponent>(hall);
+        const auto& after = world.getComponent<sw::factory::InventoryComponent>(hall);
+        SW_CHECK_EQ(built.completed, 3u);
+        SW_CHECK(std::abs(sw::factory::inventoryCount(after, sw::res::Resource::Vehicle) -
+                          3.0) < 1.0e-9);
+        SW_CHECK_EQ(built.state, sw::factory::RecipeStateComponent::kBlocked);
+        // It stopped BEFORE working metal it had nowhere to put: the fourth
+        // hull's slipway is empty, not part paid.
+        SW_CHECK(built.ironPaidKg < 1.0e-9);
+        SW_CHECK(built.copperPaidKg < 1.0e-9);
+        // And the metal ledger still closes on the three it did build.
+        SW_CHECK(std::abs((kIronPerHull * 100.0 -
+                           sw::factory::inventoryCount(after, sw::res::Resource::Iron)) -
+                          kIronPerHull * 3.0) < 1.0e-6);
+    }
+
+    // The apron: eight unclaimed hulls is the limit, whatever the budget.
+    {
+        sw::ecs::World world;
+        const sw::ecs::Entity hall = world.createEntity();
+        sw::factory::AssemblyComponent assembly{};
+        sw::factory::assemblyOrder(assembly, "HEAVY", kIronPerHull, kCopperPerHull);
+        assembly.buildRateKgPerSecond = 40.0;
+        world.addComponent(hall, assembly);
+        world.addComponent(hall, sw::factory::VehicleQueueComponent{});
+
+        sw::factory::InventoryComponent bin{};
+        bin.volumeCapacityM3 = 40000.0;
+        sw::factory::inventoryAdd(bin, sw::res::Resource::Iron, kIronPerHull * 100.0);
+        sw::factory::inventoryAdd(bin, sw::res::Resource::Copper, kCopperPerHull * 100.0);
+        world.addComponent(hall, bin);
+
+        sw::factory::AssemblySystem system;
+        system.update(world, 28800.0f);
+
+        const auto& built = world.getComponent<sw::factory::AssemblyComponent>(hall);
+        const auto& queue = world.getComponent<sw::factory::VehicleQueueComponent>(hall);
+        SW_CHECK_EQ(built.completed, sw::factory::kVehicleQueueSlots);
+        SW_CHECK_EQ(queue.count, sw::factory::kVehicleQueueSlots);
+        SW_CHECK_EQ(built.state, sw::factory::RecipeStateComponent::kBlocked);
+        SW_CHECK(sw::factory::vehicleQueueFront(queue) == "HEAVY");
+    }
+}
+
+// ============================================================================
+// THE SUN IS INTEGRATED ACROSS THE TICK, NOT SAMPLED AT ITS START.
+//
+// A tick under warp is a DURATION, and `solarFactor` answers a question about
+// an INSTANT. Billing a whole tick's kilowatt-hours against one instant is
+// harmless at 1x — a 0.2 s tick is 0.05 degrees of Terra's rotation — and
+// catastrophic the moment the lane hands the grid eight hours or a day.
+//
+// MEASURED, on this build, for a 180 kW panel on an equatorial Terra site
+// (omega = 7.29e-5 rad/s), over one 86,400 s span:
+//
+//   truth (1 s ticks, any start)                 1382.24 kWh at local noon
+//   ONE 86,400 s tick, sampled at local noon     4320.00 kWh   (+212.5%)
+//   ONE 86,400 s tick, sampled at local midnight    0.00 kWh   (-100.0%)
+//   ONE 86,400 s tick, INTEGRATED                1382.22 kWh   (-0.0013%)
+//
+// Worst case over tick sizes of 600 s, 3600 s, 14,400 s, 28,800 s and
+// 86,400 s crossed with seven start phases spread around the day: 0.0017%
+// integrated, against 212.5% sampled. Even a whole YEAR in a single tick
+// (3.1536e7 s) lands within 0.026%.
+//
+// The mean over an interval is what makes this additive, and additivity is
+// the whole point: the mean over [a, c] is the duration-weighted mean over
+// [a, b] and [b, c], so splitting a tick cannot change the energy.
+// ============================================================================
+SW_TEST(SolarPowerIsIntegratedAcrossTheTickNotSampledAtItsStart)
+{
+    constexpr sw::f64 kDay = 86400.0; // an exact multiple of every step below
+
+    // Seven starting phases around the local day, so no single lucky
+    // alignment can carry the test.
+    for (int phase = 0; phase < 7; ++phase)
+    {
+        const sw::f64 start = kDay * static_cast<sw::f64>(phase) / 7.0;
+        const sw::f64 truth = solarEnergyKwh(1.0, kDay, start);
+        SW_CHECK(truth > 1000.0); // a day of equatorial sun really is ~1370 kWh
+
+        // 600 s up to the WHOLE DAY in a single tick. Every one of them must
+        // reach the same kilowatt-hours as the second-by-second run.
+        for (const sw::f64 step : {600.0, 3600.0, 14400.0, 28800.0, 86400.0})
+        {
+            const sw::f64 warped = solarEnergyKwh(step, kDay, start);
+            SW_CHECK(std::abs(warped - truth) < truth * 1.0e-3);
+        }
+    }
+
+    // ...and the failure it replaces, stated as a fact rather than a hope.
+    // Sampled at the start, a single 24-hour tick beginning at local noon
+    // would have billed 24 hours at full output: 180 kW * 24 h = 4320 kWh,
+    // more than three times the day's real yield. Integrated, it does not.
+    const sw::f64 noonDay = solarEnergyKwh(kDay, kDay, 0.0);
+    SW_CHECK(noonDay < 0.5 * (180.0 * 24.0));
+    SW_CHECK(std::abs(noonDay - solarEnergyKwh(1.0, kDay, 0.0)) < 1.0);
+
+    // Sampled at local midnight the same tick would have billed NOTHING and
+    // left the base's batteries to die. A base does not go dark because the
+    // player pressed the warp key.
+    const sw::f64 midnightDay = solarEnergyKwh(kDay, kDay, kDay * 0.5);
+    SW_CHECK(midnightDay > 1000.0);
+    SW_CHECK(std::abs(midnightDay - solarEnergyKwh(1.0, kDay, kDay * 0.5)) < 1.0);
+
+    // A site on a body that does not turn — an orbital platform, or a world
+    // whose spin nobody has set — is still answered by the instant, exactly
+    // as before, and costs exactly one evaluation.
+    const sw::WorldVec3 star{kStarDistance, 0.0, 0.0};
+    const sw::Vec3 up{0.5f, 0.0f, 0.8660254f};
+    const sw::WorldVec3 site = sw::WorldVec3(up) * kTerraRadius;
+    SW_CHECK_EQ(sw::factory::averageSolarFactor(site, up, star, {}, sw::WorldVec3{0.0},
+                                                sw::WorldVec3{0.0}, 3600.0),
+                sw::factory::solarFactor(site, up, star, {}));
 }

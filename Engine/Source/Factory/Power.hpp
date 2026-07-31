@@ -17,7 +17,7 @@
 // the shader's eclipse test uses. A site does not "have power at daytime",
 // it has the power its panels are physically receiving.
 //
-// Both functions below are pure: no world, no components, no clock. That is
+// Every function below is pure: no world, no components, no clock. That is
 // deliberate — a 14-day night has to be testable in a millisecond.
 // ============================================================================
 
@@ -25,6 +25,7 @@
 #include "Math/Math.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <span>
 
 namespace sw::factory
@@ -82,6 +83,107 @@ namespace sw::factory
             }
         }
         return elevation;
+    }
+
+    /// THE SUNLIGHT A PANEL RECEIVES OVER A WHOLE TICK, not at the instant
+    /// the tick happens to begin.
+    ///
+    /// `solarFactor` above answers a question about a MOMENT, and the grid
+    /// used to ask it once and then bill a whole tick's worth of kilowatts
+    /// against the answer. At 1x that is right to a part in a thousand — a
+    /// 0.2 s tick is 0.05 degrees of a planet's rotation. Under warp it is a
+    /// lie with a factor of infinity in it: the Automation lane hands the
+    /// grid one tick standing for eight hours, and eight hours of a 24-hour
+    /// world is a third of a rotation. Sample that at local noon and the
+    /// base generates eight solid hours at full output, dawn to dusk to dawn
+    /// included; sample it at local midnight and the same eight hours
+    /// generate nothing and the batteries die. Which of the two you got
+    /// depended on where the tick boundary happened to land, so the same
+    /// simulated day produced different amounts of electricity depending on
+    /// how fast the player had been warping — and a base that survived the
+    /// night at 1x could be found flat on arrival at 1000x.
+    ///
+    /// So the factor is INTEGRATED across the interval instead. The mean of
+    /// the instantaneous factor over [0, dt] is exactly the right thing to
+    /// bill: energy is the integral of power, so power * dt is only honest
+    /// when the power is the average one. And because the mean over a long
+    /// interval is the sum of the means over the pieces it splits into, one
+    /// bulk tick and N small ticks covering the same span reach the same
+    /// answer — which is the property the whole lane system exists for.
+    ///
+    /// What moves during the interval is the BODY: `angularVelocity` is its
+    /// spin as axis * rate (rad/s, world frame), exactly as
+    /// `phys::GravitySourceComponent` stores it, and the panel is bolted to
+    /// the ground, so the site sweeps around `spinCentre` on that axis. The
+    /// star's own motion and the occluders' are deliberately NOT swept: a
+    /// year is three orders of magnitude longer than a day, and an eclipse
+    /// that begins mid-tick is a rarer and much smaller error than the one
+    /// this function exists to remove.
+    ///
+    /// The integral has no closed form — `solarFactor` clamps at the horizon
+    /// and steps to zero in eclipse — so it is a composite MIDPOINT rule
+    /// over sub-steps of at most `kSolarSampleAngle` radians of rotation.
+    /// Midpoint rather than endpoint because the endpoint rule is what the
+    /// bug was: it evaluates the interval at one edge of it.
+    ///
+    /// A stationary site (no spin, or a body that does not turn) costs
+    /// exactly one evaluation and returns exactly what `solarFactor` would.
+    ///
+    /// MEASURED, for a 180 kW panel on an equatorial Terra site (omega =
+    /// 7.29e-5 rad/s) over one 86,400 s span, against the same span walked
+    /// in one-second ticks:
+    ///
+    ///   ONE 86,400 s tick, sampled at local noon      4320.00 kWh (+212.5%)
+    ///   ONE 86,400 s tick, sampled at local midnight     0.00 kWh (-100.0%)
+    ///   ONE 86,400 s tick, integrated                 1382.22 kWh (-0.0013%)
+    ///
+    /// Worst case over tick sizes 600 / 3,600 / 14,400 / 28,800 / 86,400 s
+    /// crossed with seven start phases spread around the day: 0.0017%
+    /// integrated, against 212.5% sampled.
+    ///
+    /// `kSolarMaxSamples` bounds the COST, not the accuracy: past it the
+    /// sub-steps simply get coarser than a degree, and since the residual
+    /// then averages out over whole rotations it stays small anyway — a tick
+    /// spanning a whole YEAR (3.1536e7 s, 366 rotations resolved by 512
+    /// samples) measured 0.026% off the finely stepped answer.
+    inline constexpr f64 kSolarSampleAngle = 0.02;  // ~1.15 degrees per sample
+    inline constexpr u32 kSolarMaxSamples = 512;
+
+    [[nodiscard]] inline f64 averageSolarFactor(const WorldVec3& siteWorld,
+                                                const Vec3& siteUp,
+                                                const WorldVec3& starWorld,
+                                                std::span<const Occluder> occluders,
+                                                const WorldVec3& spinCentre,
+                                                const WorldVec3& angularVelocity,
+                                                f64 seconds)
+    {
+        const f64 rate = glm::length(angularVelocity);
+        const f64 sweep = rate * std::max(0.0, seconds);
+        if (!(sweep > 1.0e-6))
+        {
+            // Nothing turned (and NaN lands here too): the moment IS the
+            // interval.
+            return solarFactor(siteWorld, siteUp, starWorld, occluders);
+        }
+
+        const WorldVec3 axis = angularVelocity / rate;
+        const WorldVec3 arm = siteWorld - spinCentre;
+        const WorldVec3 up{siteUp};
+
+        const f64 wanted = std::ceil(sweep / kSolarSampleAngle);
+        const u32 samples = static_cast<u32>(
+            std::clamp(wanted, 1.0, static_cast<f64>(kSolarMaxSamples)));
+
+        f64 total = 0.0;
+        for (u32 i = 0; i < samples; ++i)
+        {
+            const f64 angle =
+                sweep * ((static_cast<f64>(i) + 0.5) / static_cast<f64>(samples));
+            const glm::dquat turn = glm::angleAxis(angle, axis);
+            total += solarFactor(spinCentre + turn * arm, Vec3(turn * up), starWorld,
+                                 occluders);
+        }
+        return total / static_cast<f64>(samples);
     }
 
     /// One machine's claim on the grid.

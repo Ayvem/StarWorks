@@ -179,6 +179,61 @@ namespace game
         void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
     };
 
+    /// Physics lane: turns angular velocity into ATTITUDE, for every
+    /// dynamic body — not just the ones somebody is flying.
+    ///
+    /// This used to live inside ThrustSystem, whose query is
+    /// <Transform, DynamicBody, Ship, ShipControls>. That gate was the bug:
+    /// ThrustSystem was the only thing in the build that integrated
+    /// DynamicBodyComponent::angularVelocity into a rotation, so a crate, a
+    /// piece of debris, a dropped fuel tank — anything with a body and a
+    /// hull but no cockpit — had the ground's toppling torque written into
+    /// its angular velocity by SurfaceInteractionSystem every single tick
+    /// and then never turned by so much as a milliradian. The spin
+    /// accumulated, the friction rubbed it off again, and the box sat there
+    /// perfectly upright on its corner for ever.
+    ///
+    /// MEASURED, driving the engine's own SurfaceInteractionSystem for 20 s
+    /// on an airless 1737 km world. A 1.2 m crate tipped 30 degrees onto an
+    /// edge: it carried 0.11771 rad/s of toppling spin and turned 0.00
+    /// degrees, and now settles back towards its base, 30.00 -> 23.26
+    /// degrees, with 0.00589 rad/s left. A 2.4 m crate tipped 50 degrees,
+    /// which is well past the angle it can recover from: 0.17148 rad/s and
+    /// 0.00 degrees spent, against 50.00 -> 91.00 degrees now — it lies
+    /// down, which is the whole point. (Those magnitudes belong to the
+    /// ground model's toppling maths; what this system owns is the 0.00.)
+    ///
+    /// A SHIP is unaffected to the last digit: one second of full pitch
+    /// input leaves it at 0.500000 rad/s having turned 0.254166 rad, both
+    /// before the split and after. Integrated once, by exactly as much.
+    ///
+    /// Splitting it out rather than widening ThrustSystem's query keeps the
+    /// two jobs honest: ThrustSystem COMMANDS a rate (RCS input, kill
+    /// rotation, the ship's turn-rate limit), this system SPENDS it. It is
+    /// registered immediately after ThrustSystem, and the scheduler cannot
+    /// merge the two into one parallel stage because they disagree about
+    /// TransformComponent — so a ship is integrated at exactly the same
+    /// point in the tick it always was, exactly once.
+    class AngularIntegrationSystem final : public sw::ecs::System
+    {
+    public:
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "AngularIntegrationSystem";
+        }
+
+        [[nodiscard]] sw::ecs::SystemAccess access() const override
+        {
+            return sw::ecs::SystemAccess{}
+                .write<TransformComponent>()
+                .read<sw::phys::DynamicBodyComponent>()
+                .read<sw::parts::VesselComponent>() // turn about the balance point
+                .read<CapsuleComponent>();          // ...but never the walker
+        }
+
+        void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
+    };
+
     /// Physics lane: grounded capsule locomotion (EVA). Runs after the
     /// surface system so isGrounded reflects the current tick.
     class CapsuleMovementSystem final : public sw::ecs::System

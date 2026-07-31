@@ -3,6 +3,7 @@
 #include "Core/Error.hpp"
 #include "ECS/Archetype.hpp"
 #include "ECS/World.hpp"
+#include "Network/Protocol.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -101,6 +102,13 @@ namespace sw::net
         {
             SW_THROW("Replication table claims {} components", count);
         }
+        // 0xFFFF entries still reserve nothing here, but each one costs a
+        // std::string and two u32s to build — so the count is also checked
+        // against what is actually left to read. An entry cannot occupy
+        // fewer than twelve bytes (a four-byte name length, then size and
+        // version), so a table claiming more than remaining/12 entries is
+        // describing bytes that are not there.
+        requireWireCount(count, 12, reader.remaining(), "Replication table");
         for (u32 i = 0; i < count; ++i)
         {
             const std::string name = reader.readString();
@@ -462,25 +470,108 @@ namespace sw::net
             return index < world.recordCount() && world.isSlotAlive(index);
         };
 
+        // A SNAPSHOT IS ALL OR NOTHING, and the only way to get that is to
+        // read the whole thing before believing any of it.
+        //
+        // A count or an entity index that is a lie is not discovered until
+        // the reader runs off the end, which is arbitrarily far into the
+        // message — and everything before that point had already been done
+        // to the mirror. MEASURED: a 52-byte snapshot spawning entity 5 and
+        // then naming a component it does not carry the bytes for passed
+        // every bound, spawned the entity, added a never-written component
+        // and only then threw — aliveCount 1, the component present. The
+        // caller drops the datagram and carries on, so the mirror keeps that
+        // entity FOREVER: the host's next delta is diffed against a baseline
+        // the client does not actually hold, and nothing ever notices,
+        // because divergence has no symptom until something looks wrong on
+        // screen.
+        //
+        // So the snapshot is parsed into the staged lists below, which own
+        // nothing of the world, and the world is touched only once the last
+        // byte has been read and checked. Staging costs one copy of the
+        // component bytes the message already carries — bounded by the
+        // message, not by anything the sender claims — which is cheaper than
+        // the alternative of copying the mirror to roll back to.
+        //
+        // EVERY COUNT IS CHOSEN BY WHOEVER SENT THE SNAPSHOT, and each drives
+        // a loop that allocates. A count is only believable if the bytes it
+        // describes are still in the message, so each is measured against
+        // what remains before the loop is entered: four bytes per removal,
+        // eight per spawn (index and generation), six per drop (index and a
+        // two-byte component id), six per changed-entity group (index and a
+        // two-byte component count). That check is also what makes the
+        // reserve() that follows each of them safe — the count has by then
+        // been shown to fit in the datagram.
+        struct StagedDrop
+        {
+            u32 index = 0;
+            ecs::ComponentTypeId type = 0;
+        };
+        struct StagedWrite
+        {
+            u32 index = 0;
+            ecs::ComponentTypeId type = 0;
+            u32 offset = 0; // into `staged`
+            u32 size = 0;
+        };
+
         const u32 removeCount = reader.read<u32>();
+        requireWireCount(removeCount, 4, reader.remaining(), "Snapshot removals");
+        std::vector<u32> removed;
+        removed.reserve(removeCount);
         for (u32 i = 0; i < removeCount; ++i)
         {
-            const u32 index = reader.read<u32>();
-            if (slotAlive(index))
-            {
-                world.destroyEntity(handleOf(index));
-            }
+            removed.push_back(reader.read<u32>());
         }
 
         const u32 spawnCount = reader.read<u32>();
+        requireWireCount(spawnCount, 8, reader.remaining(), "Snapshot spawns");
+        std::vector<ecs::Entity> spawned;
+        spawned.reserve(spawnCount);
         for (u32 i = 0; i < spawnCount; ++i)
         {
             const u32 index = reader.read<u32>();
             const u32 generation = reader.read<u32>();
-            world.mirrorEntity(ecs::Entity{index, generation});
+            if (index > ecs::World::kMaxMirrorIndex)
+            {
+                // mirrorEntity refuses the same value; refusing it HERE is
+                // what keeps the refusal out of the apply phase, which must
+                // not be able to fail halfway.
+                SW_THROW("Snapshot spawns index {}, past the {} a mirror will grow to",
+                         index, ecs::World::kMaxMirrorIndex);
+            }
+            spawned.push_back(ecs::Entity{index, generation});
         }
 
+        // Which slots the apply phase will leave alive, worked out here so a
+        // change group naming an entity nobody spawned is refused before the
+        // first removal happens. Removals are applied before spawns, so a
+        // spawn of an index this same snapshot removed wins.
+        std::vector<u32> removedIndices = removed;
+        std::sort(removedIndices.begin(), removedIndices.end());
+        std::vector<u32> spawnedIndices;
+        spawnedIndices.reserve(spawned.size());
+        for (const ecs::Entity entity : spawned)
+        {
+            spawnedIndices.push_back(entity.index);
+        }
+        std::sort(spawnedIndices.begin(), spawnedIndices.end());
+        const auto aliveAfterwards = [&](u32 index) {
+            if (std::binary_search(spawnedIndices.begin(), spawnedIndices.end(), index))
+            {
+                return true;
+            }
+            if (std::binary_search(removedIndices.begin(), removedIndices.end(), index))
+            {
+                return false;
+            }
+            return slotAlive(index);
+        };
+
         const u32 dropCount = reader.read<u32>();
+        requireWireCount(dropCount, 6, reader.remaining(), "Snapshot component drops");
+        std::vector<StagedDrop> drops;
+        drops.reserve(dropCount);
         for (u32 i = 0; i < dropCount; ++i)
         {
             const u32 index = reader.read<u32>();
@@ -490,17 +581,19 @@ namespace sw::net
                 SW_THROW("Snapshot names component id {} (table holds {})", componentId,
                          m_table.size());
             }
-            if (slotAlive(index))
-            {
-                world.removeComponentRaw(handleOf(index), m_table.entries()[componentId].typeId);
-            }
+            drops.push_back(StagedDrop{index, m_table.entries()[componentId].typeId});
         }
 
+        std::vector<StagedWrite> writes;
+        std::vector<u8> staged;
         const u32 groupCount = reader.read<u32>();
+        requireWireCount(groupCount, 6, reader.remaining(), "Snapshot change groups");
         for (u32 g = 0; g < groupCount; ++g)
         {
             const u32 index = reader.read<u32>();
             const u16 componentCount = reader.read<u16>();
+            requireWireCount(componentCount, 2, reader.remaining(),
+                             "Snapshot components in one group");
             for (u16 c = 0; c < componentCount; ++c)
             {
                 const u16 componentId = reader.read<u16>();
@@ -510,7 +603,7 @@ namespace sw::net
                              m_table.size());
                 }
                 const ReplicationTable::Entry& entry = m_table.entries()[componentId];
-                if (!slotAlive(index))
+                if (!aliveAfterwards(index))
                 {
                     // The host says this entity exists; we were never told it
                     // spawned. That is a protocol violation, not packet loss:
@@ -519,10 +612,40 @@ namespace sw::net
                              "mirror does not have",
                              snapshotId, entry.name, index);
                 }
-                std::byte* destination =
-                    world.addComponentRaw(handleOf(index), entry.typeId);
-                reader.readBytes(destination, entry.size);
+                const u32 offset = static_cast<u32>(staged.size());
+                staged.resize(offset + entry.size);
+                // Throws if the bytes are not there, which is the case that
+                // used to leave a half-applied entity behind.
+                reader.readBytes(staged.data() + offset, entry.size);
+                writes.push_back(StagedWrite{index, entry.typeId, offset, entry.size});
             }
+        }
+
+        // ---- from here on nothing can be refused --------------------------
+        // Every index, component id and byte count above has been checked
+        // against both the message and the mirror, so this half only copies.
+        for (const u32 index : removed)
+        {
+            if (slotAlive(index))
+            {
+                world.destroyEntity(handleOf(index));
+            }
+        }
+        for (const ecs::Entity entity : spawned)
+        {
+            world.mirrorEntity(entity);
+        }
+        for (const StagedDrop& drop : drops)
+        {
+            if (slotAlive(drop.index))
+            {
+                world.removeComponentRaw(handleOf(drop.index), drop.type);
+            }
+        }
+        for (const StagedWrite& write : writes)
+        {
+            std::byte* destination = world.addComponentRaw(handleOf(write.index), write.type);
+            std::memcpy(destination, staged.data() + write.offset, write.size);
         }
 
         m_applied = snapshotId;

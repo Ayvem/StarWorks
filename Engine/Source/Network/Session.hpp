@@ -55,7 +55,25 @@ namespace sw::net
     /// Version of the session handshake itself, independent of the packet
     /// protocol version: the framing can stay put while what a
     /// ConnectRequest carries changes.
-    constexpr u32 kSessionVersion = 1;
+    ///
+    /// Three, because a ConnectRequest now carries the challenge cookie AND
+    /// a session nonce between its session version and its player name. The
+    /// nonce is what lets a host that still holds a Peer for an address tell
+    /// "the request I have already answered" from "the same machine asking
+    /// to join again"; see Host::Peer::sessionNonce.
+    constexpr u32 kSessionVersion = 3;
+
+    /// A ConnectRequest is refused outright past this many bytes.
+    ///
+    /// THE FAILURE THIS PREVENTS: the host must be able to answer an
+    /// unproven address without allocating anything for it, and a request
+    /// spread over fragments cannot be read without a reassembly buffer —
+    /// which is state, per address, for an address that has proven nothing.
+    /// So the request has to fit one datagram, which means the player name
+    /// inside it has to be bounded; the client truncates to
+    /// kMaxPlayerNameBytes so an over-long name is a shortened name rather
+    /// than a connection that silently never completes.
+    constexpr usize kMaxPlayerNameBytes = 64;
 
     enum class ClientState : u8
     {
@@ -195,8 +213,21 @@ namespace sw::net
             /// Refused because it was not ours at all: wrong magic. Noise on
             /// the port, or some other program entirely.
             u64 notOurs = 0;
+            /// Connection attempts answered with a challenge instead of a
+            /// world. Climbing without `arrived` climbing on the accepted
+            /// side means somebody is sending requests from addresses that
+            /// cannot receive the answer — which is what a spoofed
+            /// amplification attempt looks like from here.
+            u64 challenged = 0;
         };
         [[nodiscard]] const Reception& reception() const { return m_reception; }
+
+        /// Messages that reached the top of the stack and were then thrown
+        /// away because parsing them failed. Distinct from
+        /// Reception::refused, which counts datagrams turned away at the
+        /// door: this counts ones from a peer we had already accepted, and
+        /// a client that produces them is malfunctioning or hostile.
+        [[nodiscard]] u64 refusedMessages() const { return m_refusedMessages; }
 
     private:
         struct Peer
@@ -217,11 +248,62 @@ namespace sw::net
             /// kilobytes the client refuses, because it is built on the same
             /// empty baseline as the one it just applied.
             f64 lastSnapshotAt = -1.0;
+            /// WHICH ATTEMPT TO JOIN THIS PEER IS. Copied from the
+            /// ConnectRequest that created it and never changed afterwards.
+            ///
+            /// A reliable channel is an ordered conversation identified by
+            /// nothing but an address, and a client that reconnects starts a
+            /// NEW one at sequence zero. To a host still holding the old
+            /// Peer that request is sequence zero of a conversation already
+            /// past it, so the channel threw it away as a duplicate and the
+            /// handshake could never complete — the client sat in Connecting
+            /// until it timed out. The nonce is what makes the two cases
+            /// distinguishable: same nonce is a retransmission, a different
+            /// one is a new session and the old Peer is stale.
+            u64 sessionNonce = 0;
 
             explicit Peer(const Connection::Config& config) : connection(config) {}
         };
 
         Peer* findPeer(const PeerAddress& address);
+
+        /// THE COOKIE. A pure function of the source address and a secret
+        /// this host generated at construction and never puts on the wire.
+        ///
+        /// WHY A COOKIE AND NOT A TABLE OF PENDING CONNECTIONS. The attack
+        /// this closes is amplification: one spoofed 24-byte ConnectRequest
+        /// naming a victim's address used to make the host allocate a Peer,
+        /// an encoder and a full-world snapshot and then fragment it at the
+        /// victim for ten seconds of retransmission. The answer cannot be a
+        /// table of half-open connections, because filling that table is the
+        /// same attack wearing a different hat. It has to be arithmetic: the
+        /// host recomputes the cookie from the address on the next datagram
+        /// and remembers nothing in between. An address that can echo the
+        /// cookie back has proven it receives what is sent to it, which is
+        /// exactly the property a spoofed source does not have.
+        ///
+        /// MEASURED, one ConnectRequest from an address that never answers,
+        /// host pumped for ten seconds:
+        ///   before: 5,926,514 bytes came back for a 200-entity world and
+        ///           6,453,218 for a 2000-entity one, over ~5,550 datagrams
+        ///           — against the 39-byte request of the day, amplification
+        ///           factors of 151,962x and 165,467x. (It plateaus because
+        ///           the reliable window, not the size of the world, is what
+        ///           paces the flood.)
+        ///   after:  24 bytes, in one datagram. The request is 47 bytes now
+        ///           that it carries a session nonce as well as a cookie, so
+        ///           0.51x — the host answers a stranger with LESS than the
+        ///           stranger sent it, and there is nothing left to amplify.
+        [[nodiscard]] u64 cookieFor(const PeerAddress& address) const;
+        /// Answers an address that has not proven itself, without allocating
+        /// for it. A 24-byte datagram, measured, for a request of 47.
+        void sendChallenge(const PeerAddress& to);
+        /// Throws away the Peer we hold for an address that is starting a
+        /// new session, announcing its departure if it had been accepted,
+        /// and returns a fresh one carrying `nonce`. Nothing of the old
+        /// conversation survives: that is the point, since what made the
+        /// reconnect fail was the old conversation's sequence numbers.
+        Peer& replacePeer(f64 nowSeconds, Peer& stale, u64 nonce);
         void handleMessages(f64 nowSeconds, Peer& peer, const ecs::World& world,
                             f64 simulatedSeconds);
         void acceptPeer(f64 nowSeconds, Peer& peer, const ecs::World& world,
@@ -245,6 +327,10 @@ namespace sw::net
         std::vector<std::vector<u8>> m_outgoing;
         std::vector<u8> m_receiveBuffer;
         Reception m_reception{};
+        u64 m_refusedMessages = 0;
+        /// Never sent, never logged. Fresh per Host, so cookies do not
+        /// survive a restart and a captured one is worthless afterwards.
+        u64 m_cookieSecret = 0;
     };
 
     // ------------------------------------------------------------------------
@@ -304,11 +390,19 @@ namespace sw::net
         /// Snapshots refused for naming a baseline this client does not
         /// hold — the honest count of how much the link is losing.
         [[nodiscard]] u32 rebasedCount() const { return m_rebased; }
+        /// Messages from the host that were dropped because parsing them
+        /// threw. A corrupted or hostile datagram costs one of these and
+        /// nothing else — in particular it does not cost the process.
+        [[nodiscard]] u32 refusedMessages() const { return m_refusedMessages; }
         [[nodiscard]] f64 roundTripSeconds() const { return m_connection.roundTripSeconds(); }
         [[nodiscard]] const ConnectionStats& stats() const { return m_connection.stats(); }
 
     private:
         void flush(f64 nowSeconds);
+        /// Restarts the reliable channel and puts a ConnectRequest carrying
+        /// the cookie we currently hold (zero, the first time) and this
+        /// attempt's session nonce at sequence zero of it.
+        void sendConnectRequest(f64 nowSeconds);
         void sendAcknowledgement(f64 nowSeconds);
         void sendClock(f64 nowSeconds);
 
@@ -323,6 +417,22 @@ namespace sw::net
         std::string m_rejectReason;
         u32 m_clientId = 0;
         u32 m_rebased = 0;
+        /// The challenge cookie the host handed us, echoed in every
+        /// ConnectRequest from then on. Zero means "not challenged yet",
+        /// which is what the very first request carries.
+        u64 m_cookie = 0;
+        /// Names THIS attempt to join, so a host that still remembers the
+        /// last one can tell them apart. Fresh per connect(), and the same
+        /// across every request that attempt sends — a challenge answer is
+        /// still the same attempt.
+        u64 m_sessionNonce = 0;
+        /// Set by connect(), cleared by the first update() that follows, which
+        /// wipes the mirror before reading anything. The mirror belongs to the
+        /// caller and only reaches this class as an argument, so "forget the
+        /// last session's world" has to be an intention held between the two
+        /// calls rather than something connect() can just do.
+        bool m_mirrorStale = false;
+        u32 m_refusedMessages = 0;
         f64 m_lastRequestAt = -1.0;
         f64 m_lastAckAt = -1.0;
         f64 m_lastClockAt = -1.0;

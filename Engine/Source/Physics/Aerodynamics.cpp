@@ -61,7 +61,16 @@ namespace sw::aero
     // ------------------------------------------------------------------------
     f64 density(const phys::AtmosphereComponent& atmosphere, f64 altitude)
     {
-        if (altitude >= atmosphere.topAltitude)
+        // A SCALE HEIGHT THAT IS NOT ONE IS NOT AN ATMOSPHERE, and the
+        // exponential below divides by it. Zero gives exp(-0/0): MEASURED,
+        // an atmosphere with scaleHeight = 0 and a topAltitude above the
+        // ground answers -nan at altitude 0, and that NaN goes straight into
+        // every drag force and dynamic pressure on the vehicle. Negative is
+        // quieter and no better — air that gets THICKER with height,
+        // 1.377938 kg/m^3 at 1 km on a -8500 m scale height, and +inf once
+        // the exponent runs away. Neither is a thin atmosphere; both are a
+        // body that has none.
+        if (!(atmosphere.scaleHeight > 0.0) || altitude >= atmosphere.topAltitude)
         {
             return 0.0;
         }
@@ -110,7 +119,13 @@ namespace sw::aero
     WorldVec3 windVelocity(const phys::AtmosphereComponent& atmosphere, f64 altitude,
                            const WorldVec3& up, const WorldVec3& east, f64 timeSeconds)
     {
-        if (altitude < 0.0 || altitude >= atmosphere.topAltitude)
+        // The same guard as density(), for the same reason: the jet's width
+        // and its falloff are both fractions of the scale height, so a zero
+        // one makes `offset` a 0/0. MEASURED, windVelocity() on a
+        // scaleHeight = 0 atmosphere returns (nan, nan, nan) at altitude 0,
+        // and wind is added to a vehicle's airspeed.
+        if (!(atmosphere.scaleHeight > 0.0) || altitude < 0.0 ||
+            altitude >= atmosphere.topAltitude)
         {
             return WorldVec3{0.0};
         }
@@ -151,7 +166,20 @@ namespace sw::aero
         {
             return AeroSample{};
         }
-        const Vec3 direction = glm::normalize(flowDirectionLocal);
+        // A ZERO FLOW VECTOR IS NOT A DIRECTION. normalize() on one is 0/0 in
+        // all three lanes, and the NaN does not stop at the direction: theta
+        // and phi are NaN, the table indices come out of a NaN cast (which is
+        // implementation-defined, so it is not even reliably out of range),
+        // and the sample that comes back is a NaN force and a NaN moment
+        // added to the vessel's running total for the tick. A vessel sitting
+        // still in air is exactly the case that produces it — every vessel on
+        // a launch pad, every tick, until it moves. Head-on is the same
+        // convention flowDirection() falls back to for a stationary part, so
+        // the answer is the table's own theta = 0 row rather than a special
+        // case invented here.
+        const f32 flowLength = glm::length(flowDirectionLocal);
+        const Vec3 direction = (flowLength > 1.0e-9f) ? Vec3(flowDirectionLocal / flowLength)
+                                                      : Vec3(0.0f, 0.0f, 1.0f);
         const f32 theta = std::acos(std::clamp(direction.z, -1.0f, 1.0f));
         f32 phi = std::atan2(direction.y, direction.x);
         if (phi < 0.0f)

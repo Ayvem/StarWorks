@@ -40,6 +40,7 @@ namespace sw::net
             case MessageType::ConnectRequest: return "ConnectRequest";
             case MessageType::ConnectAccept: return "ConnectAccept";
             case MessageType::ConnectReject: return "ConnectReject";
+            case MessageType::ConnectChallenge: return "ConnectChallenge";
             case MessageType::Disconnect: return "Disconnect";
             case MessageType::Snapshot: return "Snapshot";
             case MessageType::SnapshotAck: return "SnapshotAck";
@@ -53,6 +54,34 @@ namespace sw::net
             case MessageType::Count:
             default: return "Invalid";
         }
+    }
+
+    void requireWireCount(u64 count, usize minElementBytes, usize remaining,
+                          std::string_view what)
+    {
+        // Divide rather than multiply. A bounds check that overflows is a
+        // bounds check that passes, and count comes off the wire: on a
+        // 32-bit usize `count * minElementBytes` wraps for exactly the
+        // enormous values this function exists to refuse.
+        const usize element = (minElementBytes == 0) ? 1 : minElementBytes;
+        if (count > static_cast<u64>(remaining / element))
+        {
+            SW_THROW("{} claims {} entries of at least {} bytes each, but only {} bytes "
+                     "remain in the message",
+                     what, count, element, remaining);
+        }
+    }
+
+    void buildBareDatagram(MessageType type, std::span<const u8> payload,
+                           std::vector<u8>& out)
+    {
+        PacketHeader header{};
+        header.type = type;
+        header.sequence = 0;
+        ser::BinaryWriter writer;
+        writeHeader(writer, header);
+        writer.writeBytes(payload.data(), payload.size());
+        out = writer.bytes();
     }
 
     void writeHeader(ser::BinaryWriter& writer, const PacketHeader& header)
@@ -152,10 +181,15 @@ namespace sw::net
         // in order.
         const usize total = payload.size();
         const usize count = (total + kMaxFragmentPayload - 1) / kMaxFragmentPayload;
-        if (count > 0xFFFFu)
+        if (count > kMaxFragments)
         {
-            SW_THROW("Reliable message of {} bytes needs {} fragments (limit {})", total,
-                     count, 0xFFFFu);
+            // The receiver abandons a reassembly past kMaxReassemblyBytes, so
+            // putting this on the wire would burn the whole reliable window
+            // on something guaranteed to be discarded — and, worse, would
+            // stall every reliable message queued behind it forever.
+            SW_THROW("Reliable message of {} bytes needs {} fragments (limit {}, which is "
+                     "the {}-byte reassembly ceiling the receiver enforces)",
+                     total, count, kMaxFragments, kMaxReassemblyBytes);
         }
         const u16 messageId = m_nextMessageId++;
         for (usize i = 0; i < count; ++i)
@@ -348,6 +382,64 @@ namespace sw::net
         }
     }
 
+    void Connection::abandonReassembly()
+    {
+        ++m_stats.fragmentsRejected;
+        // shrink_to_fit, not clear(): clear() leaves the capacity behind, and
+        // the capacity is the memory a peer was trying to make us hold. A
+        // reassembly abandoned at eight megabytes must give the eight
+        // megabytes back, or refusing it bought nothing.
+        m_partial.clear();
+        m_partial.shrink_to_fit();
+        m_partialActive = false;
+        m_partialMessageId = 0;
+        m_partialCount = 0;
+        m_partialNextIndex = 0;
+    }
+
+    bool Connection::acceptFragment(const PendingIn& slot)
+    {
+        if (slot.fragmentIndex == 0)
+        {
+            // A new message starts here. Whatever was half-assembled before
+            // it is dead — an honest sender would have finished it first.
+            if (m_partialActive)
+            {
+                abandonReassembly();
+            }
+            m_partialActive = true;
+            m_partialMessageId = slot.messageId;
+            m_partialCount = slot.fragmentCount;
+            m_partialNextIndex = 0;
+        }
+        else if (!m_partialActive || slot.messageId != m_partialMessageId ||
+                 slot.fragmentCount != m_partialCount ||
+                 slot.fragmentIndex != m_partialNextIndex)
+        {
+            // THE THREE LIES THIS REFUSES, all of which the old code
+            // believed: a continuation of a message that never began, a
+            // continuation whose message id belongs to a DIFFERENT message
+            // (whose bytes would have been spliced onto ours and handed up
+            // as one plausible payload), and an index that skips or repeats
+            // (which would have silently reordered the payload).
+            abandonReassembly();
+            return false;
+        }
+
+        if (m_partial.size() + slot.payload.size() > kMaxReassemblyBytes)
+        {
+            // The bound that stops a peer pinning memory with a message it
+            // never intends to finish. queueReliable refuses to build one
+            // this large, so nothing legitimate can reach here.
+            abandonReassembly();
+            return false;
+        }
+
+        m_partial.insert(m_partial.end(), slot.payload.begin(), slot.payload.end());
+        ++m_partialNextIndex;
+        return true;
+    }
+
     void Connection::drainInOrder()
     {
         for (;;)
@@ -360,19 +452,25 @@ namespace sw::net
 
             if (!slot.fragment)
             {
+                // An honest sender never interleaves: the fragments of one
+                // message take consecutive sequences with nothing between
+                // them. A whole message appearing mid-reassembly therefore
+                // says the pieces held so far will never be completed, so
+                // the buffer goes now rather than sitting there until
+                // something else happens to clear it.
+                if (m_partialActive)
+                {
+                    abandonReassembly();
+                }
                 m_delivered.push_back(Message{slot.type, std::move(slot.payload)});
             }
-            else
+            else if (acceptFragment(slot))
             {
-                if (slot.fragmentIndex == 0)
-                {
-                    m_partial.clear();
-                }
-                m_partial.insert(m_partial.end(), slot.payload.begin(), slot.payload.end());
-                if (slot.fragmentIndex + 1 == slot.fragmentCount)
+                if (m_partialNextIndex == m_partialCount)
                 {
                     m_delivered.push_back(Message{slot.type, std::move(m_partial)});
                     m_partial.clear();
+                    m_partialActive = false;
                 }
             }
 
@@ -384,10 +482,30 @@ namespace sw::net
 
     void Connection::receive(f64 nowSeconds, std::span<const u8> bytes)
     {
+        if (bytes.size() > kMaxDatagramBytes)
+        {
+            // Nothing this protocol sends is bigger, so nothing this size is
+            // ours. The check is what makes the holding pen's worst case
+            // arithmetic rather than a hope: 256 slots of at most
+            // kMaxDatagramBytes is 300 kB and cannot become anything else.
+            ++m_stats.malformedDropped;
+            return;
+        }
+
         ser::BinaryReader reader(bytes);
         PacketHeader header{};
         if (!readHeader(reader, header))
         {
+            ++m_stats.malformedDropped;
+            return;
+        }
+
+        if ((header.flags & PacketHeader::kFlagFragment) != 0 &&
+            header.fragmentCount > kMaxFragments)
+        {
+            // Rejecting here rather than when the buffer finally overflows
+            // means a peer announcing a 77 MB message (the 65535 fragments
+            // the header field allows) never gets to start one.
             ++m_stats.malformedDropped;
             return;
         }

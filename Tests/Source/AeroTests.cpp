@@ -683,3 +683,160 @@ SW_TEST(AStackHidesBehindItsOwnNose)
     SW_CHECK(five > one);
     SW_CHECK(five < one * 1.8);
 }
+
+// ---------------------------------------------------------------------------
+// THE AIR, ASKED A QUESTION IT HAS NO ANSWER TO
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    [[nodiscard]] bool allFinite(const Vec3& v)
+    {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    }
+
+    [[nodiscard]] bool allFinite(const WorldVec3& v)
+    {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    }
+
+    /// A table whose entries say which node they came from, so a lookup can
+    /// be checked against the node it was supposed to land on.
+    [[nodiscard]] AeroTable labelledTable()
+    {
+        AeroTable table{};
+        table.partId = 1;
+        table.thetaCount = 5;
+        table.phiCount = 4;
+        table.samples.resize(20);
+        for (u32 t = 0; t < table.thetaCount; ++t)
+        {
+            for (u32 p = 0; p < table.phiCount; ++p)
+            {
+                table.samples[t * table.phiCount + p].forceM2 =
+                    Vec3(static_cast<f32>(t), static_cast<f32>(p), 0.0f);
+                table.samples[t * table.phiCount + p].momentM3 =
+                    Vec3(0.0f, static_cast<f32>(t), static_cast<f32>(p));
+            }
+        }
+        return table;
+    }
+} // namespace
+
+SW_TEST(SamplingStillAirIsNotANaN)
+{
+    // A VESSEL THAT IS NOT MOVING is the commonest input this function gets:
+    // every rocket on every pad, every tick, until the clamps release. Its
+    // part-frame relative wind is the zero vector, and normalizing that is
+    // 0/0 in all three lanes. The NaN did not stop at the direction either —
+    // theta and phi came out NaN, the node indices came from a NaN cast
+    // (implementation-defined, so not even reliably out of range), and the
+    // sample went into the vessel's running force and moment for the tick.
+    const AeroTable table = labelledTable();
+    const AeroSample still = sample(table, Vec3(0.0f));
+    SW_CHECK(allFinite(still.forceM2));
+    SW_CHECK(allFinite(still.momentM3));
+
+    // And the answer is not merely finite, it is the right one: head-on,
+    // theta = 0, which is the fallback flowDirection() already uses for a
+    // part with no airspeed. Node (0, 0) of the labelled table.
+    SW_CHECK(almost(still.forceM2.x, 0.0, 1.0e-5));
+    SW_CHECK(almost(still.forceM2.y, 0.0, 1.0e-5));
+    const AeroSample headOn = sample(table, Vec3(0.0f, 0.0f, 1.0f));
+    SW_CHECK(glm::length(still.forceM2 - headOn.forceM2) < 1.0e-5f);
+    SW_CHECK(glm::length(still.momentM3 - headOn.momentM3) < 1.0e-5f);
+
+    // A denormally small flow is a direction; it must still be read as one.
+    const AeroSample crawling = sample(table, Vec3(0.0f, 1.0e-6f, 0.0f));
+    SW_CHECK(allFinite(crawling.forceM2));
+    SW_CHECK(almost(crawling.forceM2.x, 2.0, 1.0e-4)); // 90 degrees: theta node 2
+}
+
+SW_TEST(NoAerodynamicEntryPointAnswersADegenerateQuestionWithANaN)
+{
+    // Same rule as the physics side: nothing in this header may hand back a
+    // NaN for an empty object or a zero vector. A NaN force is added to a
+    // vessel total, a NaN moment is divided by an inertia and integrated, and
+    // by the time anyone notices, the vehicle has no position at all.
+    const AeroTable emptyTable{};
+    const AeroSample fromNothing = sample(emptyTable, Vec3(0.0f));
+    SW_CHECK(allFinite(fromNothing.forceM2));
+    SW_CHECK(allFinite(fromNothing.momentM3));
+
+    const phys::AtmosphereComponent air{};
+    SW_CHECK(std::isfinite(density(air, 0.0)));
+    SW_CHECK(std::isfinite(density(air, -1.0e6)));
+    SW_CHECK(std::isfinite(temperature(air, -1.0e6)));
+    SW_CHECK(std::isfinite(speedOfSound(air, 0.0)));
+    SW_CHECK(std::isfinite(machDragFactor(0.0)));
+    SW_CHECK(std::isfinite(machDragFactor(-1.0)));
+    SW_CHECK(std::isfinite(dynamicPressure(0.0, 0.0)));
+
+    // An atmosphere with no thickness at all.
+    phys::AtmosphereComponent none{};
+    none.scaleHeight = 0.0;
+    none.surfaceDensity = 0.0;
+    none.topAltitude = 0.0;
+    SW_CHECK(std::isfinite(density(none, 0.0)));
+    SW_CHECK(std::isfinite(temperature(none, 0.0)));
+    SW_CHECK(std::isfinite(speedOfSound(none, 0.0)));
+
+    // ...and that case never reaches the scale height at all, which is worth
+    // saying because it was doing duty as the test of it: topAltitude = 0
+    // means density() returns at the altitude guard one line earlier. The
+    // division is real and needs a ceiling ABOVE the ground to be reached.
+    // MEASURED without the scale-height guard: -nan at altitude 0.
+    phys::AtmosphereComponent noScale{};
+    noScale.scaleHeight = 0.0;
+    noScale.surfaceDensity = 1.225;
+    noScale.topAltitude = 1.0e5;
+    SW_CHECK(std::isfinite(density(noScale, 0.0)));
+    SW_CHECK_EQ(density(noScale, 0.0), 0.0); // no scale height, no air
+    SW_CHECK(std::isfinite(density(noScale, 1.0e4)));
+    // The wind divides by it twice more: the jet's width, and its falloff.
+    // MEASURED without the guard: (nan, nan, nan) at altitude 0.
+    const WorldVec3 deadWind = windVelocity(noScale, 0.0, WorldVec3{0.0, 1.0, 0.0},
+                                            WorldVec3{1.0, 0.0, 0.0}, 0.0);
+    SW_CHECK(allFinite(deadWind));
+    SW_CHECK_EQ(glm::length(deadWind), 0.0);
+
+    // The other sign of the same mistake, and the reason "is it a number" is
+    // not on its own enough: a NEGATIVE scale height is air that gets
+    // THICKER with height. Near the ground it is perfectly finite and
+    // perfectly wrong — MEASURED 1.377938 kg/m^3 at 1 km on -8500 m, above
+    // the 1.225 at sea level — and it overflows to +inf higher up.
+    phys::AtmosphereComponent inverted{};
+    inverted.scaleHeight = -8500.0;
+    inverted.surfaceDensity = 1.225;
+    inverted.topAltitude = 1.0e7;
+    SW_CHECK_EQ(density(inverted, 1.0e3), 0.0);
+    SW_CHECK(std::isfinite(density(inverted, 7.0e6))); // exp(823) unguarded
+    SW_CHECK_EQ(density(inverted, 7.0e6), 0.0);
+
+    SW_CHECK(allFinite(windVelocity(air, 0.0, WorldVec3{0.0, 1.0, 0.0},
+                                    WorldVec3{1.0, 0.0, 0.0}, 0.0)));
+    SW_CHECK(allFinite(windVelocity(air, 1.0e9, WorldVec3{0.0}, WorldVec3{0.0}, 0.0)));
+
+    SW_CHECK(allFinite(flowDirection(Vec3(0.0f))));
+    SW_CHECK(almost(glm::length(flowDirection(Vec3(0.0f))), 1.0, 1.0e-6));
+
+    SW_CHECK(allFinite(dampingMoment(0.0, 0.0, 0.0, 0.0, Vec3(0.0f))));
+    SW_CHECK(allFinite(dampingMoment(1.225, 200.0, 4.0, 3.0, Vec3(0.0f))));
+    SW_CHECK(allFinite(boxInertia(0.0, Vec3(0.0f))));
+
+    // Occlusion, with no boxes at all and with a flow that is not a
+    // direction: `perpendicular()` normalizes a cross product that would be
+    // the zero vector if the flow were.
+    const std::vector<OccluderBox> nothing;
+    SW_CHECK(std::isfinite(exposure(nothing, 0, Vec3(0.0f, 0.0f, 1.0f))));
+    std::vector<OccluderBox> one(1);
+    one[0].halfExtents = Vec3(0.0f);
+    SW_CHECK(std::isfinite(exposure(one, 0, Vec3(0.0f))));
+    SW_CHECK(std::isfinite(exposure(one, 0, Vec3(0.0f, 0.0f, 1.0f))));
+
+    f32 near = 0.0f;
+    OccluderBox flat{};
+    flat.halfExtents = Vec3(0.0f);
+    (void)rayHitsBox(flat, Vec3(0.0f), Vec3(0.0f), 0.0f, near);
+    SW_CHECK(std::isfinite(near));
+}

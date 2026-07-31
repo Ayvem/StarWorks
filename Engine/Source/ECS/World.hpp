@@ -206,7 +206,36 @@ namespace sw::ecs
         ///
         /// Cost: O(free slots) for the free-list removal, paid once per
         /// entity that appears, never per tick.
+        ///
+        /// Throws rather than growing past kMaxMirrorIndex; see there.
         Entity mirrorEntity(Entity entity);
+
+        /// The largest entity index a MIRROR will grow its slot table to.
+        ///
+        /// THE FAILURE THIS PREVENTS. The index comes off the network. It is
+        /// four bytes chosen by whoever sent the snapshot, and the slot table
+        /// is grown to hold it: an eight-byte spawn record naming index
+        /// 4,294,967,295 asked for a hundred gigabytes. Allocation that size
+        /// throws std::bad_alloc, which is NOT an sw::Exception, so the
+        /// session's `catch (const Exception&)` did not catch it and one
+        /// datagram killed the client.
+        ///
+        /// WHAT THE CEILING ACTUALLY COSTS, measured on this build by
+        /// instrumenting operator new while mirrorEntity grows the table.
+        /// The refusal below is on `index > kMaxMirrorIndex`, so the largest
+        /// table a snapshot can ask for is kMaxMirrorIndex + 1 = 1,048,577
+        /// slots, which is ONE allocation of 25,165,848 bytes — exactly
+        /// 24.00 bytes per slot.
+        ///
+        /// The honest worst case is twice that, and it is worth saying so:
+        /// the table is a std::vector and grows geometrically, so a spawn
+        /// record walking indices upward reaches capacity 2,097,152 —
+        /// measured, a final allocation of 50,331,648 bytes, with the
+        /// 25,165,824-byte buffer it is copied from still alive alongside it.
+        /// Fifty megabytes is still a budget a hostile spawn record spends
+        /// once, and 1,048,576 is more entities than this game has ever had
+        /// in one world.
+        static constexpr u32 kMaxMirrorIndex = 1u << 20;
 
     private:
         struct EntityRecord
