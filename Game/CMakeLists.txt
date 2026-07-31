@@ -2,8 +2,24 @@
 # StarWorks — the game executable.
 # ============================================================================
 
+# One class, one theme per translation unit: StarWorksGame.cpp keeps the
+# constructor and the frame loop; every Game*.cpp implements one facet of the
+# same class. GameInternal.hpp carries the helpers they share.
+# Source/README.md is the index.
 add_executable(StarWorks
     Source/Components.hpp
+    Source/GameFactory.cpp
+    Source/GameFactoryUi.cpp
+    Source/GameFlight.cpp
+    Source/GameHangar.cpp
+    Source/GameHud.cpp
+    Source/GameInternal.hpp
+    Source/GameMap.cpp
+    Source/GameNetwork.cpp
+    Source/GameSaveLoad.cpp
+    Source/GameScene.cpp
+    Source/GameShell.cpp
+    Source/GameTerrain.cpp
     Source/Main.cpp
     Source/StarWorksGame.cpp
     Source/StarWorksGame.hpp

@@ -1,0 +1,19 @@
+{
+  "id": 5,
+  "name": "Copper Smelting",
+  "requiredCategory": "refinery",
+  "inputs": [
+    {
+      "resource": "CopperOre",
+      "unitsPerSecond": 3.0
+    }
+  ],
+  "outputs": [
+    {
+      "resource": "Copper",
+      "unitsPerSecond": 1.5
+    }
+  ],
+  "powerKw": 110.0,
+  "massLossFraction": 0.5
+}

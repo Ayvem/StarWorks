@@ -1,0 +1,14 @@
+{
+  "id": 1,
+  "name": "Iron Ore Extraction",
+  "requiredCategory": "miner",
+  "inputs": [],
+  "outputs": [
+    {
+      "resource": "IronOre",
+      "unitsPerSecond": 1.0
+    }
+  ],
+  "powerKw": 45.0,
+  "massLossFraction": 0.0
+}

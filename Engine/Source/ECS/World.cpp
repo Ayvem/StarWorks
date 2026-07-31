@@ -179,7 +179,13 @@ namespace sw::ecs
 
     Entity World::mirrorEntity(Entity entity)
     {
-        SW_ASSERT(!entity.isNull(), "mirrorEntity on a null handle");
+        // No SW_ASSERT on a null handle here: the null index (0xFFFFFFFF) is
+        // above kMaxMirrorIndex, so the refusal below already covers it — and
+        // it MUST be a refusal, not an assert, because this value comes off a
+        // wire anyone can write to. An assert here made a Debug build trap in
+        // the adversarial test that feeds exactly this handle and expects the
+        // throw, while Release sailed past to the intended rejection: the two
+        // builds must refuse hostile input the same way.
         if (entity.index > kMaxMirrorIndex)
         {
             // Not an assert: the caller is the network decoder and the value

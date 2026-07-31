@@ -32,7 +32,7 @@ Modularity with minimal dependencies; no God objects; strong cohesion inside a m
 | `UI` | active | procedural 5x7 bitmap font + renderer screen-space path (flight HUD); retained UI later |
 | `Gameplay` / `Audio` | planned | game rules, sound |
 | `Network` | active | authoritative-host multiplayer, PER-PLAYER CLOCKS and a stamped Timeline (an action carries the instant it happened at; a player who has not reached it holds it until they do): UDP transport (+ a simulated wire for tests), two delivery services over one socket (unreliable-sequenced state, reliable-ordered everything else), baseline/delta replication of ECS component columns into an INDEX-EXACT mirror world |
-| (game layer) | active | pilotable ship (thrust/RCS via ThrustSystem), chase camera, star-map view with constant-screen-size beacons |
+| (game layer) | active | pilotable ship (thrust/RCS via ThrustSystem), chase camera, star-map view with constant-screen-size beacons. One class across themed translation units — `Game/Source/README.md` is the index |
 | `Serialization` | active | bounds-checked binary writer/reader (throws on corruption) |
 | `Save` | active | schema-named world snapshots, entity index+generation preserved, simulation clocks |
 | `Tools` / `Editor` | active | Part Studio (`.swpart` authoring), **AeroForge** (offline wind tunnel: geometry → `.aero.json`), **NetProbe** (headless host+client over real sockets), GLSL parity checker, planet preview renderer |
@@ -1098,6 +1098,41 @@ The game had no outside. It opened straight into a world already built during th
 **And the startup check paid for itself, then showed its own weakness.** Deferring the scene did not create it, but `phys::HullComponent` — carried by every building straight from its `.swpart` hitboxes — and `phys::HullMoverComponent` on the EVA suit had never been registered, so saving was impossible exactly as `AssemblyComponent` had made it impossible before. The F11b check reported it on frame one as designed. What it reported was `runtime id 13, size 200`, which is true and nearly useless: a component id is assigned by order of first use and means nothing to a human, and identifying it took a generated `sizeof` probe over all 43 component types. The message now names the culprit's NEIGHBOURS — `on an entity that also has [sw.Transform, phys.GroundHull]` — because those are registered, and a 200-byte stranger sitting on a building is then obvious. A diagnostic that is correct but unreadable is only half a diagnostic.
 
 Both screens were laid out as SVG mocks and looked at before the code ran, the technique that has now caught four HUD overflows in this project; the widest row, `NEW GAME (ABANDONS THIS ONE)`, clears its box, and the nine-row load list ends at y = 0.416 against a limit of 1.0.
+
+### F13b — the game file splits, and Debug learns to refuse what Release refuses (done)
+
+**`StarWorksGame.cpp` had reached 12,407 lines — a quarter of the project in one
+translation unit.** Every edit anywhere in the game layer recompiled all of it, and
+every theme's helpers hid in one 750-line anonymous namespace at the top. It is now
+thirteen files, one theme each, same class: the core file keeps the constructor and
+the frame loop (~780 lines), the largest theme (`GameFactory.cpp`) is ~1,700, and the
+old anonymous namespace became `GameInternal.hpp` — `inline` functions and
+`inline constexpr` constants, so every Game TU can include it without ODR trouble.
+Helpers used by a single theme (the hangar's quaternion arcs, the factory's
+`resourceMined`) stayed in that file's own anonymous namespace, which is the rule
+going forward: shared → `GameInternal.hpp`, private → your own file.
+`Game/Source/README.md` is the index, and `Game/CMakeLists.txt` says the same thing
+at the top.
+
+The move was mechanical and checked like one: the splitter refuses to finish while
+any line of the original is unclaimed or claimed twice, and afterwards the
+line-multiset of the thirteen files against the original differed only by the
+intended transforms (`constexpr` → `inline constexpr`, helper functions gaining
+`inline`, one anonymous-namespace wrapper). Then the full suite in **both**
+configurations, which is how the second finding surfaced.
+
+**The Debug test suite could not run to completion — Release refused what Debug
+trapped on.** F12's adversarial test feeds `mirrorEntity` the index 4,294,967,295 and
+expects the gigabytes-refusal throw; but that index is also the null-handle sentinel,
+and an `SW_ASSERT(!entity.isNull())` sat above the refusal. Release compiles the
+assert out and throws as intended; Debug hit `__builtin_trap` mid-suite — 223 green
+in one build, SIGILL in the other, from the same test. The assert is gone: the null
+index is above `kMaxMirrorIndex`, so the existing check already refuses it, and the
+function's own comment states the principle the assert violated — a value that comes
+off a wire anyone can write to is hostile input to be refused, not a bug of ours to
+be trapped. The rule this earns: **an adversarial test is part of the suite in every
+build type, so a guard it exercises must behave identically in every build type** —
+`SW_ASSERT` belongs on our own invariants, never on the wire's.
 
 ### Milestone 32+ — candidates (remaining)
 F4 exploitation UI, part fabrication and real conveyor transport. A rename field for designs (the character path exists now). Fuel and crew as build inputs rather than pad stock. Also: impact-driven joint breakage (fields ready), per-Mach aero tables (the format has room; the runtime call site would not change), reentry heating driven by the same dynamic pressure, control surfaces that deflect, placeholder cleanup. Multiplayer next steps: interest management (per-client relevance by distance and attachment), drawing other players' craft from the mirror world, the rest of the stamped-event vocabulary (staging, construction, resource transfer), and client-side interpolation between snapshots.

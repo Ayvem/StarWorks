@@ -1,0 +1,19 @@
+{
+  "id": 6,
+  "name": "Ice Melting",
+  "requiredCategory": "refinery",
+  "inputs": [
+    {
+      "resource": "WaterIce",
+      "unitsPerSecond": 2.0
+    }
+  ],
+  "outputs": [
+    {
+      "resource": "Water",
+      "unitsPerSecond": 2.0
+    }
+  ],
+  "powerKw": 25.0,
+  "massLossFraction": 0.0
+}

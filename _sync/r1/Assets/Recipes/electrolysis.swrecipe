@@ -1,0 +1,23 @@
+{
+  "id": 7,
+  "name": "Water Electrolysis",
+  "requiredCategory": "refinery",
+  "inputs": [
+    {
+      "resource": "Water",
+      "unitsPerSecond": 1.0
+    }
+  ],
+  "outputs": [
+    {
+      "resource": "Hydrogen",
+      "unitsPerSecond": 0.111
+    },
+    {
+      "resource": "Oxygen",
+      "unitsPerSecond": 0.889
+    }
+  ],
+  "powerKw": 480.0,
+  "massLossFraction": 0.0
+}

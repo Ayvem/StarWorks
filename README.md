@@ -12,7 +12,13 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F9c: On foot, properly, and a check on the rocket that would not fall
+## Current state — F13b: The code learns to be found
+
+**`StarWorksGame.cpp` was 12,407 lines — a quarter of the project in one file.** It is now thirteen, one theme per translation unit, same class: the core keeps the constructor and the frame loop, and `GameShell`, `GameScene`, `GameTerrain`, `GameSaveLoad`, `GameFlight`, `GameHangar`, `GameFactory`, `GameFactoryUi`, `GameNetwork`, `GameHud` and `GameMap` each own the methods their name promises. The 750-line anonymous namespace that fed all of them became `GameInternal.hpp`. Nothing was rewritten — every line of the original landed exactly once, checked mechanically — and the map lives in `Game/Source/README.md` so the next method knows where it goes. Incremental builds stop paying for the whole game layer on every edit.
+
+**And running the suite in both build types found the one place Debug and Release disagreed.** F12's adversarial test feeds the mirror an entity index of 4,294,967,295 and expects the refusal throw — but that value is also the null-handle sentinel, and an `SW_ASSERT` sat above the refusal: Release compiled it out and threw as designed, Debug trapped mid-suite. The assert is deleted; the existing bound check already refuses the value, in every build, which is the whole point of a guard on wire input. **223/223 tests green, Debug and Release both.** Milestones F10–F13 (packaging, firewall diagnosis, path independence, the jump gate, the shell) are documented in `docs/Architecture.md`.
+
+## Previously — F9c: On foot, properly, and a check on the rocket that would not fall
 
 **Jumping was losing about one press in three, and the reason is worth writing down.** `ShipControlsComponent` is cleared and rewritten once per *rendered frame*; the walker that reads it runs on the physics lane at a fixed **50 Hz**. Above sixty frames a second most frames tick that lane zero times, so a jump written as a one-frame edge was overwritten before any tick could see it. It is a **latch** now: the request stays set until a physics tick has actually run. Pressing twice inside one tick still jumps once, because the walker clears `isGrounded` as it goes and the second tick finds no ground to push off.
 

@@ -1,0 +1,87 @@
+{
+  "id": 106,
+  "type": "Structural",
+  "name": "CV-1 Belt Segment",
+  "dryMassKg": 240,
+  "costCredits": 0,
+  "volumeM3": 1,
+  "crashToleranceMps": 6,
+  "breakingForceN": 40000,
+  "dragCoefficientArea": 0.4,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "building": {
+    "category": "conveyor",
+    "footprintM": [1.4, 2],
+    "powerKw": -0.5,
+    "inventoryVolumeM3": 0,
+    "maxSlopeTangent": 0.45,
+    "minOreDensity": 0
+  },
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0.6000000238418579, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.550000011920929, 0.05999999865889549, 1],
+      "color": [0.20000000298023224, 0.2199999988079071, 0.25999999046325684],
+      "emissive": 0,
+      "specular": 0.2199999988079071,
+      "gloss": 0.30000001192092896,
+      "segments": 12,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0.5799999833106995, 0.7200000286102295, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05000000074505806, 0.10000000149011612, 1],
+      "color": [0.47999998927116394, 0.5, 0.5400000214576721],
+      "emissive": 0,
+      "specular": 0.3499999940395355,
+      "gloss": 0.44999998807907104,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-0.5799999833106995, 0.7200000286102295, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05000000074505806, 0.10000000149011612, 1],
+      "color": [0.47999998927116394, 0.5, 0.5400000214576721],
+      "emissive": 0,
+      "specular": 0.3499999940395355,
+      "gloss": 0.44999998807907104,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "in",
+      "position": [0, 0.6000000238418579, 1],
+      "direction": [0, 0, 1],
+      "type": "conveyor-in",
+      "size": 0.550000011920929
+    },
+    {
+      "name": "out",
+      "position": [0, 0.6000000238418579, -1],
+      "direction": [0, 0, -1],
+      "type": "conveyor-out",
+      "size": 0.550000011920929
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0.6000000238418579, 0],
+      "halfExtents": [0.550000011920929, 0.05999999865889549, 1]
+    }
+  ]
+}
