@@ -149,6 +149,11 @@ namespace game
         // that the latch guarding "one clear per frame" is released on the
         // frame boundary, and this is it.
         m_hudButtonsOpen = false;
+        // ...and the same boundary closes the previous frame's stopwatch. The
+        // completed set is kept because the probe that reads it runs during
+        // RENDER, by which time this frame's accumulators are half full.
+        m_phaseLastMs = m_phaseMs;
+        m_phaseMs = {};
         // ---- the shell, before anything the game does ----------------------
         // Booting and the menu are not the game with a flag set; they are
         // states in which the game is NOT running, so they return early
@@ -561,8 +566,11 @@ namespace game
         }
 
         const sw::u64 physicsTicksBefore = m_physicsLane->tickCount();
-        m_simulation.advance(m_world, deltaSeconds, &threadPool());
-        m_commands.playback(m_world);
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseSimulation]);
+            m_simulation.advance(m_world, deltaSeconds, &threadPool());
+            m_commands.playback(m_world);
+        }
         if (m_physicsLane->tickCount() != physicsTicksBefore)
         {
             // A tick ran, so whatever was latched has been acted on.
@@ -573,17 +581,34 @@ namespace game
         updateNetwork(deltaSeconds);
 
         // Fresh hierarchy snapshot for the map, HUD and flight plan.
-        m_celestialIndex.rebuild(m_world);
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseCelestialIndex]);
+            m_celestialIndex.rebuild(m_world);
+        }
         // AFTER the playback and BEFORE anything reads a position this frame:
         // the origin may move here, and every cached absolute position in the
         // game is shifted with it (see rebaseOrigin).
-        updateSystemStreaming();
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseStreaming]);
+            updateSystemStreaming();
+        }
         updateThrottleAnimations();
-        refreshPrediction();
-        updateTerrainPatch();
-        updateGrassField();
-
-        updateReentryEffects(deltaSeconds);
+        {
+            PhaseTimer phase(m_phaseMs[kPhasePrediction]);
+            refreshPrediction();
+        }
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseTerrain]);
+            updateTerrainPatch();
+        }
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseGrass]);
+            updateGrassField();
+        }
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseReentry]);
+            updateReentryEffects(deltaSeconds);
+        }
         // A crate of rocket that has arrived becomes a rocket. Once a frame
         // is plenty: the crate is not going anywhere, and unpacking it
         // creates entities, which no simulation lane is allowed to do.
@@ -962,7 +987,13 @@ namespace game
         renderer().setTimeSeconds(static_cast<sw::f32>(
             std::fmod(m_physicsLane->presentSeconds(), 86400.0)));
 
-        collectDrawItems(activeCamera, menuBackdrop ? false : m_mapView);
-        renderer().renderFrame(activeCamera, m_drawItems);
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseScene]);
+            collectDrawItems(activeCamera, menuBackdrop ? false : m_mapView);
+        }
+        {
+            PhaseTimer phase(m_phaseMs[kPhaseRender]);
+            renderer().renderFrame(activeCamera, m_drawItems);
+        }
     }
 } // namespace game

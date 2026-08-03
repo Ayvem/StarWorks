@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <format>
@@ -75,6 +76,11 @@ namespace game
         // much power a half-open panel makes.
         physics.addSystem(std::make_unique<sw::parts::PartAnimationSystem>());
         physics.addSystem(std::make_unique<sw::parts::VesselAssemblySystem>());
+        // ...and then the structure bends under what the assembly just
+        // weighed. After it because it needs the mass and the balance point;
+        // before PartAttachmentSystem because that is what turns the angle
+        // into a pose.
+        physics.addSystem(std::make_unique<sw::parts::PartFlexSystem>());
         // Rails ride at Physics rate too: their primaries move ~30 km/s, so
         // a 10 Hz refresh would visibly step (the closed-form solve is cheap).
         physics.addSystem(std::make_unique<sw::phys::RailsSystem>(*m_physicsLane));
@@ -385,6 +391,240 @@ namespace game
             // kind of thing that ships pointing the wrong way.
             m_sasMode = static_cast<sw::u32>(std::strtoul(sasSpec, nullptr, 10));
         }
+        if (std::getenv("SW_ENGINES") != nullptr && !m_debugEnginesSet &&
+            m_debugProbeDelay > 20u && !m_shipEntity.isNull())
+        {
+            // SHUT DOWN EARLY, MEASURE LATE. The vessel's summed force and
+            // torque are rebuilt by VesselAssemblySystem on the PHYSICS lane,
+            // which has already ticked by the time a frame gets here — so
+            // shutting an engine down and reading the total in the same frame
+            // reads the total from before the shutdown. The first run of this
+            // probe reported identical numbers for four engines and for one,
+            // which is exactly what that looks like.
+            m_debugEnginesSet = true;
+            // SW_ENGINES=<n> LEAVES ONLY THE FIRST n ARMED, which is the whole
+            // experiment in one variable: four modules around a ring cancel,
+            // three do not, and the difference has to be a number rather than
+            // an impression.
+            if (const char* keepSpec = std::getenv("SW_ENGINES"))
+            {
+                const sw::u32 keep =
+                    static_cast<sw::u32>(std::strtoul(keepSpec, nullptr, 10));
+                sw::u32 seen = 0;
+                m_world.forEach<sw::parts::PartComponent,
+                                sw::parts::PartAnimationComponent>(
+                    [&](sw::ecs::Entity, sw::parts::PartComponent& component,
+                        sw::parts::PartAnimationComponent& state) {
+                        if (component.vessel != m_shipEntity) { return; }
+                        const auto* definition =
+                            sw::parts::findDefinition(component.definitionId);
+                        if (definition == nullptr || !(definition->thrustNewtons > 0.0))
+                        {
+                            return;
+                        }
+                        if (seen++ >= keep)
+                        {
+                            // Animation 0 is the hand switch that gates thrust.
+                            state.phase[0] = 0.0f;
+                            state.target[0] = 0.0f;
+                        }
+                    });
+            }
+        }
+        if (std::getenv("SW_THRUSTPROBE") != nullptr && !m_debugThrustProbed &&
+            ++m_debugProbeDelay > 100u)
+        {
+            // WHAT THE ENGINES ADD UP TO. The claim is that shutting three of
+            // four propulsion modules leaves a torque, and that with all four
+            // running the torque is zero — not zero because something clamped
+            // it, zero because four arms around a ring cancel. Both halves
+            // need a number.
+            m_debugThrustProbed = true;
+            if (std::FILE* probe = std::fopen("/tmp/sw_thrustprobe.txt", "w"))
+            {
+                const auto* vessel =
+                    m_world.tryGetComponent<sw::parts::VesselComponent>(m_shipEntity);
+                if (vessel == nullptr)
+                {
+                    std::fprintf(probe, "no vessel: board one first\n");
+                }
+                else
+                {
+                    sw::u32 engines = 0;
+                    sw::u32 firing = 0;
+                    m_world.forEach<sw::parts::PartComponent>(
+                        [&](sw::ecs::Entity part, sw::parts::PartComponent& component) {
+                            if (component.vessel != m_shipEntity) { return; }
+                            const auto* definition =
+                                sw::parts::findDefinition(component.definitionId);
+                            if (definition == nullptr ||
+                                !(definition->thrustNewtons > 0.0))
+                            {
+                                return;
+                            }
+                            ++engines;
+                            const auto* state =
+                                m_world.tryGetComponent<sw::parts::PartAnimationComponent>(
+                                    part);
+                            if (sw::parts::animationGate(*definition, state,
+                                                         sw::parts::AnimationGates::Thrust) >
+                                0.5)
+                            {
+                                ++firing;
+                            }
+                            // EACH ENGINE, ONE LINE. The summed vector cannot
+                            // tell "every engine pushes sideways and they
+                            // happen to add up" from "every engine pushes aft"
+                            // — and the whole complaint is about which of
+                            // those is true.
+                            const sw::Vec3 push =
+                                component.localRotation *
+                                (definition->thrustDirection *
+                                 static_cast<sw::f32>(definition->thrustNewtons));
+                            const sw::Vec3 arm =
+                                component.localPosition - vessel->centreOfMass;
+                            const sw::Vec3 twist = glm::cross(arm, push);
+                            std::fprintf(probe,
+                                         "  engine def %-4u at %8.2f %8.2f %8.2f  "
+                                         "push %9.0f %9.0f %9.0f  arm x F "
+                                         "%11.0f %11.0f %11.0f\n",
+                                         component.definitionId,
+                                         static_cast<double>(component.localPosition.x),
+                                         static_cast<double>(component.localPosition.y),
+                                         static_cast<double>(component.localPosition.z),
+                                         static_cast<double>(push.x),
+                                         static_cast<double>(push.y),
+                                         static_cast<double>(push.z),
+                                         static_cast<double>(twist.x),
+                                         static_cast<double>(twist.y),
+                                         static_cast<double>(twist.z));
+                        });
+                    std::fprintf(probe,
+                                 "centre of mass %.3f %.3f %.3f m (vessel frame; the "
+                                 "nose is -Z)\n",
+                                 static_cast<double>(vessel->centreOfMass.x),
+                                 static_cast<double>(vessel->centreOfMass.y),
+                                 static_cast<double>(vessel->centreOfMass.z));
+                    const sw::Vec3 force = vessel->thrustForceN;
+                    const sw::Vec3 torque = vessel->thrustTorqueNm;
+                    std::fprintf(probe,
+                                 "%u engines, %u firing\n"
+                                 "mass %.0f kg   inertia %.4g %.4g %.4g kg m2\n"
+                                 "thrust scalar %.1f N\n"
+                                 "thrust vector %.1f %.1f %.1f N  |F| %.1f\n"
+                                 "torque        %.1f %.1f %.1f N m  |M| %.1f\n"
+                                 "angular accel %.6g %.6g %.6g rad/s2\n",
+                                 engines, firing, vessel->totalMassKg,
+                                 static_cast<double>(vessel->inertiaKgM2.x),
+                                 static_cast<double>(vessel->inertiaKgM2.y),
+                                 static_cast<double>(vessel->inertiaKgM2.z),
+                                 vessel->maxThrustNewtons,
+                                 static_cast<double>(force.x), static_cast<double>(force.y),
+                                 static_cast<double>(force.z),
+                                 static_cast<double>(glm::length(force)),
+                                 static_cast<double>(torque.x), static_cast<double>(torque.y),
+                                 static_cast<double>(torque.z),
+                                 static_cast<double>(glm::length(torque)),
+                                 static_cast<double>(torque.x / std::max(vessel->inertiaKgM2.x, 1.0f)),
+                                 static_cast<double>(torque.y / std::max(vessel->inertiaKgM2.y, 1.0f)),
+                                 static_cast<double>(torque.z / std::max(vessel->inertiaKgM2.z, 1.0f)));
+                    // ...AND WHAT THE STRUCTURE DID ABOUT IT. A torque that
+                    // bends nothing is a torque nobody can see.
+                    sw::f32 worstElastic = 0.0f;
+                    sw::f32 worstPermanent = 0.0f;
+                    sw::u32 flexible = 0;
+                    m_world.forEach<sw::parts::PartComponent, sw::parts::PartFlexComponent>(
+                        [&](sw::ecs::Entity, sw::parts::PartComponent& component,
+                            sw::parts::PartFlexComponent& flex) {
+                            if (component.vessel != m_shipEntity) { return; }
+                            ++flexible;
+                            worstElastic = std::max(worstElastic, glm::length(flex.elastic));
+                            worstPermanent =
+                                std::max(worstPermanent, glm::length(flex.permanent));
+                        });
+                    std::fprintf(probe,
+                                 "%u flexible parts, worst bend %.3f deg elastic, "
+                                 "%.3f deg permanent\n",
+                                 flexible,
+                                 static_cast<double>(glm::degrees(worstElastic)),
+                                 static_cast<double>(glm::degrees(worstPermanent)));
+                }
+                std::fclose(probe);
+            }
+        }
+        if (std::getenv("SW_FRAMEPROBE") != nullptr && !m_debugFrameProbed)
+        {
+            // FRAME TIME AND WHERE IT WENT. The report is "200 fps and it
+            // freezes", which cannot both be true of the same frame — so the
+            // instrument has to record the WORST frame rather than the average
+            // one, and has to say what was happening in it.
+            const sw::f32 frameMs = clock().deltaSeconds() * 1000.0f;
+            m_frameSamples.push_back(frameMs);
+            m_predictionSamples.push_back(static_cast<sw::f32>(m_lastPredictionMs));
+            m_lastPredictionMs = 0.0;
+            // ...AND WHAT IT WAS DOING. `m_phaseLastMs` is the frame that has
+            // just finished, which is the frame `deltaSeconds` measures — so
+            // the breakdown kept alongside the worst frame belongs to that
+            // frame and not to its neighbour.
+            for (sw::u32 i = 0; i < kPhaseCount; ++i)
+            {
+                m_phaseWorstMs[i] = std::max(m_phaseWorstMs[i], m_phaseLastMs[i]);
+                m_phaseTotalMs[i] += m_phaseLastMs[i];
+            }
+            if (m_frameSamples.empty() || frameMs >= *std::max_element(
+                                                          m_frameSamples.begin(),
+                                                          m_frameSamples.end()))
+            {
+                m_phaseWorstFrameMs = m_phaseLastMs;
+            }
+            if (m_frameSamples.size() >= 900)
+            {
+                m_debugFrameProbed = true;
+                if (std::FILE* probe = std::fopen("/tmp/sw_frameprobe.txt", "w"))
+                {
+                    std::vector<sw::f32> sorted = m_frameSamples;
+                    std::sort(sorted.begin(), sorted.end());
+                    const auto at = [&sorted](sw::f64 q) {
+                        return sorted[static_cast<sw::usize>(
+                            q * static_cast<sw::f64>(sorted.size() - 1))];
+                    };
+                    sw::f32 worstPrediction = 0.0f;
+                    sw::f32 predictionTotal = 0.0f;
+                    sw::u32 refreshes = 0;
+                    for (const sw::f32 ms : m_predictionSamples)
+                    {
+                        worstPrediction = std::max(worstPrediction, ms);
+                        if (ms > 0.0f) { predictionTotal += ms; ++refreshes; }
+                    }
+                    std::fprintf(probe,
+                                 "%zu frames\n"
+                                 "median %.2f ms  (%.0f fps)\n"
+                                 "p90    %.2f ms\n"
+                                 "p99    %.2f ms\n"
+                                 "worst  %.2f ms\n"
+                                 "\n%u flight-plan refreshes, worst %.2f ms, "
+                                 "mean %.2f ms\n",
+                                 m_frameSamples.size(), at(0.5),
+                                 at(0.5) > 0.0f ? 1000.0 / at(0.5) : 0.0, at(0.90),
+                                 at(0.99), sorted.back(), refreshes, worstPrediction,
+                                 refreshes > 0 ? predictionTotal /
+                                                     static_cast<sw::f32>(refreshes)
+                                               : 0.0f);
+                    std::fprintf(probe,
+                                 "\n%-16s %10s %10s %10s\n", "phase", "worst ms",
+                                 "mean ms", "worst frm");
+                    const auto frames = static_cast<sw::f64>(m_frameSamples.size());
+                    for (sw::u32 i = 0; i < kPhaseCount; ++i)
+                    {
+                        std::fprintf(probe, "%-16s %10.2f %10.3f %10.2f\n",
+                                     kPhaseNames[i], m_phaseWorstMs[i],
+                                     m_phaseTotalMs[i] / frames,
+                                     m_phaseWorstFrameMs[i]);
+                    }
+                    std::fclose(probe);
+                }
+            }
+        }
         if (std::getenv("SW_GROUNDPROBE") != nullptr && !m_debugGroundProbed)
         {
             // HOW SMOOTHLY THE WORLD MOVES, in the shipping engine, as a
@@ -614,6 +854,148 @@ namespace game
             // boarded.
             cyclePilotedVessel();
             SW_LOG_INFO("Game", "SW_BOARD: piloting vessel {}", m_shipEntity.index);
+        }
+        if (const char* burnSpec = std::getenv("SW_BURN");
+            burnSpec != nullptr && !m_debugBurned)
+        {
+            // SW_BURN=<m/s>: the burn the player actually flew.
+            //
+            // The report is "I accelerate a lot (+50000 delta v) and the game
+            // freezes then judders". Reproducing that by TELEPORTING somewhere
+            // fast is the mistake this file has already made three times:
+            // SW_ESCAPE parks a craft six billion kilometres out, which is a
+            // different place with a different flight plan and different
+            // streaming, and it measured 0.07 ms of prediction — an answer
+            // about a question nobody asked. This adds the velocity WHERE THE
+            // SHIP IS, along the direction it is already going, and leaves
+            // every other system to notice on its own.
+            //
+            // It waits, because boarding and the first assembly pass both need
+            // a frame and a bubble has to promote the craft off rails before a
+            // velocity written here survives the tick.
+            if (++m_debugBurnDelay > 30)
+            {
+                m_debugBurned = true;
+                const sw::ecs::Entity entity = controlledEntity();
+                if (auto* body =
+                        m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(entity))
+                {
+                    const sw::f64 dv = std::strtod(burnSpec, nullptr);
+                    const sw::f64 speed = glm::length(body->velocity);
+                    const sw::WorldVec3 prograde =
+                        (speed > 1.0) ? (body->velocity / speed)
+                                      : sw::WorldVec3{0.0, 0.0, 1.0};
+                    body->velocity += prograde * dv;
+                    body->isGrounded = 0;
+                    SW_LOG_INFO("Game", "SW_BURN: +{:.0f} m/s prograde ({:.0f} -> {:.0f})",
+                                dv, speed, glm::length(body->velocity));
+                }
+                else
+                {
+                    // Loud, per the rule: "no dynamic body" and "the burn did
+                    // nothing" look identical from the outside.
+                    SW_LOG_ERROR("Game", "SW_BURN: controlled entity has no dynamic body");
+                }
+            }
+        }
+        if (std::getenv("SW_PREDSWEEP") != nullptr && !m_debugPredSwept &&
+            ++m_debugSweepDelay > 60)
+        {
+            // WHAT THE FLIGHT PLAN COSTS, AS A FUNCTION OF SPEED AND OF WHERE
+            // YOU ARE. The frame probe says the plan cost 16 ms from Saturn's
+            // orbit at 64 km/s. That is a hitch but not a freeze, and it is
+            // also the wrong place: the range cap that bounds an escape arc
+            // sits at 1e13 m, which is six Saturn radii out and sixty-six
+            // Terra ones — so the same burn flown from Terra has ten times the
+            // arc to walk. This sweeps both, against the REAL index (thirty
+            // bodies, real spheres of influence), through the same entry point
+            // the frame calls four times a second.
+            m_debugPredSwept = true;
+            if (std::FILE* out = std::fopen("/tmp/sw_predsweep.txt", "w"))
+            {
+                const sw::f64 startTime = m_physicsLane->presentSeconds();
+                const sw::space::PredictionSettings settings{};
+                std::vector<sw::space::TrajectorySegment> segments;
+                const auto endName = [](sw::space::SegmentEnd reason) {
+                    switch (reason)
+                    {
+                    case sw::space::SegmentEnd::Horizon: return "horizon";
+                    case sw::space::SegmentEnd::SoiExit: return "soi-exit";
+                    case sw::space::SegmentEnd::Encounter: return "encounter";
+                    case sw::space::SegmentEnd::Impact: return "impact";
+                    case sw::space::SegmentEnd::Lost: return "lost";
+                    case sw::space::SegmentEnd::Closed: return "closed";
+                    case sw::space::SegmentEnd::RangeLimit: return "range-limit";
+                    }
+                    return "?";
+                };
+                const auto sweep = [&](const char* label, const sw::WorldVec3& position,
+                                       const sw::WorldVec3& velocity) {
+                    const sw::f64 speed = glm::length(velocity);
+                    const sw::WorldVec3 prograde = (speed > 1.0)
+                                                       ? (velocity / speed)
+                                                       : sw::WorldVec3{0.0, 0.0, 1.0};
+                    std::fprintf(out, "\n=== %s: r %.3e m from origin, v %.0f m/s\n",
+                                 label, glm::length(position), speed);
+                    for (const sw::f64 dv :
+                         {0.0, 1000.0, 5000.0, 10000.0, 20000.0, 50000.0, 100000.0})
+                    {
+                        const sw::WorldVec3 burned = velocity + prograde * dv;
+                        sw::space::PredictionStats stats{};
+                        const auto begin = std::chrono::steady_clock::now();
+                        sw::space::predictTrajectory(m_celestialIndex, position, burned,
+                                                     startTime, settings, segments,
+                                                     &stats);
+                        const sw::f64 ms = std::chrono::duration<sw::f64, std::milli>(
+                                               std::chrono::steady_clock::now() - begin)
+                                               .count();
+                        std::fprintf(out, "  +%7.0f m/s -> %8.2f ms  %6u samples  %zu seg:",
+                                     dv, ms, stats.samples, segments.size());
+                        for (const sw::space::TrajectorySegment& segment : segments)
+                        {
+                            std::fprintf(out, " [%s %.3g d %s]",
+                                         (segment.primaryIndex >= 0)
+                                             ? m_celestialIndex.body(static_cast<sw::usize>(
+                                                                         segment.primaryIndex))
+                                                   .name
+                                             : "?",
+                                         (segment.endTime - segment.startTime) / 86400.0,
+                                         endName(segment.endReason));
+                        }
+                        std::fprintf(out, "\n");
+                    }
+                };
+                // Where the craft actually is, first — that is the state the
+                // frame is really predicting from.
+                const sw::ecs::Entity self = controlledEntity();
+                sweep("SHIP", m_world.getComponent<TransformComponent>(self).position,
+                      controlledVelocity());
+                // ...and then low orbit around each body worth leaving from,
+                // because the arc's length is set by where it starts.
+                for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
+                {
+                    const auto& body = m_celestialIndex.body(i);
+                    const std::string name(body.name);
+                    if (name != "TERRA" && name != "SATURN" && name != "SOL")
+                    {
+                        continue;
+                    }
+                    sw::WorldVec3 centre{0.0};
+                    sw::WorldVec3 motion{0.0};
+                    m_celestialIndex.stateAt(static_cast<sw::i32>(i), startTime, centre,
+                                             &motion);
+                    if (body.mu <= 0.0 || body.bodyRadius <= 0.0)
+                    {
+                        continue;
+                    }
+                    const sw::f64 radius = body.bodyRadius * 1.05;
+                    const sw::f64 circular = std::sqrt(body.mu / radius);
+                    const sw::WorldVec3 out{1.0, 0.0, 0.0};
+                    const sw::WorldVec3 along{0.0, 0.0, 1.0};
+                    sweep(body.name, centre + out * radius, motion + along * circular);
+                }
+                std::fclose(out);
+            }
         }
         if (const char* menuSpec = std::getenv("SW_PARTMENU"); menuSpec != nullptr)
         {

@@ -2768,6 +2768,333 @@ the picture that closes this: holding RADIAL OUT, the cyan diamond sits exactly
 on the craft reference at the centre of the ball — the button, the mode, the
 controller and the marker all agreeing about one direction.
 
+### F33 — a force has a point of application, and structures bend
+
+**"UNE FUSEE TROP LONGUE SE COURBE SOUS L'ACCELERATION ; UN ATTERRISSAGE DUR
+TORD UNE JAMBE DE TRAIN ; UN GRAND PANNEAU SOLAIRE VIBRE. IL FAUT AUSSI UNE
+ACCELERATION FOURNIE PAR LES PROPULSEURS A LEUR SORTIE ET PAS AU CENTRE DE
+GRAVITE — SI JE DESACTIVE 3 DES 4 MOTEURS DE L'ENDURANCE ET QUE J'ACCELERE JE
+SUIS CENSE TOURNER."**
+
+The two halves of that request are one milestone, and the order is not
+negotiable: **a beam pushed along its own length is in compression, not in
+bending.** What bends a structure is a LATERAL load, and until thrust had a
+point of application there was no lateral load for an engine to make.
+
+#### Thrust as a vector at a place
+
+The old model summed every engine into one scalar, `maxThrustNewtons`, and
+pushed it through the centre of mass along the hull's nose. Exactly right for a
+symmetric rocket; for everything else a number that had forgotten where the
+engines were bolted. `VesselAssemblySystem` now collects each engine as a force
+VECTOR at its own position and folds them once the balance point is known, so
+the vessel carries `thrustForceN` and `thrustTorqueNm` and `ThrustSystem`
+applies both. Nothing special-cases a symmetric craft: four arms about a common
+centre cancel.
+
+Measured on the Endurance:
+
+| engines armed | thrust | torque (as measured then) | torque (after F37 balanced the ring) |
+|---|---:|---:|---:|
+| 4 | 88 kN | 10.3 kN·m — read as "its own asymmetry" | **0.04 kN·m** |
+| **3** | 66 kN | **651 kN·m** | 647 kN·m |
+| 2 | 44 kN | 913 kN·m | 915 kN·m |
+| 1 | 22 kN | 645 kN·m | 647 kN·m |
+
+The fourth column is the correction: the 10.3 kN·m in row one was not the
+ship's own asymmetry, it was a two-tonne mistake in its manifest. See M37.
+
+**The first measurement found something else entirely.** Summed along the
+part's default −Z, the four propulsion modules' forces *cancelled to zero* and
+left a pure 2.6 MN·m torque: the ship was a reaction wheel. EN-2 carries its
+three plasma nozzles on its −Y face, because twelve modules are strung around a
+ring and a ring translates along its axle. So `PartDefinition` gained
+`thrustDirection` — default −Z, the part's nose, which is right for every rocket
+and was therefore never worth a field until an engine was not one. Before this
+milestone that error was invisible: thrust was a scalar pushed along the root's
+nose, which for the Endurance happens to be the ring axis.
+
+#### One damped spring per part
+
+There is no finite-element anything here and there does not need to be. A part
+hangs off its vessel at one point; the load through that point is its own mass
+times the acceleration it is being given AT ITS LOCATION — which on a turning
+vessel is `a + α × r`, not the acceleration at the centre of mass — and a beam
+under a moment deflects by moment over stiffness. `PartFlexComponent` is three
+vectors: an elastic angle, its rate, and a permanent set.
+
+Below `flexYieldNm` it springs back, lightly damped, so a big panel *rings*
+after the engines light rather than simply sitting bent. Above it the excess
+moves into the permanent set and stays: that is the hard landing. The sum is
+applied in `PartAttachmentSystem`, about the vessel's balance point, so the part
+both LOOKS bent and — if it carries an engine — PUSHES bent. That feedback is
+what makes a long craft wobble instead of settling.
+
+**Zero stiffness means rigid, and rigid is the default.** A game where every
+strut suddenly became a spring is a game where every rocket that used to fly no
+longer does. Three parts declare flex today and their numbers are computed from
+the loads they actually see rather than chosen to look right: an Endurance spoke
+carries 3000 kg at 16 m from the balance point, and with three of four engines
+the angular acceleration is 3.0e-3 rad/s², so the lateral acceleration there is
+0.047 m/s² and the moment 2256 N·m — 6.4e4 N·m/rad puts that at about two
+degrees.
+
+Measured, on the ring, under a held throttle:
+
+| engines armed | worst elastic bend | permanent set |
+|---|---:|---:|
+| 4 | 3.22° | **0.000°** — nothing yields |
+| 3 | 5.09° | 1.53° |
+| 2 | 5.09° | 7.60° |
+| 1 | 5.09° | 10.03° |
+
+The elastic figure caps at 5.09°, which is exactly `flexYieldNm / stiffness` for
+the core spoke — the yield doing its job rather than a clamp doing it.
+
+#### Two bugs the measurement caught, both of them the same shape
+
+**`VesselAssemblySystem` zeroes the vessel every tick**, which is exactly right
+for every field that is a SUM and catastrophic for the two that are a MEMORY.
+The flex pass differences the velocity across a tick to get an acceleration —
+that catches thrust, the ground, the air and a collision for free, and cannot
+fall out of step with any of them — but with the previous velocity wiped each
+pass the difference was the vessel's whole orbital speed over a fiftieth of a
+second. Fifty thousand g. Every flexible part on the Endurance yielded to the
+clamp on frame one and reported an identical 68.75° whatever the engines were
+doing. And **the first difference is not an acceleration** either: a vessel seen
+for the first time has no previous velocity, and subtracting zero from nine
+kilometres a second does the same thing once.
+
+Both are the same failure — a derivative taken against a value that was never
+initialised — and both were invisible until the numbers were put side by side
+for four, three and one engines and came back the same.
+
+#### What is not done
+
+**Joints still do not break.** `breakForceN` has sat on `JointComponent` since
+joints were written, with a comment promising that an impact stronger than it
+"destroys the joint entity and the vessel falls apart along real structural
+lines", and nothing anywhere has ever read it. The flex pass now computes the
+moment each part transmits, which is precisely the quantity that decision needs,
+so the remaining work is a threshold and a call to `splitVessel` — which already
+exists and is already tested. That is the next commit, not a design problem.
+
+Also outstanding: a part's collider is still built at its REST pose, so a bent
+member collides where it used to be. Same fix as the deployed solar array needs.
+
+## Milestone 36 — the freeze at fifty kilometres a second
+
+> « quand j'accélère beaucoup (+50000 delta v) le jeux se met à freeze puis à
+> faire des à-coups pourtant le nombre de fps affiché reste à plus de 200 »
+
+**Two hundred frames a second and a freeze cannot both be true of the same
+frame.** That sentence is the whole diagnosis, and it was worth reading twice
+before touching anything: a counter that averages over a second cannot see a
+single frame that took a sixth of one, so the report is not a contradiction and
+not a mistake — it is a precise description of a main-thread hitch between fast
+frames.
+
+### The instrument came before the fix, twice
+
+The first hypothesis — the flight plan, recomputed four times a second on the
+main thread — was **measured and refuted**. A frame probe (`SW_FRAMEPROBE`,
+nine hundred frames of per-phase stopwatch) run six billion kilometres out at
+120 km/s reported the plan at **0.07 ms**. Right suspect, wrong place: that
+regime is nearly at the range cap, so there is almost no arc left to walk.
+
+What the second instrument changed was the question. `SW_PREDSWEEP` calls the
+real `predictTrajectory` against the real thirty-body index from four starting
+places — the craft's own state, and low orbit around Sol, Terra and Saturn —
+through a ladder of extra delta-v, and prints cost, sample count and every
+segment. The answer was immediate and was not monotonic:
+
+| burn from low Terra orbit | before | after |
+|---|---:|---:|
+| +20 000 m/s | 9.4 ms | 3.4 ms |
+| **+50 000 m/s** | **125.1 ms** | **3.6 ms** |
+| +100 000 m/s | 9.5 ms | 3.5 ms |
+
+A cost that spikes in the middle of a sweep and comes back down is never a
+scaling problem. It is a branch.
+
+### `acosh` has one branch, and the arc has two sides
+
+A hyperbolic escape is scanned by walking its own anomaly rather than by
+walking time — that was M32's fix, and it holds. The window it walks is solved
+in closed form from `r = a(1 − e·cosh H)`. But `acosh` returns a positive
+anomaly whether the craft is falling toward periapsis or climbing away from it;
+the sign lives in the mean anomaly, which is odd in `H`. The code read that
+positive value as "outbound" and **refused the inbound case entirely**, with a
+comment reasoning that an inbound arc reaches the bound in its past. Half true:
+it reaches the bound *behind* it in its past, and the bound *ahead* of it after
+periapsis.
+
+Refusing it was not a small conservatism. With no closed-form window the
+segment fell back on the uniform-in-time walk, whose window is then the
+caller's whole twenty-year horizon at the hyperbola's own step of about an hour
+and a half: **sixty-six thousand samples with nine planets probed at each.**
+And the state that triggers it is not exotic — it is any burn made on the
+sunward side of an orbit, which is half of them.
+
+```cpp
+if (meanNow < 0.0) { anomalyNow = -anomalyNow; }   // the whole fix
+```
+
+The window then runs from a negative anomaly, through periapsis, out to the
+bound — which is also where the samples are densest, exactly where they should
+be.
+
+### The bug the fix uncovered: a sample sitting on the boundary
+
+With the window now ending *at* the bound, several plans that used to hand off
+to Sol stopped after one segment. The scan's test is `radius > soiRadius`, a
+strict inequality — and the last sample was computed to land on that radius
+exactly. Whether the exit was seen came down to the last bit of a `cosh`, so it
+was seen for some burns and not others. This had always been true of the
+outbound path; it had simply been getting away with it.
+
+The window now overshoots the bound by one sample's worth of anomaly, so the
+crossing is strictly bracketed and bisection refines it as it always did. A
+side effect is more honest reporting: arcs that stop because they ran out of
+room now consistently say `RangeLimit` instead of sometimes claiming `Horizon`.
+
+### A planet you are nowhere near the orbit of needs no Kepler solve
+
+The residual was still 9–15 ms, all of it in the event scan: at every sample,
+every child of the primary is evaluated on its own orbit. But both radii are
+measured from the same primary, so a child whose entire annulus — periapsis to
+apoapsis, widened by its own sphere of influence — excludes our current radius
+cannot possibly contain us. Three flops replace a Newton iteration. An escape
+sweeps from one astronomical unit to sixty-seven, and at any single point along
+it at most one planet's annulus is in play, where the loop used to solve all
+nine. That is the last 3–4×.
+
+In the shipping game, after a +50 km/s burn: worst refresh **16.33 ms → 4.66
+ms**, mean **9.74 ms → 3.44 ms**, and the 125 ms case is 3.6 ms.
+
+### What is now measurable that was not
+
+`PredictionStats` (segments and samples) is returned by `predictTrajectory` on
+request, because the difference between a plan that costs 8 ms and one that
+costs 125 ms was invisible from outside: both returned the same segments,
+ending in the same place, for the same reason. The regression test asserts the
+**sample count**, not a stopwatch — it is the quantity that actually differs,
+and it is the same number on every machine. It fails by sixteen-fold on the
+code as it stood.
+
+The frame is also permanently instrumented now: nine `PhaseTimer` accumulators
+(simulation, celestial index, streaming, prediction, terrain, grass, reentry,
+scene collection, render) reset on the frame boundary, and `SW_FRAMEPROBE`
+reports each phase's worst and mean plus the breakdown of the single worst
+frame. The next "it stutters" report starts with a table instead of a
+hypothesis.
+
+### What is not done
+
+The plan still runs on the main thread. At 200 fps a frame is 5 ms and a
+refresh is now about 3.4 ms, so a refresh no longer doubles a frame but it is
+still the largest single thing the main thread does outside rendering.
+`predictTrajectory` is a pure function of a six-kilobyte index, so handing it
+to the thread pool and double-buffering the result is a contained change — and
+it is the structural end of this class of bug, rather than another constant
+factor off it.
+
+## Milestone 37 — the two tonnes that made a ship turn
+
+> « la propulsion doit être vers l'arrière des moteurs pas vers le coté sinon
+> accélérer fait tourner alors que ce ne devrais pas. il faut juste appliquer le
+> torque pour que si le moteur n'est pas centré cela produise une rotation en
+> plus de l'accélération, mais une rotation dans le bon sens »
+
+Two claims, both worth taking seriously, and the measurement agreed with the
+symptom and disagreed with the cause.
+
+### What the probe said
+
+`SW_THRUSTPROBE` now prints one line per engine — position, force, and its own
+`arm × F` — because the summed vector cannot tell *"every engine pushes
+sideways and they happen to add up"* from *"every engine pushes aft"*, and that
+is exactly the distinction the report was about. On the assembled Endurance:
+
+```
+engine def 201  at  29.40   0.00  0.00   push  0  0  -22000   arm x F      -1286   644583      0
+engine def 201  at  -0.00  29.40  0.00   push  0  0  -22000   arm x F    -648086    -2217      0
+engine def 201  at -29.40  -0.00  0.00   push  0  0  -22000   arm x F      -1286  -649017      0
+engine def 201  at   0.00 -29.40  0.00   push  0  0  -22000   arm x F     645514    -2217      0
+centre of mass 0.101 -0.058 0.000 m
+torque -5143.6 -8869.5 -0.0 N m
+```
+
+**Every module pushes (0, 0, −22 000): dead along the nose, out of the back of
+its own nozzles.** The direction was already right — EN-2 fires from its −Y
+face, and the ring places each module with its local +Y along the vessel's −Z,
+so the authored aft face *is* the ship's aft face. The four arms are at ±29.4 m
+on a perfect square.
+
+The lever was somewhere else entirely: **the balance point sat 11.7 cm off the
+ring's axle.** Thrust through a point that is not the balance point is a lever,
+and 88 kN on 11.7 cm is 10.3 kN·m. On a 500 t ship that is 2.3e-4 rad/s² — one
+and a third degrees per second after a hundred seconds, sixty-six degrees over a
+long burn. The pilot was right, and so was the physics.
+
+### Eleven point seven centimetres of nothing
+
+The offset pointed at −29.9°, which is slot 11 of twelve. Slot 11 is the cryo
+bay at 22 t and slot 5, opposite it, is the command pod at 20 t. Two tonnes at
+29.4 m on 503 t of ship is 0.117 m — the measurement to four digits, which is
+how you know there is nothing else in it.
+
+So the ship was never balanced, and every comment in the builder said it was:
+four propulsion modules at ninety degrees *"so the thrust passes through the
+centre of mass"*, habitats opposite each other, Rangers and Landers likewise,
+*"which is what keeps a spinning ring from wobbling about an axis it was not
+built to turn on"*. A ring that spins for artificial gravity genuinely has to
+balance or it wobbles — so this is a fault in the ship, not a liberty in the
+model, and the fix is the one an engineer would sign off: **the command pod is
+built to the same 22 t as the module it hangs opposite.** Balance point now
+(0.000, 0.000, 0.000); torque with all four lit, **10 253 N·m → 40 N·m**, which
+is float rounding.
+
+And because the claim had gone unchecked for a milestone and a half, the builder
+now measures it the same way it already measures whether the ring closes, and
+warns with the moment it will cost if anyone puts it out again.
+
+### And the flame comes out of the engine now
+
+The other half of the sentence was about what you can SEE. The exhaust plume was
+a single jet, nine and a half metres behind the ROOT PART, along the hull's own
+axis. On a rocket the root part is the stack and the jet lands in the engine
+bell, which is why it survived a year. On the Endurance the root part is the hub
+at the middle of the wheel: the exhaust boiled out of the centre of the ring
+while the nozzles it was supposed to be leaving through sat thirty metres away.
+Framed from behind, that reads exactly as a ship being shoved sideways.
+
+The assembly pass already knows where every engine is and which way it fires —
+the torque needs precisely that — so the plume asks it the same question. Each
+firing engine gets its own jet, from its own aft face, along its own axis, and
+an engine the pilot has shut down makes no flame because it is the same gate
+that makes it no thrust. How far back the flame starts is read from the part's
+own hull rather than from a constant, so EN-2's nozzle bank at 5.4 m down its −Y
+and a V-400's bell at 1.0 m down its +Z both come out right with no number
+written anywhere. The particle budget stays the SHIP's rather than each
+engine's: twelve nozzles must not cost twelve times the particles.
+
+### The right way round
+
+The second half of the request — *une rotation dans le bon sens* — was true
+already, and now it is pinned. Magnitude assertions pass for a cross product
+written backwards, and backwards is not subtle: it is a ship that yaws away from
+a failed engine instead of into it, which is the opposite of what a pilot has to
+correct.
+
+Shutting the module at −Y leaves τ = (−646 800, 0, 0) N·m. The nose's own
+motion is dn/dt = ω × n, so it falls **toward the dead engine** — the three
+still burning push the far side forward. Two tests state it that way rather than
+as two signs, because that is the thing a player sees, and a third separates the
+two causes that look identical from the pilot's seat: a craft with symmetric
+engines and an off-centre mass still twists, and the nose goes toward the heavy
+side.
+
 ### Milestone 32+ — candidates (remaining)
 Parallelise the LOD sphere builds across the thread pool (fourteen relief worlds
 serialised on one core is most of the boot bar). Land on Venus (a ground under the

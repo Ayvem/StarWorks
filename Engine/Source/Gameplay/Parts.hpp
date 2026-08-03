@@ -339,6 +339,37 @@ namespace sw::parts
         // ---- function-specific -------------------------------------------------
         f64 thrustNewtons = 0.0;        // engines
         f64 specificImpulseS = 0.0;     // engines (fuel flow = F / (Isp*g0))
+        /// WHICH WAY THIS ENGINE PUSHES, in its own frame — the direction of
+        /// the FORCE, not of the exhaust, so it points the way the ship goes.
+        ///
+        /// It defaults to the part's own forward, which is right for every
+        /// rocket whose nozzle is at the back and was therefore never worth a
+        /// field until an engine was not one. The Endurance's EN-2 propulsion
+        /// module carries its three plasma nozzles on its -Y face, because
+        /// twelve of those modules are strung around a ring and the ring
+        /// translates along its axle. Thrust summed along the part's -Z would
+        /// have pushed that ship sideways through its own hub.
+        Vec3 thrustDirection{0.0f, 0.0f, -1.0f};
+        /// HOW HARD THIS PART IS TO BEND, in newton-metres per radian of
+        /// deflection at its attachment, and at what moment it stops springing
+        /// back.
+        ///
+        /// ZERO MEANS RIGID, and rigid is the default, so adding this field
+        /// changed nothing about any part that does not ask for it. That is
+        /// deliberate: a game where every strut suddenly became a spring is a
+        /// game where every rocket that used to fly no longer does, and the
+        /// interesting parts are few — a ten-metre solar wing, a ring spoke, a
+        /// landing leg. A part with no flex behaves exactly as it did before
+        /// this existed.
+        ///
+        /// `flexYieldNm` is where elastic becomes plastic: below it the part
+        /// springs back and a panel rings after a burn; above it the excess is
+        /// moved into a permanent set and the leg STAYS bent. Above
+        /// `breakingForceN` — which has meant "the load this joint fails at"
+        /// since joints were written and had never been read by anything — it
+        /// comes off.
+        f64 flexStiffnessNmPerRad = 0.0;
+        f64 flexYieldNm = 0.0;
         f64 chargeRateKw = 0.0;         // solar panels: kJ/s generated
 
         // ---- industry (F1): present only on buildings --------------------------
@@ -524,6 +555,36 @@ namespace sw::parts
         /// fall out of keeping these two fields honest.
         Vec3 centreOfMass{0.0f};
         Vec3 inertiaKgM2{1.0f}; // diagonal, about the centre of mass
+        /// WHERE THE ENGINES PUSH AND HOW HARD THEY TWIST, both in the
+        /// vessel's own frame, both at full throttle.
+        ///
+        /// A force has a POINT OF APPLICATION and this is what admits it. The
+        /// old model put the whole of `maxThrustNewtons` at the centre of mass
+        /// along the hull's nose, which is exactly true for a symmetric rocket
+        /// and a lie for everything else: shut three of the Endurance's four
+        /// propulsion modules and the ship carried on in a straight line,
+        /// because the three that were left were summed into one scalar that
+        /// had forgotten where they were bolted.
+        ///
+        /// Now each engine contributes its own thrust vector at its own
+        /// position, so `thrustForceN` is their sum and `thrustTorqueNm` is
+        /// the sum of (position - centreOfMass) x force. A symmetric craft
+        /// gets a torque of zero for free — not because anything special-cases
+        /// it, but because the arms cancel.
+        Vec3 thrustForceN{0.0f};
+        Vec3 thrustTorqueNm{0.0f};
+        /// LAST TICK'S MOTION, so the flex pass can DIFFERENCE an acceleration
+        /// rather than ask every system that might have applied one.
+        ///
+        /// Thrust, the ground, the air and a collision all change the velocity
+        /// and none of them agrees on where to record what they did. The
+        /// difference across a tick catches all four for free and cannot fall
+        /// out of step with any of them, which is worth more than the exactness
+        /// a dedicated accumulator would buy.
+        WorldVec3 previousVelocity{0.0};
+        Vec3 previousAngularVelocity{0.0f};
+        Vec3 accelerationMps2{0.0f};      // vessel frame
+        Vec3 angularAccelRadPerS2{0.0f};  // vessel frame
         /// Half extents of the vessel's hull, vessel frame. Aerodynamic
         /// damping needs a length, and this is the honest one.
         Vec3 halfExtents{0.5f};
@@ -552,6 +613,28 @@ namespace sw::parts
         JointType type = JointType::Stack;
         f64 strengthN = 2.0e5;   // static load limit (editor validation)
         f64 breakForceN = 2.0e5; // dynamic impact limit (structural failure)
+    };
+
+    /// HOW FAR THIS PART IS BENT, on the part entity.
+    ///
+    /// Three numbers and a spring, which is the whole of the deformation
+    /// model. There is no finite-element anything here and there does not need
+    /// to be: a part is attached to its vessel at one point, the load it
+    /// transmits through that point is its own mass times the acceleration it
+    /// is being given, and a beam under a moment deflects by moment over
+    /// stiffness. Everything the eye reads as structural — a long rocket
+    /// bowing under thrust, a panel ringing after a burn, a leg that stays
+    /// bent after a hard landing — falls out of those three lines.
+    ///
+    /// `elastic` springs back and `permanent` does not. The sum is what the
+    /// part is drawn at and what its engines point along, so the feedback is
+    /// real: a bent rocket's engines push slightly sideways, which bends it
+    /// further, which is what makes a long one wobble rather than settle.
+    struct PartFlexComponent
+    {
+        Vec3 elastic{0.0f};   // radians, vessel frame, springs back
+        Vec3 rate{0.0f};      // radians per second
+        Vec3 permanent{0.0f}; // radians, plastic set, stays
     };
 
     /// THE LIVE STATE OF ONE PART'S ANIMATIONS, on the part entity.
@@ -613,6 +696,7 @@ namespace sw::parts
     static_assert(std::is_trivially_copyable_v<PartComponent>);
     static_assert(std::is_trivially_copyable_v<VesselComponent>);
     static_assert(std::is_trivially_copyable_v<JointComponent>);
+    static_assert(std::is_trivially_copyable_v<PartFlexComponent>);
 
     // ---- vessel operations (free functions; structural — call from the
     // main thread between simulation ticks, never inside a system) -------------
@@ -671,6 +755,33 @@ namespace sw::parts
     /// vessel rigidly — world pose = vessel pose composed with the local
     /// pose, previous derived from the vessel's previous (interpolation in
     /// lockstep, the same rule as surface anchors).
+    /// BENDS EVERY FLEXIBLE PART BY WHAT IT IS BEING ASKED TO CARRY.
+    ///
+    /// Runs after VesselAssemblySystem — it needs the mass, the balance point
+    /// and this tick's acceleration — and before PartAttachmentSystem, which
+    /// is what turns the angle into a pose. One damped spring per part, driven
+    /// by the LATERAL part of the proper acceleration at that part's location:
+    /// a rocket accelerating perfectly along its own axis only compresses, and
+    /// what bends it is the sideways load an off-axis engine, a gust or a
+    /// landing puts on it. That is why this milestone had to wait for thrust
+    /// to have a point of application.
+    class PartFlexSystem final : public ecs::System
+    {
+    public:
+        [[nodiscard]] std::string_view name() const override { return "PartFlexSystem"; }
+
+        [[nodiscard]] ecs::SystemAccess access() const override
+        {
+            return ecs::SystemAccess{}
+                .write<VesselComponent>()
+                .write<PartFlexComponent>()
+                .read<PartComponent>()
+                .read<phys::DynamicBodyComponent>();
+        }
+
+        void update(ecs::World& world, f32 deltaSeconds) override;
+    };
+
     class PartAttachmentSystem final : public ecs::System
     {
     public:

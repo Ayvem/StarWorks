@@ -1110,6 +1110,48 @@ namespace game
         bool m_debugStarProbed = false;
         bool m_debugClockSet = false;
         bool m_debugGroundProbed = false;
+        bool m_debugThrustProbed = false;
+        bool m_debugEnginesSet = false;
+        /// What the flight plan costs. It is recomputed on the MAIN THREAD, so
+        /// this is directly a hitch the player feels — and it is invisible to
+        /// a frame-rate counter, because the frames between two refreshes are
+        /// as fast as they ever were.
+        sw::f64 m_worstPredictionMs = 0.0;
+        sw::f64 m_lastPredictionMs = 0.0;
+        bool m_debugFrameProbed = false;
+        bool m_debugBurned = false;
+        sw::u32 m_debugBurnDelay = 0;
+        bool m_debugPredSwept = false;
+        sw::u32 m_debugSweepDelay = 0;
+        std::vector<sw::f32> m_frameSamples;
+        std::vector<sw::f32> m_predictionSamples;
+        /// WHERE THE FRAME WENT. One accumulator per phase of the frame,
+        /// reset on the frame boundary; `m_phaseLastMs` is the completed
+        /// previous frame, which is the one `clock().deltaSeconds()` also
+        /// describes — so the probe compares two numbers about the same
+        /// frame rather than two numbers about neighbouring ones.
+        enum FramePhase : sw::u32
+        {
+            kPhaseSimulation = 0,
+            kPhaseCelestialIndex,
+            kPhaseStreaming,
+            kPhasePrediction,
+            kPhaseTerrain,
+            kPhaseGrass,
+            kPhaseReentry,
+            kPhaseScene,
+            kPhaseRender,
+            kPhaseCount,
+        };
+        static constexpr std::array<const char*, kPhaseCount> kPhaseNames{
+            "simulation", "celestial-index", "streaming", "prediction",
+            "terrain",    "grass",           "reentry",   "scene-collect",
+            "render"};
+        std::array<sw::f64, kPhaseCount> m_phaseMs{};
+        std::array<sw::f64, kPhaseCount> m_phaseLastMs{};
+        std::array<sw::f64, kPhaseCount> m_phaseWorstMs{};
+        std::array<sw::f64, kPhaseCount> m_phaseTotalMs{};
+        std::array<sw::f64, kPhaseCount> m_phaseWorstFrameMs{};
         /// SW_GROUNDPROBE: the walker's distance from its body's centre, one
         /// sample per frame. Standing still, this should be a constant.
         std::vector<sw::f64> m_groundSamples;

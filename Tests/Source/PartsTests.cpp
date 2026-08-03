@@ -1041,3 +1041,388 @@ SW_TEST(TheEnduranceModulesArePartsThePilotCanOperate)
     // modules that were the whole point of this test.
     SW_CHECK_EQ(animatedParts, static_cast<usize>(4));
 }
+
+// ============================================================================
+// A FORCE HAS A POINT OF APPLICATION
+//
+// "Si je desactive 3 des 4 moteurs de l'Endurance et que j'accelere je suis
+// cense tourner en meme temps."
+//
+// The old model summed every engine into one scalar, `maxThrustNewtons`, and
+// pushed it through the centre of mass along the hull's nose. That is exactly
+// right for a symmetric rocket and a lie for everything else: the scalar had
+// forgotten where the engines were bolted, so shutting three of four left a
+// craft accelerating perfectly straight.
+//
+// Each engine now contributes its thrust as a VECTOR at its own position, so
+// the direction and the torque both fall out of the geometry. A symmetric
+// craft gets zero torque for free — nothing special-cases it, the arms cancel.
+// ============================================================================
+SW_TEST(EnginesPushFromWhereTheyAreBoltedAndTwistWhenTheyAreNot)
+{
+    ecs::World world;
+    const ecs::Entity root = world.createEntity();
+    world.addComponent(root, TransformComponent{});
+    world.addComponent(root, VesselComponent{});
+    world.addComponent(root, phys::DynamicBodyComponent{{0.0, 0.0, 0.0}, 1.0});
+
+    // Four engines on the corners of a square in the XY plane, all pushing
+    // along the vessel's own forward. Structure at the centre so the balance
+    // point is where the geometry says it is.
+    auto addPart = [&world, root](u32 definitionId, const Vec3& localPosition) {
+        const ecs::Entity part = world.createEntity();
+        world.addComponent(part, TransformComponent{});
+        world.addComponent(part, PreviousTransformComponent{});
+        PartComponent component{};
+        component.definitionId = definitionId;
+        component.vessel = root;
+        component.localPosition = localPosition;
+        world.addComponent(part, component);
+        return part;
+    };
+    addPart(kPartCoreStructural, {0.0f, 0.0f, 0.0f});
+    const ecs::Entity engines[4] = {
+        addPart(kPartEngineVector, {3.0f, 3.0f, 2.0f}),
+        addPart(kPartEngineVector, {-3.0f, 3.0f, 2.0f}),
+        addPart(kPartEngineVector, {3.0f, -3.0f, 2.0f}),
+        addPart(kPartEngineVector, {-3.0f, -3.0f, 2.0f}),
+    };
+
+    VesselAssemblySystem assembly;
+    assembly.update(world, 0.02f);
+    const f64 single = findDefinition(kPartEngineVector)->thrustNewtons;
+
+    {
+        // FOUR SYMMETRIC ENGINES: the full force along -Z, and a torque that
+        // is zero because four equal arms about a common centre cancel.
+        const auto& vessel = world.getComponent<VesselComponent>(root);
+        SW_CHECK(std::abs(vessel.maxThrustNewtons - 4.0 * single) < 1.0);
+        SW_CHECK(std::abs(vessel.thrustForceN.z + static_cast<f32>(4.0 * single)) <
+                 1.0f);
+        SW_CHECK(std::abs(vessel.thrustForceN.x) < 1.0f);
+        SW_CHECK(std::abs(vessel.thrustForceN.y) < 1.0f);
+        // A MILLI-NEWTON-METRE ON A MEGA-NEWTON-METRE SCALE. The bound is
+        // absolute and tight on purpose: "small" would pass a real asymmetry.
+        SW_CHECK(glm::length(vessel.thrustTorqueNm) < 1.0f);
+    }
+
+    // SHUT ONE DOWN and the other three do not cancel. The gate is the same
+    // one the pilot's menu works — an engine with its hand switch off makes
+    // no thrust and therefore contributes no arm.
+    {
+        PartAnimationComponent state{};
+        state.count = 1;
+        state.phase[0] = 0.0f;
+        state.target[0] = 0.0f;
+        world.addComponent(engines[0], state);
+    }
+    assembly.update(world, 0.02f);
+    {
+        // THE HAND SWITCH IS THE WHOLE SCENARIO. The V-400's animation 0 is
+        // its ENGINE toggle and it gates thrust, so an engine the pilot has
+        // shut down stops contributing its force AND its arm — which is the
+        // difference between a switch that dims a light and a switch that
+        // changes where the ship goes.
+        const auto& vessel = world.getComponent<VesselComponent>(root);
+        SW_CHECK(std::abs(vessel.maxThrustNewtons - 3.0 * single) < 1.0);
+        // Three engines still push along -Z, at three quarters of the total.
+        SW_CHECK(vessel.thrustForceN.z < -static_cast<f32>(2.9 * single));
+        SW_CHECK(vessel.thrustForceN.z > -static_cast<f32>(3.1 * single));
+        // ...and now they TWIST. The moment is the shut engine's arm times
+        // its thrust: three metres of offset in each of x and y against a
+        // 400 kN motor, so both components are of order 1e6 N m.
+        SW_CHECK(glm::length(vessel.thrustTorqueNm) > 1.0e6f);
+        // About the two axes the missing corner was offset along, and NOT
+        // about the thrust axis itself: a set of parallel engines cannot spin
+        // a craft about the direction they all push in, however many of them
+        // are off. A torque appearing on z would mean the cross product had
+        // been written the wrong way round.
+        SW_CHECK(std::abs(vessel.thrustTorqueNm.x) > 1.0e6f);
+        SW_CHECK(std::abs(vessel.thrustTorqueNm.y) > 1.0e6f);
+        SW_CHECK(std::abs(vessel.thrustTorqueNm.z) < 1.0f);
+
+        // ...AND IT TURNS THE RIGHT WAY. « une rotation dans le bon sens. »
+        //
+        // Magnitude alone passes for a cross product written backwards, and
+        // backwards is not a subtle wrong: it is a ship that yaws away from
+        // the failure instead of into it, which is the opposite of what a
+        // pilot has to correct. The engine that went out is the one at
+        // (+3, +3), so the three still burning push the (−, −) side of the
+        // craft forward and the NOSE FALLS TOWARD THE DEAD ENGINE.
+        //
+        // Stated as the nose's own motion rather than as two signs, because
+        // that is the thing a player sees: dn/dt = ω × n, and ω has the sign
+        // of the torque on each axis (the inertia scaling them is positive).
+        const Vec3 nose{0.0f, 0.0f, -1.0f}; // the vessel frame's forward
+        const Vec3 noseDrift = glm::cross(vessel.thrustTorqueNm, nose);
+        SW_CHECK(noseDrift.x > 0.0f); // toward the shut engine's +x...
+        SW_CHECK(noseDrift.y > 0.0f); // ...and its +y
+        SW_CHECK(vessel.thrustTorqueNm.x > 0.0f);
+        SW_CHECK(vessel.thrustTorqueNm.y < 0.0f);
+    }
+
+    // ...AND SWITCHING IT BACK ON PUTS THE SHIP STRAIGHT AGAIN. A gate that
+    // could only ever remove thrust would pass every assertion above.
+    world.getComponent<PartAnimationComponent>(engines[0]).phase[0] = 1.0f;
+    assembly.update(world, 0.02f);
+    {
+        const auto& vessel = world.getComponent<VesselComponent>(root);
+        SW_CHECK(std::abs(vessel.maxThrustNewtons - 4.0 * single) < 1.0);
+        SW_CHECK(glm::length(vessel.thrustTorqueNm) < 1.0f);
+    }
+}
+
+// ============================================================================
+// A SHIP THAT IS OUT OF BALANCE TURNS EVEN WITH EVERY ENGINE LIT
+//
+// « la propulsion doit être vers l'arrière des moteurs pas vers le coté sinon
+// accélérer fait tourner alors que ce ne devrais pas. »
+//
+// The direction was already right — measured on the assembled Endurance, each
+// of the four modules pushes (0, 0, −22000 N), dead along the nose, and the
+// nozzles fire out of the back. What made it turn was not the thrust axis but
+// the BALANCE: its centre of mass sat 11.7 cm off the ring's axle, because a
+// 20 t command pod hung opposite a 22 t cryo bay. Thrust through a point that
+// is not the balance point is a lever, and 88 kN on 11.7 cm is 10.3 kN m.
+//
+// That is real and it stays. What it needed was a test that can tell the two
+// causes apart, because from the pilot's seat they look identical.
+// ============================================================================
+SW_TEST(ThrustThroughAnOffCentreBalancePointTipsTheNoseTowardTheHeavySide)
+{
+    ecs::World world;
+    const ecs::Entity root = world.createEntity();
+    world.addComponent(root, TransformComponent{});
+    world.addComponent(root, VesselComponent{});
+    world.addComponent(root, phys::DynamicBodyComponent{{0.0, 0.0, 0.0}, 1.0});
+
+    auto addPart = [&world, root](u32 definitionId, const Vec3& localPosition) {
+        const ecs::Entity part = world.createEntity();
+        world.addComponent(part, TransformComponent{});
+        world.addComponent(part, PreviousTransformComponent{});
+        PartComponent component{};
+        component.definitionId = definitionId;
+        component.vessel = root;
+        component.localPosition = localPosition;
+        world.addComponent(part, component);
+        return part;
+    };
+    // Four engines on a perfect square — the arrangement the Endurance uses,
+    // and the one whose arms cancel exactly.
+    addPart(kPartEngineVector, {3.0f, 3.0f, 2.0f});
+    addPart(kPartEngineVector, {-3.0f, 3.0f, 2.0f});
+    addPart(kPartEngineVector, {3.0f, -3.0f, 2.0f});
+    addPart(kPartEngineVector, {-3.0f, -3.0f, 2.0f});
+    addPart(kPartCoreStructural, {0.0f, 0.0f, 0.0f});
+
+    VesselAssemblySystem assembly;
+    assembly.update(world, 0.02f);
+    {
+        // BALANCED FIRST, so the second half measures the imbalance and not
+        // the fixture. Balanced ACROSS the thrust axis only: the engines sit
+        // aft of the structure, so the balance point is offset along z and is
+        // supposed to be — that is the direction they push, and an offset
+        // along the line of action is not a lever.
+        const auto& vessel = world.getComponent<VesselComponent>(root);
+        SW_CHECK(std::abs(vessel.centreOfMass.x) < 0.01f);
+        SW_CHECK(std::abs(vessel.centreOfMass.y) < 0.01f);
+        SW_CHECK(glm::length(vessel.thrustTorqueNm) < 1.0f);
+    }
+
+    // Now hang a mass off the +X side. Nothing about the engines changes:
+    // same four, same positions, same direction, same total force.
+    addPart(kPartCoreStructural, {8.0f, 0.0f, 0.0f});
+    assembly.update(world, 0.02f);
+    {
+        const auto& vessel = world.getComponent<VesselComponent>(root);
+        SW_CHECK(vessel.centreOfMass.x > 0.1f);
+        SW_CHECK(std::abs(vessel.thrustForceN.x) < 1.0f); // still pushing aft
+        SW_CHECK(std::abs(vessel.thrustForceN.y) < 1.0f);
+        SW_CHECK(vessel.thrustForceN.z < 0.0f);
+        // ...and yet it twists, about the one axis a +X offset can twist
+        // about, and in the direction that takes the nose toward the weight:
+        // the thrust line now passes on the -X side of the balance point, so
+        // that side leads.
+        SW_CHECK(std::abs(vessel.thrustTorqueNm.y) > 1.0e5f);
+        SW_CHECK(vessel.thrustTorqueNm.y < 0.0f);
+        SW_CHECK(std::abs(vessel.thrustTorqueNm.x) < 1.0f);
+        SW_CHECK(std::abs(vessel.thrustTorqueNm.z) < 1.0f);
+        const Vec3 nose{0.0f, 0.0f, -1.0f};
+        SW_CHECK(glm::cross(vessel.thrustTorqueNm, nose).x > 0.0f);
+    }
+}
+
+SW_TEST(AnEngineCanPushAlongAnAxisThatIsNotItsNose)
+{
+    using namespace sw::parts;
+    // THE ENDURANCE IS THE REASON THIS FIELD EXISTS. Its EN-2 propulsion
+    // module carries three plasma nozzles on its -Y face, because twelve
+    // modules are strung around a ring and a ring translates along its axle.
+    // Summed along the part's default -Z, the four modules' forces CANCELLED
+    // and left a pure 2.6 MN m torque — the ship was a reaction wheel. That is
+    // what the first measurement of this feature actually reported.
+    SW_CHECK(loadCatalog(FileSystem::executableDirectory() / "Assets" / "Parts"));
+    const PartDefinition* ringEngine = findDefinition(kPartEnduranceEngine);
+    SW_CHECK(ringEngine != nullptr);
+    SW_CHECK(ringEngine->thrustNewtons > 0.0);
+    // It pushes along +Y, away from the nozzles on its -Y face.
+    SW_CHECK(ringEngine->thrustDirection.y > 0.99f);
+
+    // ...and every other engine in the catalogue still pushes along its nose,
+    // because that is the default and the default is right for a rocket.
+    for (const PartDefinition& definition : catalog())
+    {
+        if (!(definition.thrustNewtons > 0.0) || definition.id == kPartEnduranceEngine)
+        {
+            continue;
+        }
+        SW_CHECK(definition.thrustDirection.z < -0.99f);
+    }
+
+    // The direction is normalised on load whatever the file says, because a
+    // force scaled by a direction that is not a unit vector is a thrust
+    // rating nobody typed.
+    for (const PartDefinition& definition : catalog())
+    {
+        if (definition.thrustNewtons > 0.0)
+        {
+            SW_CHECK(std::abs(glm::length(definition.thrustDirection) - 1.0f) < 1.0e-5f);
+        }
+    }
+}
+
+// ============================================================================
+// STRUCTURES THAT BEND
+//
+// "Au lieu d'avoir uniquement piece intacte / piece detruite, les structures
+// pourraient flechir sous les efforts."
+//
+// One damped spring per part and no finite elements anywhere: a part hangs off
+// its vessel at one point, the load through that point is its own mass times
+// the acceleration it is being given there, and a beam under a moment deflects
+// by moment over stiffness. Below yield it springs back and a panel rings;
+// above it the excess becomes a permanent set and the leg stays bent.
+//
+// The lateral part of the acceleration is what bends anything — a beam pushed
+// along its own length is in compression — which is why this could not exist
+// before thrust had a point of application.
+// ============================================================================
+SW_TEST(AFlexiblePartBendsUnderLoadAndOnlyKeepsTheBendPastYield)
+{
+    ecs::World world;
+    const ecs::Entity root = world.createEntity();
+    world.addComponent(root, TransformComponent{});
+    world.addComponent(root, VesselComponent{});
+    world.addComponent(root, phys::DynamicBodyComponent{{0.0, 0.0, 0.0}, 1.0});
+
+    const ecs::Entity part = world.createEntity();
+    world.addComponent(part, TransformComponent{});
+    world.addComponent(part, PreviousTransformComponent{});
+    PartComponent component{};
+    component.definitionId = kPartCoreStructural;
+    component.vessel = root;
+    component.localPosition = {0.0f, 0.0f, -8.0f}; // out along the vessel's nose
+    world.addComponent(part, component);
+    world.addComponent(part, PartFlexComponent{});
+
+    VesselAssemblySystem assembly;
+    PartFlexSystem flexSystem;
+    // FETCHED FRESH EVERY TIME, never held. The assembly pass gives a vessel
+    // its ground hull the first time it runs, which moves the entity to a new
+    // archetype and leaves any reference taken beforehand pointing at memory
+    // that is no longer its. The first version of this test held three of
+    // them and measured a structure that never moved because the velocity it
+    // was pushing on belonged to nothing.
+    auto body = [&world, root]() -> phys::DynamicBodyComponent& {
+        return world.getComponent<phys::DynamicBodyComponent>(root);
+    };
+    auto vessel = [&world, root]() -> VesselComponent& {
+        return world.getComponent<VesselComponent>(root);
+    };
+    auto flex = [&world, part]() -> PartFlexComponent& {
+        return world.getComponent<PartFlexComponent>(part);
+    };
+
+    // A definition with no stiffness is RIGID, and that is the default: adding
+    // this feature must not have turned every strut in the game into a spring.
+    SW_CHECK(!(findDefinition(kPartCoreStructural)->flexStiffnessNmPerRad > 0.0));
+    body().velocity = {0.0, 400.0, 0.0};
+    for (int i = 0; i < 40; ++i)
+    {
+        assembly.update(world, 0.02f);
+        flexSystem.update(world, 0.02f);
+    }
+    SW_CHECK(glm::length(flex().elastic) < 1.0e-6f);
+    SW_CHECK(glm::length(flex().permanent) < 1.0e-6f);
+
+    // THE FIRST DIFFERENCE IS NOT AN ACCELERATION. A vessel seen for the first
+    // time has no previous velocity, and subtracting zero from four hundred
+    // metres a second bends every strut on it flat before the first frame is
+    // drawn — which is exactly what the first run of this system did.
+    SW_CHECK(glm::length(vessel().previousVelocity - WorldVec3{0.0, 400.0, 0.0}) < 1.0e-9);
+
+    // Now make it flexible and push it SIDEWAYS. The part sticks out along -Z,
+    // so an acceleration along +X is entirely lateral to it. Three metres per
+    // second squared is a cruise load and forty g below is a landing: two
+    // orders of magnitude apart, so which side of yield each falls on is not a
+    // matter of tuning.
+    {
+        auto& definition = const_cast<PartDefinition&>(*findDefinition(kPartCoreStructural));
+        definition.flexStiffnessNmPerRad = 5.0e4;
+        definition.flexYieldNm = 4.0e4;
+    }
+    for (int i = 0; i < 60; ++i)
+    {
+        body().velocity.x += 0.06; // 3 m/s2 of lateral acceleration, held
+        assembly.update(world, 0.02f);
+        flexSystem.update(world, 0.02f);
+    }
+    const f32 bentUnderLoad = glm::length(flex().elastic);
+    SW_CHECK(bentUnderLoad > 1.0e-3f);   // it really bent
+    // ...about an axis perpendicular to both the member and the load: a beam
+    // pushed sideways hinges, it does not twist about its own length.
+    SW_CHECK(std::abs(glm::normalize(flex().elastic).y) > 0.99f);
+
+    // IT SPRINGS BACK. Take the load off and the elastic part decays — that is
+    // the difference between a spring and a hinge, and the ringing on the way
+    // down is what a big panel does after the engines cut.
+    for (int i = 0; i < 400; ++i)
+    {
+        assembly.update(world, 0.02f);
+        flexSystem.update(world, 0.02f);
+    }
+    SW_CHECK(glm::length(flex().elastic) < bentUnderLoad * 0.25f);
+    SW_CHECK(glm::length(flex().permanent) < 1.0e-6f); // nothing yielded
+
+    // AND PAST YIELD IT DOES NOT. A hard landing is a large acceleration for a
+    // short time; what is left afterwards is a bent leg.
+    for (int i = 0; i < 30; ++i)
+    {
+        body().velocity.x += 8.0; // 400 m/s2 — about forty g
+        assembly.update(world, 0.02f);
+        flexSystem.update(world, 0.02f);
+    }
+    const f32 set = glm::length(flex().permanent);
+    SW_CHECK(set > 1.0e-3f);
+    // The elastic part is capped at the yield angle by construction: past it,
+    // everything extra has gone into the metal.
+    const f32 yieldAngle = static_cast<f32>(4.0e4 / 5.0e4);
+    SW_CHECK(glm::length(flex().elastic) <= yieldAngle + 1.0e-4f);
+
+    // ...and it STAYS. Four hundred quiet ticks later the permanent set is
+    // still there, which is the whole point of it being permanent.
+    for (int i = 0; i < 400; ++i)
+    {
+        assembly.update(world, 0.02f);
+        flexSystem.update(world, 0.02f);
+    }
+    SW_CHECK(std::abs(glm::length(flex().permanent) - set) < 1.0e-4f);
+
+    // Put the catalogue back: the definitions are a process-wide registry and
+    // the next test to load it deserves what the file says.
+    {
+        auto& definition = const_cast<PartDefinition&>(*findDefinition(kPartCoreStructural));
+        definition.flexStiffnessNmPerRad = 0.0;
+        definition.flexYieldNm = 0.0;
+    }
+}

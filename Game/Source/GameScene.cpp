@@ -1463,6 +1463,53 @@ namespace game
             }
         }
 
+        // ---- AND IT HAS TO BALANCE ------------------------------------------
+        //
+        // Every comment above claims it does — four propulsion modules at
+        // ninety degrees "so the thrust passes through the centre of mass",
+        // habitats opposite each other, Rangers and Landers likewise, "which
+        // is what keeps a spinning ring from wobbling about an axis it was
+        // not built to turn on". None of that was ever checked, and it was
+        // not true: a 20 t command pod hung opposite a 22 t cryo bay, which
+        // put the balance point 11.7 cm off the axle. Thrust through a point
+        // that is not the balance point is a lever — 88 kN on 11.7 cm is
+        // 10.3 kN m — so the ship yawed under acceleration with all four
+        // engines lit, and the pilot who reported it was right.
+        //
+        // The arithmetic is four lines and it is the same shape as the tunnel
+        // check above: state the property, measure it, and say so rather than
+        // trusting two files to agree. It is the RADIAL offset that matters;
+        // along the axle the balance point may sit wherever the design puts
+        // it, because that is the direction the engines push.
+        {
+            sw::Vec3 moment{0.0f};
+            sw::f32 mass = 0.0f;
+            for (const BlueprintPart& bp : blueprint)
+            {
+                if (const auto* definition = sw::parts::findDefinition(bp.definitionId))
+                {
+                    const auto m = static_cast<sw::f32>(definition->dryMassKg);
+                    moment += bp.localPosition * m;
+                    mass += m;
+                }
+            }
+            const sw::Vec3 centre = (mass > 0.0f) ? (moment / mass) : sw::Vec3{0.0f};
+            const sw::f32 offAxis = glm::length(sw::Vec3{centre.x, centre.y, 0.0f});
+            if (offAxis > 0.02f)
+            {
+                SW_LOG_WARN("Game",
+                            "ENDURANCE: the balance point is {:.3f} m off the ring "
+                            "axis ({:.3f}, {:.3f}) — thrust will twist it by "
+                            "{:.0f} N m",
+                            offAxis, centre.x, centre.y,
+                            offAxis * 4.0f *
+                                static_cast<sw::f32>(
+                                    sw::parts::findDefinition(
+                                        sw::parts::kPartEnduranceEngine)
+                                        ->thrustNewtons));
+            }
+        }
+
         // ---- the vessel root, ON RAILS around Saturn -------------------------
         // a = 4.0e8 m: 6.9 Saturn radii — clear of the rings (2.27 R), inside
         // Rhea, deep inside the SOI. Low eccentricity, near the moon plane.

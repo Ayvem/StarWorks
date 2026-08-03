@@ -494,10 +494,54 @@ namespace game
                         }
                     }
 
-                    const sw::Vec3 forward = transform.rotation * sw::math::kWorldForward;
+                    // ---- WHERE THE ENGINES PUSH, AND HOW HARD THEY TWIST --
+                    //
+                    // A force has a point of application. The old model put
+                    // the whole of the vessel's thrust at its centre of mass
+                    // along the hull's nose, which is exactly right for a
+                    // symmetric rocket and a lie for everything else: shut
+                    // three of the Endurance's four propulsion modules and it
+                    // went on in a straight line, because the three that were
+                    // left had been summed into a scalar that had forgotten
+                    // where they were bolted.
+                    //
+                    // VesselAssemblySystem now sums them as VECTORS at their
+                    // own positions, so the direction and the torque both fall
+                    // out of the geometry. Nothing special-cases a symmetric
+                    // craft: its arms cancel.
+                    const sw::f64 command = static_cast<sw::f64>(controls.thrustAxis) *
+                                            static_cast<sw::f64>(ship.throttle);
+                    sw::Vec3 forward = transform.rotation * sw::math::kWorldForward;
+                    const auto* vessel =
+                        world.tryGetComponent<sw::parts::VesselComponent>(entity);
+                    if (vessel != nullptr && vessel->partCount > 0 &&
+                        glm::length(vessel->thrustForceN) > 1.0f)
+                    {
+                        // The engines' own summed direction, in the world.
+                        forward = glm::normalize(transform.rotation *
+                                                 vessel->thrustForceN);
+                        // ...and the twist they leave behind. Body-frame:
+                        // AngularIntegrationSystem integrates body-frame, and
+                        // the torque was summed in the vessel's own frame, so
+                        // no rotation belongs on this line at all.
+                        //
+                        // A THROTTLE THAT RUNS DRY MUST NOT KEEP TWISTING, so
+                        // the torque is scaled by the same fraction the thrust
+                        // was: `thrustNewtons` has already been cut by the
+                        // fuel that actually burned.
+                        const sw::f64 delivered =
+                            (vessel->maxThrustNewtons > 1.0)
+                                ? thrustNewtons / vessel->maxThrustNewtons
+                                : 1.0;
+                        const sw::Vec3 torque =
+                            vessel->thrustTorqueNm *
+                            static_cast<sw::f32>(command * delivered);
+                        const sw::Vec3 inertia = glm::max(vessel->inertiaKgM2,
+                                                          sw::Vec3{1.0f});
+                        body.angularVelocity += (torque / inertia) * deltaSeconds;
+                    }
                     const sw::f64 acceleration =
-                        static_cast<sw::f64>(controls.thrustAxis) *
-                        static_cast<sw::f64>(ship.throttle) * thrustNewtons / body.mass;
+                        command * thrustNewtons / body.mass;
                     body.velocity += sw::WorldVec3(forward) * acceleration *
                                      static_cast<sw::f64>(deltaSeconds);
                 }

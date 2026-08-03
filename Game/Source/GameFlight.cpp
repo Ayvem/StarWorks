@@ -5,6 +5,8 @@
 
 #include "StarWorksGame.hpp"
 
+#include <chrono>
+
 #include "GameInternal.hpp"
 #include "Systems.hpp"
 
@@ -196,10 +198,8 @@ namespace game
             m_particleSpawnDebt += 220.0f * power * deltaSeconds;
             auto random01 = [this] { return hash01(m_particleSeed++); };
             // The plume leaves through the nozzle, OPPOSITE the thrust:
-            // forward burn -> jet out the back (+Z body), retro -> the front.
+            // forward burn -> jet out the back, retro -> the front.
             const sw::f32 jetSign = (controls->thrustAxis > 0.0f) ? 1.0f : -1.0f;
-            const sw::Vec3 jetDir =
-                shipTransform->rotation * sw::Vec3{0.0f, 0.0f, jetSign};
             sw::WorldVec3 exhaustOrigin = shipTransform->position;
             if (const auto* previous =
                     m_world.tryGetComponent<PreviousTransformComponent>(m_shipEntity))
@@ -208,21 +208,106 @@ namespace game
                     glm::mix(previous->position, shipTransform->position,
                              static_cast<sw::f64>(m_physicsLane->alpha()));
             }
-            const sw::WorldVec3 nozzle = exhaustOrigin + sw::WorldVec3(jetDir) * 9.5;
+
+            // ---- ONE JET PER NOZZLE, FROM THE NOZZLE -----------------------
+            //
+            // « la propulsion doit être vers l'arrière des moteurs. »
+            //
+            // This used to be a single jet, nine and a half metres behind the
+            // ROOT PART, along the hull's own axis. On a rocket that is the
+            // engine bell and nobody could tell. On the Endurance the root
+            // part is the hub at the middle of the wheel, so the exhaust was
+            // a cloud boiling out of the centre of the ring while the twelve
+            // nozzles it was supposed to be leaving through sat thirty metres
+            // away — and the ship looked like it was being pushed sideways
+            // even after it had stopped being pushed sideways.
+            //
+            // The assembly pass already knows where every engine is and which
+            // way it fires, because the torque needs exactly that. So does
+            // this: each firing engine gets its own plume, from its own aft
+            // face, along its own axis. An engine the pilot has shut down
+            // makes no flame, which is the same gate that makes it no thrust.
+            struct Nozzle
+            {
+                sw::WorldVec3 position;
+                sw::Vec3 direction;
+            };
+            std::vector<Nozzle> nozzles;
+            m_world.forEach<sw::parts::PartComponent>(
+                [&](sw::ecs::Entity part, sw::parts::PartComponent& component) {
+                    if (component.vessel != m_shipEntity) { return; }
+                    const auto* definition =
+                        sw::parts::findDefinition(component.definitionId);
+                    if (definition == nullptr || !(definition->thrustNewtons > 0.0))
+                    {
+                        return;
+                    }
+                    const auto* state =
+                        m_world.tryGetComponent<sw::parts::PartAnimationComponent>(part);
+                    if (sw::parts::animationGate(*definition, state,
+                                                 sw::parts::AnimationGates::Thrust) <= 0.5)
+                    {
+                        return;
+                    }
+                    // HOW FAR BACK THE BELL ENDS, from the part's own hull
+                    // rather than from a constant: the flame starts where the
+                    // metal stops. EN-2's nozzle bank reaches 5.4 m down its
+                    // -Y and a V-400's bell 1.0 m down its +Z, and neither
+                    // number is written here.
+                    const sw::Vec3 partAft = -definition->thrustDirection;
+                    sw::Vec3 low{1.0e9f};
+                    sw::Vec3 high{-1.0e9f};
+                    sw::parts::expandPartHullBounds(*definition, sw::Vec3{0.0f},
+                                                    sw::Quat{1.0f, 0.0f, 0.0f, 0.0f},
+                                                    low, high);
+                    sw::f32 standOff = 1.0f;
+                    if (high.x >= low.x)
+                    {
+                        const sw::Vec3 corner{partAft.x >= 0.0f ? high.x : low.x,
+                                              partAft.y >= 0.0f ? high.y : low.y,
+                                              partAft.z >= 0.0f ? high.z : low.z};
+                        standOff = std::max(glm::dot(corner, partAft), 0.0f);
+                    }
+                    const sw::Vec3 localAft = component.localRotation * partAft;
+                    const sw::Vec3 localNozzle =
+                        component.localPosition + localAft * standOff;
+                    nozzles.push_back(
+                        {exhaustOrigin +
+                             sw::WorldVec3(shipTransform->rotation * localNozzle),
+                         shipTransform->rotation * (localAft * jetSign)});
+                });
+            if (nozzles.empty())
+            {
+                // No parts to ask — the same fallback ThrustSystem makes when
+                // a craft has no engine vector: the hull's own axis.
+                nozzles.push_back({exhaustOrigin +
+                                       sw::WorldVec3(shipTransform->rotation *
+                                                     sw::Vec3{0.0f, 0.0f, jetSign}) * 9.5,
+                                   shipTransform->rotation *
+                                       sw::Vec3{0.0f, 0.0f, jetSign}});
+            }
+            // The BUDGET IS THE SHIP'S, not each engine's: twelve nozzles must
+            // not cost twelve times the particles, or the Endurance alone
+            // empties the pool and the reentry trail stops working.
             while (m_particleSpawnDebt >= 1.0f && m_particles.size() < kMaxParticles)
             {
                 m_particleSpawnDebt -= 1.0f;
+                const Nozzle& source =
+                    nozzles[static_cast<sw::usize>(random01() *
+                                                   static_cast<sw::f32>(nozzles.size())) %
+                            nozzles.size()];
                 ReentryParticle particle{};
                 const sw::WorldVec3 jitter{random01() - 0.5f, random01() - 0.5f,
                                            random01() - 0.5f};
-                particle.position = nozzle + jitter * 1.2;
+                particle.position = source.position + jitter * 1.2;
                 particle.velocity = shipBody->velocity +
-                                    sw::WorldVec3(jetDir) * (70.0 + 90.0 * random01()) +
+                                    sw::WorldVec3(source.direction) *
+                                        (70.0 + 90.0 * random01()) +
                                     jitter * 7.0;
                 particle.maxLife = 0.22f + 0.30f * random01();
                 particle.life = particle.maxLife;
                 particle.size = 0.28f + 0.35f * random01();
-                particle.streakDirection = jetDir;
+                particle.streakDirection = source.direction;
                 particle.stretch = 3.0f;
                 particle.kind = 1;
                 m_particles.push_back(particle);
@@ -540,6 +625,24 @@ namespace game
             return;
         }
         m_lastPredictionSeconds = now;
+        // WHAT ONE REFRESH COSTS. The plan is recomputed four times a second
+        // ON THE MAIN THREAD, so a refresh that takes a third of a second is
+        // four freezes a second with fast frames in between — which is exactly
+        // what "the game stutters but the counter says 200 fps" describes.
+        const auto predictionStart = std::chrono::steady_clock::now();
+        struct PredictionTimer
+        {
+            const std::chrono::steady_clock::time_point& start;
+            sw::f64& worst;
+            sw::f64& last;
+            ~PredictionTimer()
+            {
+                last = std::chrono::duration<sw::f64, std::milli>(
+                           std::chrono::steady_clock::now() - start)
+                           .count();
+                worst = std::max(worst, last);
+            }
+        } timer{predictionStart, m_worstPredictionMs, m_lastPredictionMs};
 
         const sw::ecs::Entity entity = controlledEntity();
         const auto& transform = m_world.getComponent<TransformComponent>(entity);

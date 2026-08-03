@@ -358,6 +358,15 @@ namespace sw::parts
         definition.dragCoefficientArea = root.number("dragCoefficientArea", 0.8);
         definition.liftCoefficient = root.number("liftCoefficient", 0.0);
         definition.thrustNewtons = root.number("thrustNewtons", 0.0);
+        definition.thrustDirection =
+            vec3FromJson(root.find("thrustDirection"), Vec3{0.0f, 0.0f, -1.0f});
+        definition.flexStiffnessNmPerRad = root.number("flexStiffnessNmPerRad", 0.0);
+        definition.flexYieldNm = root.number("flexYieldNm", 0.0);
+        if (glm::length(definition.thrustDirection) < 1.0e-6f)
+        {
+            definition.thrustDirection = Vec3{0.0f, 0.0f, -1.0f};
+        }
+        definition.thrustDirection = glm::normalize(definition.thrustDirection);
         definition.specificImpulseS = root.number("specificImpulseS", 0.0);
         definition.chargeRateKw = root.number("chargeRateKw", 0.0);
 
@@ -546,6 +555,16 @@ namespace sw::parts
         root.set("dragCoefficientArea", json::Value(definition.dragCoefficientArea));
         root.set("liftCoefficient", json::Value(definition.liftCoefficient));
         root.set("thrustNewtons", json::Value(definition.thrustNewtons));
+        if (definition.thrustNewtons > 0.0)
+        {
+            root.set("thrustDirection", vec3ToJson(definition.thrustDirection));
+        }
+        if (definition.flexStiffnessNmPerRad > 0.0)
+        {
+            root.set("flexStiffnessNmPerRad",
+                     json::Value(definition.flexStiffnessNmPerRad));
+            root.set("flexYieldNm", json::Value(definition.flexYieldNm));
+        }
         root.set("specificImpulseS", json::Value(definition.specificImpulseS));
         root.set("chargeRateKw", json::Value(definition.chargeRateKw));
 
@@ -951,9 +970,23 @@ namespace sw::parts
     // ------------------------------------------------------------------------
     void VesselAssemblySystem::update(ecs::World& world, f32 /*deltaSeconds*/)
     {
-        // Zero the accumulators.
+        // Zero the accumulators — but NOT the motion history.
+        //
+        // This pass rebuilds the vessel from its parts every tick, and it did
+        // so by assigning a default-constructed component over the top, which
+        // is exactly right for every field that is a SUM and catastrophic for
+        // the two that are a MEMORY. PartFlexSystem differences the velocity
+        // across a tick to get an acceleration; with the previous velocity
+        // wiped each pass, that difference was the vessel's whole orbital
+        // speed divided by the step — nine kilometres a second over a
+        // fiftieth of one, fifty thousand g — and every flexible part on the
+        // Endurance yielded to the clamp on the first frame and stayed there.
         world.forEach<VesselComponent>([](ecs::Entity, VesselComponent& vessel) {
+            const WorldVec3 previousVelocity = vessel.previousVelocity;
+            const Vec3 previousAngular = vessel.previousAngularVelocity;
             vessel = VesselComponent{};
+            vessel.previousVelocity = previousVelocity;
+            vessel.previousAngularVelocity = previousAngular;
         });
 
         // The vessel's GROUND HULL, in vessel space. It is accumulated from
@@ -975,9 +1008,20 @@ namespace sw::parts
         };
         std::unordered_map<ecs::Entity, std::vector<MassPoint>> massPoints;
 
+        /// One engine reduced to what a force needs: how hard, which way and
+        /// WHERE. Collected rather than summed for the same reason the mass
+        /// points are — the torque is taken about the centre of mass, and the
+        /// centre of mass is not known until the last part has been weighed.
+        struct ThrustPoint
+        {
+            Vec3 position{0.0f};
+            Vec3 forceN{0.0f};
+        };
+        std::unordered_map<ecs::Entity, std::vector<ThrustPoint>> thrustPoints;
+
         // Accumulate every part into its vessel.
-        world.forEach<PartComponent>([&world, &hulls, &massPoints](ecs::Entity entity,
-                                                                   PartComponent& part) {
+        world.forEach<PartComponent>([&world, &hulls, &massPoints, &thrustPoints](
+                                         ecs::Entity entity, PartComponent& part) {
             auto* vessel = world.tryGetComponent<VesselComponent>(part.vessel);
             const PartDefinition* definition = findDefinition(part.definitionId);
             if (vessel == nullptr || definition == nullptr)
@@ -1013,6 +1057,14 @@ namespace sw::parts
             vessel->partCount += 1;
             if (definition->thrustNewtons > 0.0 && definition->specificImpulseS > 0.0)
             {
+                // WHERE IT PUSHES AND FROM WHERE. The scalar below is still
+                // the total for the fuel sums and the HUD; this is the same
+                // thrust as a vector at a point, which is what a torque needs.
+                thrustPoints[part.vessel].push_back(
+                    {part.localPosition,
+                     part.localRotation *
+                         (definition->thrustDirection *
+                          static_cast<f32>(definition->thrustNewtons * thrustGate))});
                 vessel->maxThrustNewtons += definition->thrustNewtons * thrustGate;
                 vessel->maxMassFlowKgps += definition->thrustNewtons * thrustGate /
                                            (definition->specificImpulseS * 9.80665);
@@ -1056,7 +1108,7 @@ namespace sw::parts
         // Push the aggregate into the vessel's rigid body.
         std::vector<std::pair<ecs::Entity, phys::GroundHullComponent>> pendingHulls;
         world.forEach<VesselComponent, phys::DynamicBodyComponent>(
-            [&hulls, &massPoints, &pendingHulls](ecs::Entity entity,
+            [&hulls, &massPoints, &thrustPoints, &pendingHulls](ecs::Entity entity,
                                                  VesselComponent& vessel,
                                                  phys::DynamicBodyComponent& body) {
                 if (vessel.partCount == 0)
@@ -1105,6 +1157,29 @@ namespace sw::parts
                     vessel.inertiaKgM2 = Vec3(glm::max(inertia, glm::dvec3(1.0)));
                 }
 
+                // ---- what the engines do, now that the balance is known ----
+                //
+                // A SYMMETRIC CRAFT GETS ZERO TORQUE FOR FREE. Nothing here
+                // special-cases it: four modules spaced around a ring produce
+                // four arms that cancel, and shutting one off leaves three
+                // that do not. That is the whole feature, and it is one cross
+                // product.
+                if (const auto engines = thrustPoints.find(entity);
+                    engines != thrustPoints.end())
+                {
+                    glm::dvec3 force{0.0};
+                    glm::dvec3 torque{0.0};
+                    for (const ThrustPoint& engine : engines->second)
+                    {
+                        const glm::dvec3 f(engine.forceN);
+                        force += f;
+                        torque += glm::cross(
+                            glm::dvec3(engine.position - vessel.centreOfMass), f);
+                    }
+                    vessel.thrustForceN = Vec3(force);
+                    vessel.thrustTorqueNm = Vec3(torque);
+                }
+
                 const auto found = hulls.find(entity);
                 if (found == hulls.end() ||
                     found->second.first.x > found->second.second.x)
@@ -1135,12 +1210,152 @@ namespace sw::parts
     }
 
     // ------------------------------------------------------------------------
+    // PartFlexSystem
+    // ------------------------------------------------------------------------
+    void PartFlexSystem::update(ecs::World& world, f32 deltaSeconds)
+    {
+        if (!(deltaSeconds > 0.0f))
+        {
+            return;
+        }
+        // ---- this tick's acceleration, by difference ------------------------
+        //
+        // Thrust, the ground, the air and a collision all change a vessel's
+        // velocity and none of them records what it did anywhere in common.
+        // Differencing across the tick catches all four and cannot fall out of
+        // step with any of them.
+        world.forEach<VesselComponent, TransformComponent, phys::DynamicBodyComponent>(
+            [deltaSeconds](ecs::Entity, VesselComponent& vessel,
+                           TransformComponent& transform,
+                           phys::DynamicBodyComponent& body) {
+                // THE FIRST DIFFERENCE IS NOT AN ACCELERATION. A vessel
+                // seen for the first time has no previous velocity, and
+                // subtracting zero from nine kilometres a second is a number
+                // that bends every strut on it flat before the first frame is
+                // drawn.
+                if (vessel.previousVelocity == WorldVec3{0.0} &&
+                    glm::dot(body.velocity, body.velocity) > 1.0)
+                {
+                    vessel.previousVelocity = body.velocity;
+                    vessel.previousAngularVelocity = body.angularVelocity;
+                    vessel.accelerationMps2 = Vec3{0.0f};
+                    vessel.angularAccelRadPerS2 = Vec3{0.0f};
+                    return;
+                }
+                const Quat toVessel = glm::inverse(transform.rotation);
+                const WorldVec3 deltaV = body.velocity - vessel.previousVelocity;
+                vessel.accelerationMps2 =
+                    toVessel * (Vec3(deltaV) / deltaSeconds);
+                vessel.angularAccelRadPerS2 =
+                    (body.angularVelocity - vessel.previousAngularVelocity) /
+                    deltaSeconds;
+                vessel.previousVelocity = body.velocity;
+                vessel.previousAngularVelocity = body.angularVelocity;
+            });
+
+        // ---- one damped spring per flexible part ----------------------------
+        world.forEach<PartComponent, PartFlexComponent>(
+            [&world, deltaSeconds](ecs::Entity, PartComponent& part,
+                                   PartFlexComponent& flex) {
+                const PartDefinition* definition = findDefinition(part.definitionId);
+                const auto* vessel = world.tryGetComponent<VesselComponent>(part.vessel);
+                if (definition == nullptr || vessel == nullptr ||
+                    !(definition->flexStiffnessNmPerRad > 0.0))
+                {
+                    return;
+                }
+
+                // WHAT THIS PART IS BEING ASKED TO CARRY. Its own mass times
+                // the acceleration it is being given at ITS location, which on
+                // a turning vessel is not the acceleration at the centre of
+                // mass: alpha x r is what a part far from the balance point
+                // feels and it is the whole reason a long craft bends when a
+                // single engine is shut down.
+                const Vec3 arm = part.localPosition - vessel->centreOfMass;
+                const Vec3 properAccel =
+                    vessel->accelerationMps2 +
+                    glm::cross(vessel->angularAccelRadPerS2, arm);
+
+                // ...AND ONLY ITS LATERAL PART BENDS ANYTHING. A beam pushed
+                // along its own length is in compression, not in bending. The
+                // part's own long axis is the direction it sticks out from the
+                // vessel's balance point, which is also the lever its mass acts
+                // through.
+                const f32 armLength = glm::length(arm);
+                const Vec3 outward =
+                    (armLength > 1.0e-3f) ? arm / armLength : Vec3{0.0f, 0.0f, -1.0f};
+                const Vec3 lateral =
+                    properAccel - outward * glm::dot(properAccel, outward);
+
+                // Moment = mass x lateral acceleration x lever, and the lever
+                // is the part's own reach rather than its distance from the
+                // balance point: a strut bends about ITS root, not about the
+                // ship's middle.
+                const f32 lever = std::max(partBoundsRadius(*definition), 0.25f);
+                const f32 moment =
+                    static_cast<f32>(definition->dryMassKg) * glm::length(lateral) *
+                    lever;
+                const Vec3 axis = glm::cross(outward, lateral);
+                const f32 axisLength = glm::length(axis);
+                const Vec3 target =
+                    (axisLength > 1.0e-6f)
+                        ? (axis / axisLength) *
+                              (moment / static_cast<f32>(definition->flexStiffnessNmPerRad))
+                        : Vec3{0.0f};
+
+                // A DAMPED SPRING, not a direct assignment, and that is where
+                // the vibration comes from: a panel handed its steady
+                // deflection instantly would simply be bent, and one that
+                // reaches it through a second-order system overshoots and
+                // rings, which is what a big flexible thing does after the
+                // engines light.
+                constexpr f32 kOmega = 6.0f;      // ~1 Hz, a big structure
+                constexpr f32 kDamping = 0.12f;   // lightly damped: it rings
+                flex.rate += ((target - flex.elastic) * (kOmega * kOmega) -
+                              flex.rate * (2.0f * kDamping * kOmega)) *
+                             deltaSeconds;
+                flex.elastic += flex.rate * deltaSeconds;
+
+                // YIELD: past this the part stops springing back. The excess
+                // moves into the permanent set, which is the difference
+                // between a panel that rings and a leg that stays bent.
+                if (definition->flexYieldNm > 0.0)
+                {
+                    const f32 yieldAngle =
+                        static_cast<f32>(definition->flexYieldNm /
+                                         definition->flexStiffnessNmPerRad);
+                    const f32 bend = glm::length(flex.elastic);
+                    if (bend > yieldAngle)
+                    {
+                        const Vec3 direction = flex.elastic / bend;
+                        flex.permanent += direction * (bend - yieldAngle);
+                        flex.elastic = direction * yieldAngle;
+                        flex.rate *= 0.25f; // the energy went into the metal
+                    }
+                }
+                // A bend of more than a right angle is a part that has come
+                // off, not a part that is bent. Held here until breakage
+                // lands; without the clamp a spike would spin the pose.
+                constexpr f32 kMaxBend = 1.2f;
+                if (glm::length(flex.permanent) > kMaxBend)
+                {
+                    flex.permanent = glm::normalize(flex.permanent) * kMaxBend;
+                }
+                if (glm::length(flex.elastic) > kMaxBend)
+                {
+                    flex.elastic = glm::normalize(flex.elastic) * kMaxBend;
+                    flex.rate = Vec3{0.0f};
+                }
+            });
+    }
+
+    // ------------------------------------------------------------------------
     // PartAttachmentSystem
     // ------------------------------------------------------------------------
     void PartAttachmentSystem::update(ecs::World& world, f32 /*deltaSeconds*/)
     {
         world.forEach<TransformComponent, PreviousTransformComponent, PartComponent>(
-            [&world](ecs::Entity, TransformComponent& transform,
+            [&world](ecs::Entity entity, TransformComponent& transform,
                      PreviousTransformComponent& previous, PartComponent& part) {
                 const auto* vessel =
                     world.tryGetComponent<TransformComponent>(part.vessel);
@@ -1148,17 +1363,47 @@ namespace sw::parts
                 {
                     return; // orphaned part: floats where it was
                 }
+                // ---- THE BEND, applied where the pose is made -------------
+                //
+                // This is the line that turns three numbers into a structure
+                // that visibly flexes. The part is rotated about the vessel's
+                // balance point by its total deflection, so it both LOOKS bent
+                // and, if it carries an engine, PUSHES bent — which is the
+                // feedback that makes a long craft wobble instead of settling.
+                //
+                // About the balance point and not about the part's own origin,
+                // because a deflection is a rotation of the member relative to
+                // the ship, and a member that rotated about its own centre
+                // would pivot in place without going anywhere.
+                Vec3 localPosition = part.localPosition;
+                Quat localRotation = part.localRotation;
+                if (const auto* flex = world.tryGetComponent<PartFlexComponent>(entity))
+                {
+                    const Vec3 bend = flex->elastic + flex->permanent;
+                    const f32 angle = glm::length(bend);
+                    if (angle > 1.0e-5f)
+                    {
+                        const auto* aggregate =
+                            world.tryGetComponent<VesselComponent>(part.vessel);
+                        const Vec3 pivot =
+                            (aggregate != nullptr) ? aggregate->centreOfMass : Vec3{0.0f};
+                        const Quat deflection = glm::angleAxis(angle, bend / angle);
+                        localPosition =
+                            pivot + deflection * (part.localPosition - pivot);
+                        localRotation = deflection * part.localRotation;
+                    }
+                }
                 transform.position =
-                    vessel->position + WorldVec3(vessel->rotation * part.localPosition);
-                transform.rotation = vessel->rotation * part.localRotation;
+                    vessel->position + WorldVec3(vessel->rotation * localPosition);
+                transform.rotation = vessel->rotation * localRotation;
 
                 if (const auto* vesselPrevious =
                         world.tryGetComponent<PreviousTransformComponent>(part.vessel))
                 {
                     previous.position =
                         vesselPrevious->position +
-                        WorldVec3(vesselPrevious->rotation * part.localPosition);
-                    previous.rotation = vesselPrevious->rotation * part.localRotation;
+                        WorldVec3(vesselPrevious->rotation * localPosition);
+                    previous.rotation = vesselPrevious->rotation * localRotation;
                 }
                 else
                 {

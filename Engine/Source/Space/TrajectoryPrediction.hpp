@@ -143,12 +143,28 @@ namespace sw::space
         return ManeuverStep{scale, 10.0 * scale};
     }
 
+    /// WHAT THE PLAN COST TO FIND, in the only unit that is the same on
+    /// every machine. The cost of a prediction is dominated by the event
+    /// scan, and the event scan is `samples` positions on our conic with
+    /// every child body of the primary evaluated at each — so this number,
+    /// not a stopwatch, is what a regression test can hold on to.
+    ///
+    /// It exists because the difference between a plan that costs 8 ms and
+    /// one that costs 125 ms was invisible from the outside: both returned
+    /// the same segments, ending at the same place, for the same reason.
+    struct PredictionStats
+    {
+        u32 segments = 0;
+        u32 samples = 0;
+    };
+
     /// Predicts from a WORLD-frame state. Returns at least one segment
     /// (unless the index is empty).
     void predictTrajectory(const CelestialIndex& index, const WorldVec3& worldPosition,
                            const WorldVec3& worldVelocity, f64 startTime,
                            const PredictionSettings& settings,
-                           std::vector<TrajectorySegment>& outSegments);
+                           std::vector<TrajectorySegment>& outSegments,
+                           PredictionStats* outStats = nullptr);
 
     // ------------------------------------------------------------------------
     // HOW CLOSE DO I GET?

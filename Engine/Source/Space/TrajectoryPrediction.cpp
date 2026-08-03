@@ -51,6 +51,27 @@ namespace sw::space
                 {
                     continue;
                 }
+                // A PLANET YOU ARE NOWHERE NEAR THE ORBIT OF NEEDS NO KEPLER
+                // SOLVE. Both radii are measured from the same primary, so a
+                // child whose whole annulus — periapsis to apoapsis, widened
+                // by its own sphere of influence — excludes our current radius
+                // cannot possibly contain us, and the comparison costs three
+                // flops against the Newton iteration it replaces.
+                //
+                // This is most of the scan on the trajectory that matters: an
+                // escape sweeps from one au to sixty-seven, and at any single
+                // point along it at most one planet's annulus is in play,
+                // while the loop used to solve all nine at every one of four
+                // thousand samples.
+                if (child.orbit.eccentricity < 1.0 && child.orbit.semiMajorAxis > 0.0)
+                {
+                    const f64 span = child.orbit.semiMajorAxis * child.orbit.eccentricity;
+                    if (radius < child.orbit.semiMajorAxis - span - child.soiRadius ||
+                        radius > child.orbit.semiMajorAxis + span + child.soiRadius)
+                    {
+                        continue;
+                    }
+                }
                 WorldVec3 childRelative{};
                 phys::kepler::evaluate(child.orbit, t, childRelative);
                 const WorldVec3 delta = relative - childRelative;
@@ -89,9 +110,14 @@ namespace sw::space
     void predictTrajectory(const CelestialIndex& index, const WorldVec3& worldPosition,
                            const WorldVec3& worldVelocity, f64 startTime,
                            const PredictionSettings& settings,
-                           std::vector<TrajectorySegment>& outSegments)
+                           std::vector<TrajectorySegment>& outSegments,
+                           PredictionStats* outStats)
     {
         outSegments.clear();
+        if (outStats != nullptr)
+        {
+            *outStats = PredictionStats{};
+        }
         if (index.size() == 0)
         {
             return;
@@ -230,16 +256,53 @@ namespace sw::space
                     {
                         anomalyAtBound = std::acosh(coshBound);
                         anomalyNow = std::acosh(coshNow);
-                        const f64 meanAtBound =
-                            e * std::sinh(anomalyAtBound) - anomalyAtBound;
                         const f64 meanNow =
                             segment.orbit.meanAnomalyAtEpoch +
                             segment.orbit.meanMotion *
                                 (segmentStart - segment.orbit.epochSeconds);
-                        // Outbound only: an inbound arc reaches the bound in
-                        // its past, and its future is periapsis, which the
-                        // ordinary window already covers.
-                        if (meanNow >= 0.0 && meanAtBound > meanNow)
+                        // WHICH SIDE OF PERIAPSIS, and this is the whole bug.
+                        //
+                        // acosh has one branch, so the anomaly it returns is
+                        // positive whether the craft is coming in or going
+                        // out. The sign lives in the mean anomaly, which is
+                        // odd in H — so an inbound arc has to carry it, and
+                        // its window then runs from a NEGATIVE anomaly,
+                        // through periapsis, out to the bound.
+                        //
+                        // Refusing the inbound case (which is what this used
+                        // to do) is not a small conservatism: it drops the
+                        // segment back on the uniform-in-time walk, whose
+                        // window is then the caller's whole twenty-year
+                        // horizon at an hour-and-a-half step. Measured leaving
+                        // Terra at +50 km/s — a heliocentric hyperbola that
+                        // starts a few degrees before periapsis, which is what
+                        // ANY burn made on the day side gives you — that is
+                        // sixty-six thousand samples with nine planets probed
+                        // at each: 125 ms, four times a second, on the main
+                        // thread. It is exactly the freeze that was reported,
+                        // and the frame counter never saw it because the
+                        // frames either side of it were as fast as ever.
+                        if (meanNow < 0.0)
+                        {
+                            anomalyNow = -anomalyNow;
+                        }
+                        // ONE STEP PAST THE BOUND, so the bound is INSIDE the
+                        // window rather than on its edge.
+                        //
+                        // The last sample used to land exactly on the sphere
+                        // of influence, where the scan's test is `radius >
+                        // soiRadius` — a strict inequality against a number
+                        // the sample was computed to equal. Whether the exit
+                        // was seen came down to the last bit of a cosh, so it
+                        // was seen for some burns and not others, and the ones
+                        // where it was missed lost every patch after the
+                        // first: a Terra escape that should hand off to Sol
+                        // drew one arc and stopped there.
+                        anomalyAtBound +=
+                            (anomalyAtBound - anomalyNow) / samplesPerRevolution;
+                        const f64 meanAtBound =
+                            e * std::sinh(anomalyAtBound) - anomalyAtBound;
+                        if (meanAtBound > meanNow)
                         {
                             const f64 timeToBound =
                                 segmentStart +
@@ -311,9 +374,25 @@ namespace sw::space
                     break;
                 }
                 previousTime = sampleTime;
+                if (outStats != nullptr)
+                {
+                    ++outStats->samples;
+                }
             }
 
             outSegments.push_back(segment);
+            if (outStats != nullptr)
+            {
+                ++outStats->segments;
+                // The sample that FOUND the event is counted too: the loop
+                // breaks before the tally at the bottom, and a scan that
+                // stopped on its first probe still cost one probe.
+                if (segment.endReason != SegmentEnd::Horizon &&
+                    segment.endReason != SegmentEnd::Closed)
+                {
+                    ++outStats->samples;
+                }
+            }
 
             if (segment.endReason == SegmentEnd::Horizon ||
                 segment.endReason == SegmentEnd::Closed ||

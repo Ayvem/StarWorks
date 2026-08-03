@@ -2,7 +2,7 @@
   "id": 202,
   "type": "Structural",
   "name": "EN-3 Command Module",
-  "dryMassKg": 20000,
+  "dryMassKg": 22000,
   "costCredits": 74000,
   "volumeM3": 330,
   "crashToleranceMps": 11,

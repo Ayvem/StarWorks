@@ -160,6 +160,20 @@ Les constructions de sphères LOD sont **sérialisées sur un cœur** et représ
 l'essentiel de la barre de chargement. Le pool de threads existe. C'est le gain le
 plus visible par unité de travail côté moteur.
 
+Le plan de vol est encore calculé **sur le fil principal**, quatre fois par
+seconde. F36 l'a fait passer de 125 ms à 3,4 ms dans le pire cas mesuré, donc ce
+n'est plus un gel — mais à 200 images par seconde une image dure 5 ms, et c'est
+toujours la plus grosse chose que le fil principal fait en dehors du rendu.
+`predictTrajectory` est une fonction pure d'un index de six kilo-octets : la
+passer au pool de threads avec un double tampon est un changement délimité, et
+c'est la fin structurelle de cette famille de bugs plutôt qu'un facteur constant
+de plus.
+
+L'instrument existe maintenant et il faut s'en servir plutôt que de deviner :
+`SW_FRAMEPROBE` donne le pire et le moyen de neuf phases de la frame, et
+`SW_PREDSWEEP` donne le coût du plan en fonction du lieu et de la vitesse. Les
+deux premières hypothèses de F36 ont été réfutées par la mesure.
+
 Et #113 est toujours ouverte : un matériau par fragment pour les anneaux, plus
 l'ombre de la planète en travers de l'anneau et la diffusion vers l'avant qui
 éclaire un anneau à contre-jour.

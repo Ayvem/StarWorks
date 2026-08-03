@@ -14,6 +14,7 @@
 #include "StarWorksGame.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <format>
 #include <limits>
@@ -124,6 +125,32 @@ namespace game
         };
         /// How often the flight plan is recomputed (wall seconds).
         inline constexpr sw::f64 kPredictionRefreshSeconds = 0.25;
+
+        // ---- where a frame went ------------------------------------------------
+        //
+        // A HITCH IS NOT A FRAME RATE. "It freezes but the counter says 200
+        // fps" is not a contradiction and not a mistake by the player: an
+        // average over a second hides a single frame that took a third of one.
+        // So the frame has to be able to say which PART of it was slow, and
+        // the only honest way to know that is to time the parts.
+        //
+        // The timer ACCUMULATES rather than assigns, because a phase can run
+        // more than once in a frame and because two of them nest.
+        struct PhaseTimer
+        {
+            sw::f64& sink;
+            std::chrono::steady_clock::time_point start =
+                std::chrono::steady_clock::now();
+            PhaseTimer(const PhaseTimer&) = delete;
+            PhaseTimer& operator=(const PhaseTimer&) = delete;
+            explicit PhaseTimer(sw::f64& target) : sink(target) {}
+            ~PhaseTimer()
+            {
+                sink += std::chrono::duration<sw::f64, std::milli>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
+            }
+        };
 
         // ---- artificial horizon (navball) ------------------------------------
         inline constexpr sw::f32 kNavballCenterY = 0.62f; // NDC, y grows downward

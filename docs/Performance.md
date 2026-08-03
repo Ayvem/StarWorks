@@ -239,11 +239,36 @@ d'approche a été réduite de 4 096 à 256 échantillons après avoir mesuré q
 la même réponse au mètre près — **175 µs contre 6,4 ms**, seize fois moins de travail
 pour le même résultat.
 
+**Mise à jour F36 — ces chiffres valaient pour une orbite fermée.** Un joueur qui
+brûle 50 km/s quitte cette hypothèse, et le coût y était tout autre. Mesuré par
+`SW_PREDSWEEP` contre l'index réel (trente corps), depuis une orbite basse :
+
+| depuis | +20 000 m/s | +50 000 m/s | +100 000 m/s |
+|---|---:|---:|---:|
+| Terra, avant | 9,4 ms | **125,1 ms** | 9,5 ms |
+| Terra, après | 3,4 ms | **3,6 ms** | 3,5 ms |
+| Saturne, avant | 10,3 ms | 98,8 ms | 57,9 ms |
+| Saturne, après | 3,6 ms | 3,6 ms | 3,4 ms |
+
+Un coût qui explose au milieu d'un balayage puis redescend n'est jamais un
+problème d'échelle : c'est une branche. Ici, la fenêtre en forme close d'une
+hyperbole était refusée quand le vaisseau tombait encore vers son périastre, et
+le segment retombait sur un parcours uniforme en temps de vingt ans au pas propre
+de l'hyperbole — soixante-six mille échantillons, neuf planètes sondées à chacun.
+Le reste du gain vient d'un test radial de trois opérations qui remplace une
+itération de Newton pour toute planète dont l'anneau orbital n'englobe pas le
+rayon courant.
+
+Dans le jeu, après une poussée de +50 km/s : pire rafraîchissement **16,33 ms →
+4,66 ms**, moyenne **9,74 ms → 3,44 ms**. Le nombre d'échantillons, et non un
+chronomètre, est ce que le test de non-régression retient : c'est la grandeur qui
+diffère réellement, et elle est identique sur toutes les machines.
+
 ---
 
 ## 6. Suite de tests
 
-**223 tests, 0 échec, ~1 s** en tout — sans fenêtre, sans périphérique Vulkan et
+**190 tests, 0 échec, ~1 s** en tout — sans fenêtre, sans périphérique Vulkan et
 **sans une seule socket**. Les tests les plus lourds sont les aérodynamiques (le
 solveur tourne pour de vrai sur des formes de manuel) et le contrat de résolution du
 terrain, qui échantillonne le champ analytique des dizaines de milliers de fois.

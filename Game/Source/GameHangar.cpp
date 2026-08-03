@@ -771,6 +771,14 @@ namespace game
                                            sw::parts::partBoundsRadius(*definition)});
             m_world.addComponent(part, MeshComponent{m_partMeshIds.at(bp.definitionId)});
             attachPartAnimation(part, bp.definitionId);
+            // A PART THAT CAN BEND CARRIES SOMEWHERE TO PUT THE BEND. Only
+            // the ones whose author gave them a stiffness: everything else is
+            // rigid, which is what every part in the game was before this
+            // existed and what most of them should stay.
+            if (definition->flexStiffnessNmPerRad > 0.0)
+            {
+                m_world.addComponent(part, sw::parts::PartFlexComponent{});
+            }
             sw::parts::PartComponent component{};
             component.definitionId = bp.definitionId;
             component.vessel = root;

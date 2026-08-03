@@ -944,6 +944,83 @@ SW_TEST(AnEscapeTrajectoryStopsAtTheRangeCapAndABoundOneDoesNot)
 }
 
 // ============================================================================
+// ...AND THE ARC IS WALKED BY ANOMALY WHICHEVER SIDE OF PERIAPSIS IT STARTS
+//
+// This is the freeze the player reported: "when I accelerate a lot (+50000
+// delta v) the game freezes and then judders, and the counter still says 200
+// fps". Two hundred frames a second and a freeze cannot both be true of the
+// same frame, so it was never a frame-rate problem — it was one main-thread
+// call, four times a second, that took a sixth of a second.
+//
+// The call was this one. The anomaly walk that bounds a hyperbolic escape was
+// refused whenever the craft was still falling toward periapsis, because
+// acosh has one branch and the code read a positive anomaly as "outbound".
+// A burn made anywhere on the sunward side of an orbit gives exactly that
+// state, so the plan fell back on walking twenty years of time at the
+// hyperbola's own hour-and-a-half step: sixty-six thousand samples with every
+// planet probed at each. Measured 125 ms leaving Terra at +50 km/s, against
+// 9 ms for the same burn a few degrees later.
+//
+// The assertion is the sample count rather than a stopwatch, because that is
+// the quantity that actually differs — both versions return the same segments,
+// ending in the same place, for the same reason.
+// ============================================================================
+SW_TEST(AnInboundHyperbolaIsScannedAsCheaplyAsAnOutboundOne)
+{
+    ecs::World world;
+    const ecs::Entity sol = world.createEntity();
+    {
+        TransformComponent transform{};
+        world.addComponent(sol, transform);
+        world.addComponent(sol, phys::GravitySourceComponent{kMuSol, 6.957e8});
+        world.addComponent(sol, makeCelestialBody("SOL"));
+    }
+    CelestialIndex index;
+    index.rebuild(world);
+
+    // Three astronomical units out, well above escape speed, and pointed
+    // INWARD: this arc falls to periapsis at 0.9 au before it climbs out to
+    // the range cap. Nothing about it is unusual — it is what a burn made on
+    // the day side of any orbit produces.
+    const f64 radius = 3.0 * kTerraSma;
+    const f64 escapeSpeed = std::sqrt(2.0 * kMuSol / radius);
+    const WorldVec3 position{radius, 0.0, 0.0};
+    const WorldVec3 inward = glm::normalize(WorldVec3{-0.9, 0.0, 0.436});
+    const WorldVec3 outward = glm::normalize(WorldVec3{0.9, 0.0, 0.436});
+
+    PredictionSettings settings{};
+    settings.maxRangeMeters = 1.0e13;
+    std::vector<TrajectorySegment> plan;
+    PredictionStats inboundStats{};
+    PredictionStats outboundStats{};
+    predictTrajectory(index, position, inward * (escapeSpeed * 1.4), 0.0, settings, plan,
+                      &inboundStats);
+    SW_CHECK(plan.size() == 1);
+    // It still says the same thing it always did: the arc runs out of room.
+    SW_CHECK(plan[0].endReason == SegmentEnd::RangeLimit);
+    WorldVec3 end{};
+    phys::kepler::evaluate(plan[0].orbit, plan[0].endTime, end);
+    SW_CHECK(std::abs(glm::length(end) - settings.maxRangeMeters) <
+             settings.maxRangeMeters * 1.0e-4);
+    // ...and it goes THROUGH periapsis to get there, which is the part the old
+    // window could not express.
+    WorldVec3 periapsisSide{};
+    phys::kepler::evaluate(plan[0].orbit, plan[0].endTime * 0.05, periapsisSide);
+    SW_CHECK(glm::length(periapsisSide) < radius);
+
+    predictTrajectory(index, position, outward * (escapeSpeed * 1.4), 0.0, settings, plan,
+                      &outboundStats);
+    SW_CHECK(plan.size() == 1);
+    SW_CHECK(plan[0].endReason == SegmentEnd::RangeLimit);
+
+    // THE POINT. One extra revolution's worth of samples is the whole budget
+    // an anomaly walk is allowed; the uniform-in-time fallback spent sixteen
+    // times that on this very arc.
+    SW_CHECK(outboundStats.samples <= settings.samplesPerRevolution + 1);
+    SW_CHECK(inboundStats.samples <= settings.samplesPerRevolution + 1);
+}
+
+// ============================================================================
 // AND THE ARC IS WALKED BY ANOMALY, NOT BY TIME
 //
 // The step for a hyperbola is a fraction of its own time scale — about an hour

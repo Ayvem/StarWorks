@@ -62,6 +62,8 @@ namespace game
         // be a game that cannot write a save at all.
         m_saveSchema.registerComponent<sw::parts::PartAnimationComponent>(
             "parts.PartAnimation", 1);
+        m_saveSchema.registerComponent<sw::parts::PartFlexComponent>(
+            "sw.PartFlex", 1);
         // v2: + centre of mass, inertia and hull extents — what the
         // aerodynamics needs to turn a moment into a rotation.
         m_saveSchema.registerComponent<sw::parts::VesselComponent>("parts.Vessel", 2);
