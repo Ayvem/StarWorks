@@ -44,6 +44,16 @@ namespace sw::space
         /// here" and "the plan ran out of time", and the map draws the two
         /// very differently.
         Closed,
+        /// RAN OUT OF ROOM RATHER THAN OUT OF TIME. A hyperbolic escape from
+        /// the outermost body has no sphere of influence to leave and no
+        /// revolution to close, so before this existed it was drawn to the
+        /// twenty-year horizon — a line reaching a hundred billion kilometres
+        /// with nothing on it, sampled thousands of times and then split into
+        /// thousands of screen-space boxes because every chord of it spans
+        /// four orders of magnitude of camera distance. Placing a node on an
+        /// escape trajectory visibly hitched the frame. The plan now stops at
+        /// a range the pilot can actually reason about.
+        RangeLimit,
     };
 
     struct TrajectorySegment
@@ -86,6 +96,13 @@ namespace sw::space
         /// stretched to fit. Only an unbounded escape reaches this; it
         /// exists so a prediction can never become an unbounded loop.
         u32 maxSamplesPerSegment = 200000;
+        /// How far from the primary a plan is worth drawing. Ten billion
+        /// kilometres is past every planet in the solar system and two orders
+        /// of magnitude short of the nearest star, which is the right place to
+        /// stop: beyond it a heliocentric conic says nothing a pilot can use,
+        /// and an interstellar crossing is steered by heading rather than by
+        /// looking at an arc. Zero disables the cap.
+        f64 maxRangeMeters = 1.0e13;
     };
 
     // ------------------------------------------------------------------------

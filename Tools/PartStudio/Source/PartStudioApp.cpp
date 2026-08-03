@@ -39,6 +39,11 @@ namespace studio
         constexpr sw::f32 kAngleFine = 1.0f;
 
         constexpr const char* kKindNames[5] = {"BOX", "CYL", "CONE", "SPH", "TUBE"};
+        // The glyph set has no lower case and no apostrophe, which is why the
+        // verbs are a closed list rather than free text.
+        constexpr const char* kVerbNames[4] = {"OPEN/CLOSE", "ON/OFF", "EXT/RETR",
+                                               "DEPLOY/STOW"};
+        constexpr const char* kGateNames[3] = {"GATE NONE", "GATE PWR", "GATE THRUST"};
 
         constexpr sw::Vec3 kPalette[12] = {
             {0.88f, 0.88f, 0.90f}, {0.65f, 0.66f, 0.70f}, {0.35f, 0.35f, 0.38f},
@@ -119,6 +124,32 @@ namespace studio
         if (m_fileIndex >= m_files.size())
         {
             m_fileIndex = 0;
+        }
+    }
+
+    void PartStudioApp::applyStartupOptions(const std::string& partName, float phase,
+                                            const std::string& capturePath)
+    {
+        if (!partName.empty())
+        {
+            for (sw::usize i = 0; i < m_files.size(); ++i)
+            {
+                if (m_files[i].filename().string().find(partName) != std::string::npos)
+                {
+                    m_fileIndex = i;
+                    loadCurrentFile();
+                    break;
+                }
+            }
+        }
+        m_phase = std::clamp(phase, 0.0f, 1.0f);
+        if (!m_part.animations.empty())
+        {
+            m_selectedAnimation = 0;
+        }
+        if (!capturePath.empty())
+        {
+            renderer().requestCapture(capturePath);
         }
     }
 
@@ -372,11 +403,113 @@ namespace studio
     }
 
     // ========================= modal manipulation ============================
+    void PartStudioApp::addAnimation()
+    {
+        if (m_part.animations.size() >= sw::parts::kMaxPartAnimations)
+        {
+            return; // a part with five things to deploy is two parts
+        }
+        sw::parts::PartAnimation animation{};
+        std::snprintf(animation.name, sw::parts::PartAnimation::kNameCapacity, "ANIM %d",
+                      static_cast<int>(m_part.animations.size() + 1));
+        m_part.animations.push_back(animation);
+        m_selectedAnimation = static_cast<sw::i32>(m_part.animations.size()) - 1;
+    }
+
+    void PartStudioApp::deleteSelectedAnimation()
+    {
+        if (m_selectedAnimation < 0 ||
+            m_selectedAnimation >= static_cast<sw::i32>(m_part.animations.size()))
+        {
+            return;
+        }
+        const sw::i32 removed = m_selectedAnimation;
+        m_part.animations.erase(m_part.animations.begin() + removed);
+        // EVERY INDEX ABOVE IT MOVES DOWN, and a shape bound to the one that
+        // went becomes static again. Leaving the indices alone would silently
+        // rebind shapes to the wrong animation, which is a bug that only shows
+        // up as a panel deploying when the landing gear is asked for.
+        for (sw::parts::PartShape& shape : m_part.shapes)
+        {
+            if (shape.animation == removed) { shape.animation = -1; }
+            else if (shape.animation > removed) { shape.animation -= 1; }
+        }
+        m_selectedAnimation = m_part.animations.empty() ? -1 : 0;
+        markGeometryDirty();
+    }
+
+    void PartStudioApp::assignSelectedShapeToAnimation()
+    {
+        if (!hasShapeSelection() || m_selectedAnimation < 0)
+        {
+            return;
+        }
+        sw::parts::PartShape& shape =
+            m_part.shapes[static_cast<sw::usize>(m_selectedShape)];
+        if (shape.animation == m_selectedAnimation)
+        {
+            shape.animation = -1;
+            return;
+        }
+        shape.animation = m_selectedAnimation;
+        // A shape that has never been posed open is posed open WHERE IT IS,
+        // so binding it changes nothing until it is moved. The alternative —
+        // an end pose of all zeroes — would fling it to the part's origin the
+        // instant the phase was scrubbed, which reads as a bug rather than as
+        // an empty animation.
+        shape.endPosition = shape.position;
+        shape.endRotationDeg = shape.rotationDeg;
+        markGeometryDirty();
+    }
+
+    bool PartStudioApp::editingEndPose() const
+    {
+        if (m_phase < 0.5f || !hasShapeSelection())
+        {
+            return false;
+        }
+        const sw::parts::PartShape& shape =
+            m_part.shapes[static_cast<sw::usize>(m_selectedShape)];
+        return shape.animation >= 0;
+    }
+
+    /// The matrix that moves a shape's baked-at-rest mesh to where the scrub
+    /// says it should be. Identity for anything static, or at phase zero.
+    sw::Mat4 PartStudioApp::shapePreviewMatrix(sw::usize index) const
+    {
+        const sw::parts::PartShape& shape = m_part.shapes[index];
+        if (shape.animation < 0 || m_phase <= 0.0f)
+        {
+            return sw::Mat4{1.0f};
+        }
+        const sw::Quat restRotation{glm::radians(shape.rotationDeg)};
+        const sw::Quat endRotation{glm::radians(shape.endRotationDeg)};
+        const sw::parts::HingeMotion hinge = sw::parts::hingeBetween(
+            shape.position, restRotation, shape.endPosition, endRotation);
+        sw::Vec3 position{};
+        sw::Quat rotation{};
+        sw::parts::poseAlongHinge(hinge, shape.position, restRotation, m_phase, position,
+                                  rotation);
+        const sw::Mat4 rest = glm::translate(sw::Mat4{1.0f}, shape.position) *
+                              glm::mat4_cast(restRotation);
+        const sw::Mat4 live =
+            glm::translate(sw::Mat4{1.0f}, position) * glm::mat4_cast(rotation);
+        return live * glm::inverse(rest);
+    }
+
     void PartStudioApp::beginMode(Mode mode)
     {
         if (hasShapeSelection())
         {
             m_shapeBackup = m_part.shapes[static_cast<sw::usize>(m_selectedShape)];
+            // Editing the deployed pose starts FROM the deployed pose, not
+            // from the rest one: otherwise the first nudge of a panel that is
+            // already out snaps it back to folded.
+            if (editingEndPose())
+            {
+                m_shapeBackup.position = m_shapeBackup.endPosition;
+                m_shapeBackup.rotationDeg = m_shapeBackup.endRotationDeg;
+            }
         }
         else if (hasNodeSelection())
         {
@@ -489,10 +622,16 @@ namespace studio
             {
                 sw::parts::PartShape& shape =
                     m_part.shapes[static_cast<sw::usize>(m_selectedShape)];
-                shape.position = m_shapeBackup.position + delta;
+                // POSE RECORDING. Scrub the phase to 1 and the same G that has
+                // always moved a shape now moves it AT PHASE 1 — the rest pose
+                // is left alone and the deployed pose is written instead. That
+                // is the whole authoring model: an animation is not a set of
+                // numbers to type, it is the part, moved, with the slider up.
+                sw::Vec3& target = editingEndPose() ? shape.endPosition : shape.position;
+                target = m_shapeBackup.position + delta;
                 for (sw::i32 axis = 0; axis < 3; ++axis)
                 {
-                    shape.position[axis] = snapValue(shape.position[axis], positionSnap);
+                    target[axis] = snapValue(target[axis], positionSnap);
                 }
             }
             else if (hasNodeSelection())
@@ -524,8 +663,10 @@ namespace studio
                 snapValue(m_modalAccumX * 0.4f, angleSnap);
             sw::parts::PartShape& shape =
                 m_part.shapes[static_cast<sw::usize>(m_selectedShape)];
-            shape.rotationDeg = m_shapeBackup.rotationDeg;
-            shape.rotationDeg[axis] = m_shapeBackup.rotationDeg[axis] + angle;
+            sw::Vec3& target =
+                editingEndPose() ? shape.endRotationDeg : shape.rotationDeg;
+            target = m_shapeBackup.rotationDeg;
+            target[axis] = m_shapeBackup.rotationDeg[axis] + angle;
             markGeometryDirty();
         }
         else if (m_mode == Mode::Scale)
@@ -878,7 +1019,49 @@ namespace studio
                 color[channel] = std::clamp(color[channel] + delta, 0.0f, 1.0f);
                 markGeometryDirty();
             }
-            else if (id == 270) { addHitbox(); }
+            else if (id == 280) { addAnimation(); }
+        else if (id == 281) { deleteSelectedAnimation(); }
+        else if (id == 282) { m_phase = (m_phase > 0.5f) ? 0.0f : 1.0f; }
+        else if (id >= 283 && id <= 289 && m_selectedAnimation >= 0 &&
+                 m_selectedAnimation < static_cast<sw::i32>(m_part.animations.size()))
+        {
+            sw::parts::PartAnimation& animation =
+                m_part.animations[static_cast<sw::usize>(m_selectedAnimation)];
+            if (id == 283)
+            {
+                animation.trigger =
+                    (animation.trigger == sw::parts::AnimationTrigger::Toggle)
+                        ? sw::parts::AnimationTrigger::Throttle
+                        : sw::parts::AnimationTrigger::Toggle;
+            }
+            else if (id == 284)
+            {
+                animation.verbs = static_cast<sw::parts::AnimationVerbs>(
+                    (static_cast<sw::u32>(animation.verbs) + 1u) % 4u);
+            }
+            else if (id == 285)
+            {
+                animation.gates = static_cast<sw::parts::AnimationGates>(
+                    (static_cast<sw::u32>(animation.gates) + 1u) % 3u);
+            }
+            else if (id == 286)
+            {
+                animation.durationSeconds =
+                    std::max(0.2f, animation.durationSeconds - 0.5f);
+            }
+            else if (id == 287)
+            {
+                animation.durationSeconds =
+                    std::min(30.0f, animation.durationSeconds + 0.5f);
+            }
+            else if (id == 288) { animation.startsOpen = !animation.startsOpen; }
+            else if (id == 289) { assignSelectedShapeToAnimation(); }
+        }
+        else if (id >= 600 && id < 600 + static_cast<sw::u32>(m_part.animations.size()))
+        {
+            m_selectedAnimation = static_cast<sw::i32>(id - 600);
+        }
+        else if (id == 270) { addHitbox(); }
             else if (id == 271) { fitHitboxes(); }
             else if (id == 272)
             {
@@ -996,7 +1179,7 @@ namespace studio
                 const sw::Vec4 tint =
                     selected ? sw::Vec4{1.35f, 1.3f, 0.95f, 1.0f} : sw::Vec4{1.0f};
                 push(static_cast<sw::u32>(m_shapeMeshBase + i), {0.0f, 0.0f, 0.0f},
-                     sw::Mat4{1.0f}, tint, false,
+                     shapePreviewMatrix(i), tint, false,
                      sw::parts::partBoundsRadius(m_part) + 0.5f);
             }
             // Collision overlay: the OBB stand-in the game validates with.
@@ -1197,6 +1380,48 @@ namespace studio
         button(-0.32f, 0.74f, 0.13f, "HB DEL", 272, false);
         button(-0.17f, 0.74f, 0.16f, "H HULL VIEW", 273, m_showHitboxes);
 
+        // ---- animation row -------------------------------------------------------------
+        // An animation is TWO POSES of the same shapes and a rule for playing
+        // between them. Everything about authoring one happens by moving the
+        // part: press PHASE to scrub to the deployed end, then grab and rotate
+        // exactly as always — the rest pose is untouched and the deployed one
+        // is written instead. That is why there are no pivot or axis fields
+        // here: the hinge is DERIVED from the two poses (Chasles' theorem,
+        // sw::parts::hingeBetween), so it is whatever the shapes' own travel
+        // says it is.
+        button(0.51f, 0.74f, 0.13f, "+ANIM", 280, false);
+        button(0.66f, 0.74f, 0.12f, "AN DEL", 281, false);
+        button(0.80f, 0.74f, 0.18f, m_phase > 0.5f ? "PHASE OPEN" : "PHASE REST", 282,
+               m_phase > 0.5f);
+        if (m_selectedAnimation >= 0 &&
+            m_selectedAnimation < static_cast<sw::i32>(m_part.animations.size()))
+        {
+            const sw::parts::PartAnimation& animation =
+                m_part.animations[static_cast<sw::usize>(m_selectedAnimation)];
+            button(0.51f, 0.66f, 0.15f,
+                   animation.trigger == sw::parts::AnimationTrigger::Throttle
+                       ? "T THROTTLE"
+                       : "T TOGGLE",
+                   283, false);
+            button(0.68f, 0.66f, 0.14f, kVerbNames[static_cast<sw::usize>(animation.verbs)],
+                   284, false);
+            button(0.84f, 0.66f, 0.14f, kGateNames[static_cast<sw::usize>(animation.gates)],
+                   285, false);
+            button(0.51f, 0.58f, 0.10f, "DUR -", 286, false);
+            button(0.63f, 0.58f, 0.10f, "DUR +", 287, false);
+            button(0.75f, 0.58f, 0.10f, animation.startsOpen ? "OPEN" : "SHUT", 288,
+                   animation.startsOpen);
+            button(0.87f, 0.58f, 0.11f,
+                   (hasShapeSelection() &&
+                    m_part.shapes[static_cast<sw::usize>(m_selectedShape)].animation ==
+                        m_selectedAnimation)
+                       ? "UNBIND"
+                       : "BIND",
+                   289, false);
+            hudText(std::format("{:.1f} S", animation.durationSeconds), 0.52f, 0.53f,
+                    0.026f, textColor);
+        }
+
         // ---- shape list (left column) --------------------------------------------------
         sw::f32 y = -0.76f;
         for (sw::usize i = 0; i < m_part.shapes.size() && i < 18; ++i)
@@ -1206,9 +1431,13 @@ namespace studio
             panel(-0.98f, y, -0.70f, y + 0.052f,
                   selected ? sw::Vec4{0.2f, 0.5f, 0.3f, 0.8f}
                            : sw::Vec4{0.12f, 0.17f, 0.24f, 0.55f});
-            hudText(std::format("{} {}{}{}", kKindNames[static_cast<sw::usize>(shape.kind)],
+            hudText(std::format("{} {}{}{}{}",
+                                kKindNames[static_cast<sw::usize>(shape.kind)],
                                 shape.visible ? "V" : "-", shape.collider ? "C" : "-",
-                                shape.emissive > 0.0f ? "E" : ""),
+                                shape.emissive > 0.0f ? "E" : "",
+                                shape.animation >= 0
+                                    ? std::format(" A{}", shape.animation)
+                                    : std::string()),
                     -0.965f, y + 0.013f, 0.026f,
                     selected ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f} : textColor);
             m_buttons.push_back({-0.98f, y, -0.70f, y + 0.052f,
@@ -1247,6 +1476,21 @@ namespace studio
                     selected ? sw::Vec4{0.85f, 1.0f, 1.0f, 1.0f} : textColor);
             m_buttons.push_back({-0.98f, y, -0.70f, y + 0.052f,
                                  500u + static_cast<sw::u32>(i)});
+            y += 0.058f;
+        }
+        // Animation list under the hulls.
+        y += 0.02f;
+        for (sw::usize i = 0; i < m_part.animations.size(); ++i)
+        {
+            const sw::parts::PartAnimation& animation = m_part.animations[i];
+            const bool selected = static_cast<sw::i32>(i) == m_selectedAnimation;
+            panel(-0.98f, y, -0.70f, y + 0.052f,
+                  selected ? sw::Vec4{0.48f, 0.30f, 0.48f, 0.85f}
+                           : sw::Vec4{0.22f, 0.14f, 0.24f, 0.55f});
+            hudText(std::format("A{} {}", i, animation.name), -0.965f, y + 0.013f, 0.026f,
+                    selected ? sw::Vec4{1.0f, 0.9f, 1.0f, 1.0f} : textColor);
+            m_buttons.push_back({-0.98f, y, -0.70f, y + 0.052f,
+                                 600u + static_cast<sw::u32>(i)});
             y += 0.058f;
         }
 

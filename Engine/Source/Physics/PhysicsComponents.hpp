@@ -397,6 +397,45 @@ namespace sw::phys
         f64 spinAnglePrevious = 0.0; // one tick earlier: the render's partner
     };
 
+    /// THE ORBIT'S OWN THREE DIRECTIONS, from a position and a velocity
+    /// relative to the primary.
+    ///
+    ///   prograde   along the velocity
+    ///   normal     along r x v — the axis the orbit turns about, so a burn
+    ///              here rotates the PLANE and changes nothing else
+    ///   radialOut  prograde x normal — for a circular orbit that is straight
+    ///              up; for an eccentric one it is the in-plane direction
+    ///              perpendicular to the velocity, pointing away from the
+    ///              focus, which is the definition worth having because a
+    ///              burn along it moves the line of apsides without touching
+    ///              the period
+    ///
+    /// ONE FUNCTION BECAUSE THERE ARE TWO CONSUMERS and they must not
+    /// disagree: the autopilot flies these and the navball draws them, and a
+    /// sign flipped in one of two copies is a plane change that points the
+    /// wrong way with a marker sitting exactly where the nose is.
+    ///
+    /// Returns false when the orbit has no plane — straight up or straight
+    /// down, where r x v vanishes and normal and radial mean nothing. The
+    /// caller must hold rather than point somewhere invented.
+    [[nodiscard]] inline bool orbitalFrame(const WorldVec3& radial,
+                                           const WorldVec3& relativeVelocity,
+                                           Vec3& outPrograde, Vec3& outNormal,
+                                           Vec3& outRadialOut)
+    {
+        const f64 speed = glm::length(relativeVelocity);
+        const WorldVec3 momentum = glm::cross(radial, relativeVelocity);
+        const f64 momentumLength = glm::length(momentum);
+        if (!(speed > 0.0) || !(momentumLength > 1.0))
+        {
+            return false;
+        }
+        outPrograde = Vec3(relativeVelocity / speed);
+        outNormal = Vec3(momentum / momentumLength);
+        outRadialOut = glm::normalize(glm::cross(outPrograde, outNormal));
+        return true;
+    }
+
     /// The body's rotation at a given spin angle, as an exact f64 rotation.
     [[nodiscard]] inline glm::dquat spinRotation(const GravitySourceComponent& source,
                                                  f64 angle)
@@ -442,23 +481,6 @@ namespace sw::phys
     /// what makes surface bases save/load-proof: the body may have rotated
     /// arbitrarily far while the game was closed, the base stays exactly
     /// where it was built.
-    /// IS THE ANALYTIC WORLD A GOOD ENOUGH STAND-IN FOR THE REAL ONE HERE?
-    ///
-    /// Time warp past the physics rate switches the integrator off and puts
-    /// everything on rails. That is exact when the motion already IS a conic
-    /// clear of the air, and it is a fabrication otherwise: a suborbital arc,
-    /// a reentry or an escape trajectory all have their outcome decided by
-    /// the integration the warp would skip, and warping one hands the player
-    /// back a vehicle somewhere it could never have reached.
-    ///
-    /// Two situations qualify. Standing on something — the craft is not going
-    /// anywhere and the ground holds it up. Or a CLOSED orbit whose lowest
-    /// point clears the atmosphere: a periapsis inside the air means decay,
-    /// and decay is precisely what rails cannot express.
-    ///
-    /// Altitude alone was the old test and it is not the same question: it
-    /// happily permitted ten thousand times real time on a trajectory whose
-    /// next event was the ground.
     /// How long a jump stays off the ground, with margin — the window over
     /// which a walker should still count as standing on the planet.
     ///
@@ -479,10 +501,166 @@ namespace sw::phys
         return std::clamp(2.0 * jumpSpeed / surfaceGravity * 1.5, 1.0, 60.0);
     }
 
+    /// IS THE ANALYTIC WORLD A GOOD ENOUGH STAND-IN FOR THE REAL ONE HERE?
+    ///
+    /// Since F17 this governs exactly ONE warp: the multiplayer SYNC, which
+    /// skips whatever hours separate two players' clocks and is the only
+    /// one that bypasses the altitude ladder below. Skipping hours on rails
+    /// is exact when the motion already IS a conic clear of the air, and a
+    /// fabrication otherwise: a suborbital arc, a reentry or an escape
+    /// trajectory all have their outcome decided by the integration the
+    /// warp would skip, and warping one hands the player back a vehicle
+    /// somewhere it could never have reached.
+    ///
+    /// Two situations qualify. Standing on something — the craft is not
+    /// going anywhere and the ground holds it up. Or a CLOSED orbit whose
+    /// lowest point clears the atmosphere: a periapsis inside the air means
+    /// decay, and decay is precisely what rails cannot express.
+    ///
+    /// It is NOT the ordinary warp gate any more, and that was the fix: as
+    /// a standing condition it fired on any transient — nudge a burn, the
+    /// orbit is briefly open — and pinned the ladder at the physics ceiling
+    /// with nothing on screen to explain why.
     [[nodiscard]] inline bool warpPermitted(bool grounded, bool closedOrbit,
                                             f64 periapsisAltitude, f64 atmosphereTopAltitude)
     {
         return grounded || (closedOrbit && periapsisAltitude > atmosphereTopAltitude);
+    }
+
+    /// HOW FAST TIME MAY RUN HERE — a question about WHERE YOU ARE, and
+    /// nothing else (F17).
+    ///
+    /// It used to be a question about your TRAJECTORY: warp was refused
+    /// unless you were standing on something or in a closed orbit whose
+    /// periapsis cleared the air. The intent was sound — rails cannot
+    /// express decay — but as a rule it fired at the wrong moments. Nudge a
+    /// burn and the orbit is briefly open; the gate slams to the physics
+    /// ceiling and stays there, so a craft ten thousand kilometres over
+    /// Saturn with a periapsis six thousand kilometres clear of the air was
+    /// pinned at x5 for no reason a pilot could see.
+    ///
+    /// Altitude is the honest measure, and it is SELF-ENFORCING in a way
+    /// the trajectory test never was: it is re-evaluated every frame, so a
+    /// craft falling toward a planet has its ceiling walked down as it
+    /// descends — through the physics band and into the atmosphere's x5 —
+    /// rather than being refused once, up high, on a prediction. What the
+    /// old gate was protecting against is what descending now does by
+    /// itself.
+    ///
+    /// The ladder is written in BODY RADII because the same number has to
+    /// mean the same thing at Terra and at Saturn, which is nine times
+    /// wider: in kilometres, "deep space" would begin while you were still
+    /// skimming Saturn's cloud tops.
+    ///
+    /// `atmosphericCeiling` and `physicsCeiling` are the caller's policy —
+    /// the rate below which flying is still flying, and the rate up to
+    /// which the world is still fully integrated.
+    [[nodiscard]] inline f64 maxWarpForAltitude(f64 altitude, f64 atmosphereTopAltitude,
+                                                f64 bodyRadius, f64 atmosphericCeiling,
+                                                f64 physicsCeiling)
+    {
+        // IN THE AIR: an aerodynamic vehicle at speed is a control loop with
+        // a human in it, and no reflex closes that loop at a hundred times
+        // real time. This is the boundary the player asked for: the ceiling
+        // steps down exactly where the atmosphere begins.
+        if (altitude < atmosphereTopAltitude)
+        {
+            return atmosphericCeiling;
+        }
+        // ABOVE IT the ladder governs RAILS warp only. Its subject is how
+        // far an ANALYTIC jump may throw a craft between two rendered
+        // frames, which is why it opens with distance from the body.
+        const f64 radii = altitude / std::max(bodyRadius, 1.0);
+        const f64 rails = (radii < 0.05)  ? 1.0e2
+                          : (radii < 0.5) ? 1.0e3
+                          : (radii < 3.0) ? 1.0e4
+                          : (radii < 30.0) ? 1.0e5
+                          : (radii < 300.0) ? 1.0e6
+                                            : 1.0e7;
+        // Physics warp is never limited by altitude: it takes the same fixed
+        // steps it always does, so it cannot skip a sphere of influence,
+        // miss a contact or outrun the terrain.
+        return std::max(rails, physicsCeiling);
+    }
+
+    // ---- THE WARP LADDER'S TOP, AS A DISTANCE FROM THE STAR -------------------
+    //
+    // IT WAS THE SPHERE OF INFLUENCE AND THE SPHERE OF INFLUENCE IS USELESS FOR
+    // THIS. Sol's is a shade under two light-years — 1.9e16 metres — because
+    // what bounds a star's gravitational reach is the Galaxy on one side and
+    // its nearest neighbour on the other. Gating the fastest rung on leaving it
+    // meant the rung unlocked forty per cent of the way to Proxima, which is to
+    // say: after the part of the journey that needed it.
+    //
+    // Distance from the star is the honest measure, and it comes in bands,
+    // each one an order of magnitude of warp and roughly an order of magnitude
+    // of distance. The property that makes them safe is the same one every
+    // time — how far an ANALYTIC jump may throw a craft between two rendered
+    // frames, against what there is out there to hit or be captured by.
+    //
+    //     5 billion km   past Neptune's 4.5, in the Kuiper belt      x100M
+    //    50 billion km   ten times the outermost orbit                 x1B
+    //  1000 billion km   a tenth of a light-year, nothing at all      x10B
+    //
+    // And the ladder walks itself back DOWN on arrival: a craft falling toward
+    // Proxima crosses the same three radii in reverse and loses a rung at each,
+    // so it cannot arrive at x10B and cross a whole planetary system inside one
+    // frame. That is not a safety check bolted on, it is the same rule read
+    // from the other end.
+    inline constexpr f64 kSystemWarpCeiling = 1.0e7;
+    inline constexpr f64 kDeepSpaceWarpCeiling = 1.0e8;
+    inline constexpr f64 kInterstellarWarpCeiling = 1.0e9;
+    inline constexpr f64 kVoidWarpCeiling = 1.0e10;
+
+    inline constexpr f64 kDeepSpaceWarpRadius = 5.0e12;    // 5 billion km
+    inline constexpr f64 kInterstellarWarpRadius = 5.0e13; // 50 billion km
+    inline constexpr f64 kVoidWarpRadius = 1.0e15;         // 1000 billion km
+
+    /// WHERE the fastest rungs may be selected, as opposed to how fast they
+    /// go. Inside any star's sphere of influence the ceiling is the altitude
+    /// ladder above, capped at ten million; outside every one of them — in
+    /// true interstellar space — it opens to a billion.
+    ///
+    /// The reason is not flavour, it is what warp actually does. Above physics
+    /// warp a rung says how far an ANALYTIC jump may throw a craft between two
+    /// rendered frames, and inside a system there is always something to hit
+    /// or to be captured by: at x1e9 a frame is half a year of orbit and a
+    /// craft would cross Neptune's whole sphere of influence inside one of
+    /// them, arriving with a conic that never noticed. Between the stars there
+    /// is nothing to notice. Four light-years of nothing, in fact, which is
+    /// exactly why the rung has to exist — at ten million the crossing to
+    /// Proxima is a fortnight of real sitting, and at a billion it is seven
+    /// minutes.
+    ///
+    /// The warp ceiling at this distance from the local star.
+    ///
+    /// THE ALTITUDE LADDER STILL WINS WHENEVER IT BINDS. A craft landed on a
+    /// body out past Neptune — a Kuiper object, Pluto — is in the ladder's own
+    /// territory and must not be handed x100M because of how far the SUN is.
+    /// So: if the ladder came back below the in-system ceiling, something
+    /// nearby is speaking and it has the floor; only when the ladder has
+    /// nothing left to say does distance from the star open the higher rungs.
+    [[nodiscard]] inline f64 maxWarpForSpace(f64 distanceToStar, f64 altitudeCeiling)
+    {
+        if (altitudeCeiling < kSystemWarpCeiling)
+        {
+            return altitudeCeiling; // an atmosphere, or a body close under you
+        }
+        if (distanceToStar >= kVoidWarpRadius) { return kVoidWarpCeiling; }
+        if (distanceToStar >= kInterstellarWarpRadius) { return kInterstellarWarpCeiling; }
+        if (distanceToStar >= kDeepSpaceWarpRadius) { return kDeepSpaceWarpCeiling; }
+        return kSystemWarpCeiling;
+    }
+
+    /// How far from the star a rung needs, in metres. Zero for anything the
+    /// altitude ladder already covers — the answer to "why was I refused" is
+    /// not a distance down there, it is a planet.
+    [[nodiscard]] inline f64 warpRadiusForRate(f64 rate)
+    {
+        if (rate > kInterstellarWarpCeiling) { return kVoidWarpRadius; }
+        if (rate > kDeepSpaceWarpCeiling) { return kInterstellarWarpRadius; }
+        if (rate > kSystemWarpCeiling) { return kDeepSpaceWarpRadius; }
+        return 0.0;
     }
 
     struct SurfaceAnchorComponent

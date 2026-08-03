@@ -29,6 +29,7 @@ add_executable(StarWorksTests
     Source/ScreenMarkerTests.cpp
     Source/SchedulerTests.cpp
     Source/SimulationTests.cpp
+    Source/StarCatalogueTests.cpp
     Source/SpaceTests.cpp
     Source/TerrainTests.cpp
     Source/TestFramework.hpp

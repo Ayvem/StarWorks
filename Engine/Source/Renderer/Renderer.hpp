@@ -83,6 +83,17 @@ namespace sw
         /// tested but not depth-written, no face culling (visible from
         /// inside — the sky IS the far side of the shell).
         bool transparent = false;
+        /// Overrides the back-to-front key for a transparent item, as a
+        /// SQUARED distance. Negative means "use the bounding centre", which
+        /// is right for every shell the camera is outside of.
+        ///
+        /// It is wrong for exactly one shape: a dome the camera sits at the
+        /// centre of. Its centre is the camera, its key is zero, and it
+        /// therefore sorts NEAREST and paints over the atmosphere, the
+        /// clouds and everything else translucent in the frame. The star
+        /// dome sets this to its own radius squared, which is the honest
+        /// answer to "how far away is this surface" for a sky.
+        f32 sortDistanceSquared = -1.0f;
         /// HUD PAINTER'S LAYER (see UI/HudOrder.hpp). Higher is drawn later.
         /// Backgrounds are 0 and text is 1, so a glyph can never end up
         /// underneath the panel it belongs to. Ignored unless `screenSpace`.
@@ -183,6 +194,19 @@ namespace sw
         void setAtmosphereBody(const Vec3& cameraRelativeCentre, f32 radius,
                                i32 style);
 
+        /// Writes the NEXT presented frame to `path` as a PNG and clears the
+        /// request. Costs a device wait idle and a full image readback, so it
+        /// belongs to captures and to nothing else.
+        ///
+        /// This exists because the CPU planet preview ray-casts the FRAGMENT
+        /// path and therefore cannot see anything that goes wrong before it:
+        /// which pipeline an object took, whether it was drawn per-vertex or
+        /// per-fragment, how a blend resolved, what a mesh's silhouette looks
+        /// like. Saturn shipped for two milestones as a faceted grey ball for
+        /// exactly that reason — the preview was right and the game was not,
+        /// and nothing in the loop could tell the difference.
+        void requestCapture(std::string path);
+
         /// Blocks until the GPU has finished all submitted work.
         void waitIdle() const;
 
@@ -203,7 +227,18 @@ namespace sw
             /// xyz: sky-scattered ambient added to every lit fragment.
             Vec4 skyAmbient{0.0f, 0.0f, 0.0f, 0.0f};
             /// x: quality tier (0/1/2); y: world time in seconds (animation);
-            /// z: atmosphere style id; w: reserved.
+            /// z: atmosphere style id; w: the ANGLE ONE PIXEL SUBTENDS at the
+            /// camera, in radians — 2*tan(fov/2)/height.
+            ///
+            /// It is here so the planet shader can work out how much of a
+            /// body one pixel covers WITHOUT a screen-space derivative.
+            /// fwidth(normalize(modelPosition)) was doing that job and it
+            /// carries the mesh's tessellation in it: on a UV sphere the
+            /// derivative jumps at every facet edge, the LOD fades sit on
+            /// those jumps, and the planet comes out with a latitude-longitude
+            /// grid drawn across it. It is the single most visible artefact
+            /// this renderer has ever shipped, and it is invisible to the CPU
+            /// preview, which has no triangles to leak.
             Vec4 qualityTime{2.0f, 0.0f, 0.0f, 0.0f};
             /// xyz: camera-relative centre of the atmospheric body;
             /// w: its surface radius (0 = no atmosphere this frame).
@@ -305,6 +340,8 @@ namespace sw
         std::array<ShadowSphere, kMaxShadowSpheres> m_shadowSpheres{};
         u32 m_shadowSphereCount = 0;
         u32 m_currentFrame = 0;
+        /// Non-empty for exactly one frame: see requestCapture.
+        std::string m_capturePath;
         bool m_framebufferResized = false;
         u32 m_pendingWidth = 0;
         u32 m_pendingHeight = 0;

@@ -908,58 +908,94 @@ namespace game
             }
         }
 
+        // WHERE YOU ARE DECIDES HOW FAST TIME MAY RUN, and every body gets
+        // a vote — the nearest one wins, judged in ITS OWN terms: its air,
+        // its radius. A ladder in kilometres would have called Saturn's
+        // cloud tops deep space, and an atmosphere constant tuned on Terra
+        // would have put the step-down 4 000 km under Saturn's.
         const sw::WorldVec3 focusPosition =
             m_world.getComponent<TransformComponent>(controlledEntity()).position;
-        sw::f64 minAltitude = 1.0e18;
+        sw::f32 maxAllowed = kWarpLadder[kWarpSteps - 1];
+        sw::f64 nearestAltitude = 1.0e18;
         m_world.forEach<TransformComponent, sw::phys::GravitySourceComponent>(
-            [&](sw::ecs::Entity, TransformComponent& transform,
+            [&](sw::ecs::Entity entity, TransformComponent& transform,
                 sw::phys::GravitySourceComponent& source) {
                 const sw::f64 altitude =
                     glm::length(focusPosition - transform.position) - source.bodyRadius;
-                minAltitude = std::min(minAltitude, altitude);
+                sw::f64 air = 0.0;
+                if (const auto* atmosphere =
+                        m_world.tryGetComponent<sw::phys::AtmosphereComponent>(entity))
+                {
+                    air = atmosphere->topAltitude;
+                }
+                maxAllowed = std::min(
+                    maxAllowed, maxWarpForAltitude(altitude, air, source.bodyRadius));
+                nearestAltitude = std::min(nearestAltitude, altitude);
             });
+
+        // ...AND THEN THE SAME QUESTION ONE SCALE UP. The altitude ladder
+        // tops out at ten million and knows nothing about stars, so out
+        // between them it has to be overruled rather than consulted: the two
+        // interstellar rungs open only where there is no star's sphere of
+        // influence to be inside of. That is a question about the ABSOLUTE
+        // position — the origin travels with the ship, so the transform alone
+        // cannot answer it.
+        const sw::WorldVec3 absoluteFocus = absolutePosition(focusPosition);
+        const sw::f64 distanceToStar = glm::length(
+            absoluteFocus -
+            sw::space::systems()[sw::space::nearestSystem(absoluteFocus)].position);
+        const sw::f32 wasRequesting = kWarpLadder[m_warpIndex];
+        maxAllowed = static_cast<sw::f32>(sw::phys::maxWarpForSpace(
+            distanceToStar, static_cast<sw::f64>(maxAllowed)));
+        // WHICH DISTANCE THE REFUSED RUNG WANTED, derived rather than written
+        // out three times. There are three star-scale bands now and there will
+        // be no fourth by accident: the message asks the ladder what the rung
+        // needed, so adding a rung cannot leave a message saying the old
+        // number.
+        const sw::f64 neededRadius =
+            sw::phys::warpRadiusForRate(static_cast<sw::f64>(wasRequesting));
+        const bool wasStarBound =
+            wasRequesting > maxAllowed &&
+            maxAllowed >= static_cast<sw::f32>(sw::phys::kSystemWarpCeiling) &&
+            neededRadius > 0.0;
 
         if (!bypassAltitudeCap)
         {
-            const sw::f32 maxAllowed = maxWarpForAltitude(minAltitude);
+            const bool wasAboveCeiling = kWarpLadder[m_warpIndex] > maxAllowed;
             while (m_warpIndex > 0 && kWarpLadder[m_warpIndex] > maxAllowed)
             {
                 --m_warpIndex;
-                SW_LOG_INFO("Game", "Warp limited to x{:g} (altitude {:.0f} km)",
-                            kWarpLadder[m_warpIndex], minAltitude / 1000.0);
             }
-
-            // AND THE REAL GATE. Past physics warp the integrator is switched
-            // off and the world goes analytic, which is only an approximation
-            // of the truth when the truth is already analytic: a closed orbit
-            // clear of the air, or a craft standing still on the ground.
-            // A suborbital arc, a reentry or an escape trajectory is not, and
-            // warping one used to hand back a vehicle somewhere it could
-            // never have reached. The altitude ladder above never caught
-            // that: it happily allowed x1000 on a trajectory into the dirt.
-            if (kWarpLadder[m_warpIndex] > kMaxPhysicsWarp && !warpAllowed())
+            if (wasAboveCeiling)
             {
-                while (m_warpIndex > 0 && kWarpLadder[m_warpIndex] > kMaxPhysicsWarp)
-                {
-                    --m_warpIndex;
-                }
                 m_warpToSeconds = 0.0;
-                // SAY IT, AND ONLY NOW. The gate has just refused something
-                // the player asked for, which is the one moment the reason
-                // is worth screen space. Drawn from a permanent condition
-                // instead, it was a warning that lived on the HUD for the
-                // whole game and therefore told nobody anything.
+                SW_LOG_INFO("Game", "Warp limited to x{:g} (altitude {:.0f} km)",
+                            kWarpLadder[m_warpIndex], nearestAltitude / 1000.0);
+                // SAY IT, AND ONLY NOW — the frame the ceiling actually took
+                // something away. A warning drawn from a standing condition
+                // lives on the HUD for the whole game and tells nobody
+                // anything.
                 m_warpRefusedUntil = clock().totalSeconds() + 4.0;
-                m_warpRefusedReason = warpBlockReason();
+                // The order is NEAREST CAUSE FIRST. Sitting on a launch pad
+                // inside Sol's SOI at the top rung, all three are true at
+                // once, and "INSIDE A STAR'S SOI" would be a strange thing to
+                // read while looking at the sky through an atmosphere.
+                m_warpRefusedReason =
+                    (maxAllowed <= kMaxAtmosphericWarp)
+                        ? std::string("IN ATMOSPHERE")
+                    : wasStarBound
+                        ? std::format("NEEDS {:.0f} BN KM FROM THE STAR",
+                                      neededRadius / 1.0e9)
+                        : std::string("TOO CLOSE TO THE BODY");
             }
 
             // ON FOOT, RAILS WARP IS NOT OFFERED AT ALL — and that is a
             // MOVEMENT rule before it is a physics one.
             //
-            // Above x5 the integrator is switched off and a landed body
+            // Above physics warp the integrator is switched off and a landed body
             // becomes a surface anchor. For a rocket that is exactly right.
             // For the player it meant keeping the camera and losing the
-            // legs: updateShipControls returns early above x5, so W, A, S, D
+            // legs: updateShipControls returns early above it, so W, A, S, D
             // and Space all stopped working, with nothing on screen saying
             // why. A person standing on a planet has nothing to fast-forward
             // through anyway — and the one case that genuinely needs to skip
@@ -978,14 +1014,24 @@ namespace game
         }
 
         m_simulation.setTimeScale(kWarpLadder[m_warpIndex]);
-        // Physics warp (<= x5): everything stays truly simulated — the
+        // Physics warp (<= x100 since F16): everything stays truly simulated — the
         // Physics lane is STRICT so a slow machine slows the sim instead
         // of desynchronizing it (the pre-M21 launch-pad fling). Rails
-        // warp (> x5): analytic orbits only, exact at any speed; drops
+        // warp (above it): analytic orbits only, exact at any speed; drops
         // move the whole world coherently, so strictness is lifted.
         const bool physicsWarp = kWarpLadder[m_warpIndex] <= kMaxPhysicsWarp;
         m_physicsLane->setStrictCatchUp(physicsWarp);
         m_bubbleSystem->setForceRails(!physicsWarp);
+        // ...and the budget that makes physics warp mean anything. Sixteen
+        // ticks a frame is x19 and no more, so the lane is handed exactly
+        // the catch-up it needs for the rung selected — and handed it back
+        // when the rung drops, because a big budget is only wanted while
+        // somebody is spending it (a hitch at x1 should cost one hitch, not
+        // a second and a half of simulation). Under rails warp the number is
+        // irrelevant: nothing is being integrated.
+        m_physicsLane->setMaxTicksPerFrame(
+            physicsWarp ? physicsTickBudget(kWarpLadder[m_warpIndex])
+                        : physicsTickBudget(1.0f));
     }
 
     void StarWorksGame::updateShipControls()
@@ -1077,6 +1123,22 @@ namespace game
         if (input().isKeyDown(sw::KeyCode::LeftControl))
         {
             controls.throttleDelta -= 1.0f;
+        }
+        // SW_THRUST=<0..1>: the throttle a capture cannot press. It belongs
+        // HERE, at the end of the one function that decides the controls,
+        // because that is the only place a value survives — written anywhere
+        // downstream it is overwritten by this function on the next frame
+        // before the animation that reads it ever runs.
+        if (const char* thrustSpec = std::getenv("SW_THRUST");
+            thrustSpec != nullptr && !walking && !m_shipEntity.isNull())
+        {
+            const sw::f32 level = glm::clamp(
+                static_cast<sw::f32>(std::strtod(thrustSpec, nullptr)), 0.0f, 1.0f);
+            controls.thrustAxis = 1.0f;
+            if (auto* ship = m_world.tryGetComponent<ShipComponent>(m_shipEntity))
+            {
+                ship->throttle = level;
+            }
         }
     }
 
@@ -1301,6 +1363,7 @@ namespace game
             m_shipEntity = best;
             m_evaMode = false;
             m_sasMode = 0;
+            despinBoardedVessel();
             SW_LOG_INFO("Game", "Boarded vessel {} ({:.0f} m away)", m_shipEntity.index,
                         bestDistance);
             return;
@@ -1320,7 +1383,40 @@ namespace game
         }
         m_shipEntity = pilotable[next];
         m_sasMode = 0;
+        despinBoardedVessel();
         SW_LOG_INFO("Game", "PILOTING vessel {}", m_shipEntity.index);
+    }
+
+    // ------------------------------------------------------------------------
+    // A RING THAT SPINS FOR GRAVITY DOES NOT SPIN FOR ITS PILOT.
+    //
+    // The Endurance cruises at 5.6 rpm because that is what puts a floor
+    // under its crew — and it is also 0.59 rad/s of roll, which is a ship
+    // nobody can fly and a camera nobody can watch. So taking the controls
+    // de-spins it, the way its crew does before every manoeuvre in the
+    // film: the rate is zeroed on the SpinComponent, which stops both spin
+    // systems at once and rides in the save like any other state.
+    //
+    // It stays stopped. Nothing here spins it back up, and that is honest
+    // rather than lazy — restarting the ring is a crew action this game
+    // does not have yet, and pretending otherwise would mean a ship that
+    // silently starts rolling the moment you look away.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::despinBoardedVessel()
+    {
+        auto* spin = m_world.tryGetComponent<SpinComponent>(m_shipEntity);
+        if (spin == nullptr || spin->radiansPerSecond == 0.0f)
+        {
+            return;
+        }
+        SW_LOG_INFO("Game", "Ring de-spun for manoeuvring ({:.2f} rpm -> 0)",
+                    spin->radiansPerSecond * 60.0f / glm::two_pi<sw::f32>());
+        spin->radiansPerSecond = 0.0f;
+        if (auto* body = m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(
+                m_shipEntity))
+        {
+            body->angularVelocity = sw::WorldVec3{0.0};
+        }
     }
 
     void StarWorksGame::refreshFlightState()
@@ -1460,6 +1556,9 @@ namespace game
         }
     }
 
+    /// The SYNC-warp gate only (F17): catching another player's clock skips
+    /// hours on rails, and that is the one warp still worth refusing on the
+    /// shape of the trajectory. The ordinary ladder is altitude alone.
     bool StarWorksGame::warpAllowed() const
     {
         // The rule itself lives in the engine (phys::warpPermitted) so it can

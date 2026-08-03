@@ -145,6 +145,45 @@ namespace sw::space
         }
     }
 
+    void CelestialIndex::stateAtSplit(i32 index, f64 wholeSeconds, f64 fraction,
+                                      WorldVec3& outPosition,
+                                      WorldVec3* outVelocity) const
+    {
+        // THE WHOLE CHAIN AT FULL PRECISION, and it has to be the whole chain:
+        // Luna's position is Terra's plus its own, so evaluating the moon
+        // exactly on top of a parent that was evaluated at a rounded time
+        // gives the moon the parent's noise. The recursion carries the split
+        // down to every link.
+        const Body& body = m_bodies[static_cast<usize>(index)];
+        if (body.hasOrbit == 0)
+        {
+            outPosition = body.staticPosition;
+            if (outVelocity != nullptr)
+            {
+                *outVelocity = {0.0, 0.0, 0.0};
+            }
+            return;
+        }
+
+        WorldVec3 parentPosition{0.0};
+        WorldVec3 parentVelocity{0.0};
+        if (body.parentIndex >= 0)
+        {
+            stateAtSplit(body.parentIndex, wholeSeconds, fraction, parentPosition,
+                         (outVelocity != nullptr) ? &parentVelocity : nullptr);
+        }
+
+        WorldVec3 relativePosition{};
+        WorldVec3 relativeVelocity{};
+        phys::kepler::evaluateSplit(body.orbit, wholeSeconds, fraction, relativePosition,
+                                    (outVelocity != nullptr) ? &relativeVelocity : nullptr);
+        outPosition = parentPosition + relativePosition;
+        if (outVelocity != nullptr)
+        {
+            *outVelocity = parentVelocity + relativeVelocity;
+        }
+    }
+
     WorldVec3 CelestialIndex::positionAt(i32 index, f64 timeSeconds) const
     {
         WorldVec3 position{};

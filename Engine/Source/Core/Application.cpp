@@ -64,6 +64,16 @@ namespace sw
             }
 
             onUpdate(m_clock.deltaSeconds());
+            // The capture is armed on the frame BEFORE the last one, because
+            // requestCapture writes the frame it is armed for and the loop
+            // exits on the frame after maxFrames is reached. Arming it here
+            // means --frames N --capture P writes frame N.
+            if (!m_config.capturePath.empty() && m_config.maxFrames > 0 &&
+                m_clock.frameIndex() + 1 >= m_config.maxFrames)
+            {
+                m_renderer->requestCapture(m_config.capturePath);
+                m_config.capturePath.clear();
+            }
             onRender();
 
             // Window title doubles as a lightweight FPS display (dev builds).

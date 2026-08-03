@@ -11,7 +11,7 @@ index:
 | `StarWorksGame.cpp` | Constructor/destructor, the frame loop (`onUpdate`, `onRender`), and the small shared queries (`controlledEntity`, `bodyRenderPose`, `keyPressed`, mesh registration). |
 | `GameInternal.hpp` | What used to be the big anonymous namespace: physical constants (mu, radii, SOI), the HUD palette (`hud::`), warp ladder, procedural mesh builders, small pure helpers. Internal to the Game target — the engine never includes it. Functions are `inline`, constants `inline constexpr`, so any TU may include it without ODR trouble. |
 | `GameShell.cpp` | The frame around the game (F13): the boot plan and its bar, the main menu, `newGame`/`continueGame`, shell clicks. |
-| `GameScene.cpp` | `buildScene`: the star system, the starting outpost, LOD sets. |
+| `GameScene.cpp` | `buildScene`: the star system, the starting outpost, LOD sets. `buildEndurance` (F15): the 35-part ring ship, spinning on rails at Saturn and flyable. |
 | `GameTerrain.cpp` | The walkable terrain patch and the grass field baked onto it. |
 | `GameSaveLoad.cpp` | The save schema, quicksave/quickload, and the named saves in `Saves/`. **A component added to the world must be registered here** — `Snapshot` throws on save otherwise (by design), and `bootPrepareSaves` reports any omission on frame one. |
 | `GameFlight.cpp` | Flying: ship controls, warp and its gate, maneuver nodes, prediction refresh, reentry effects, EVA toggle, chase camera. |

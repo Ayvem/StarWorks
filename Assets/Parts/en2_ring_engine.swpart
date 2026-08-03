@@ -1,0 +1,281 @@
+{
+  "id": 201,
+  "type": "Engine",
+  "name": "EN-2 Propulsion Module",
+  "dryMassKg": 30000,
+  "costCredits": 68000,
+  "volumeM3": 330,
+  "crashToleranceMps": 10,
+  "breakingForceN": 4000000,
+  "dragCoefficientArea": 40,
+  "liftCoefficient": 0,
+  "thrustNewtons": 22000,
+  "specificImpulseS": 4200,
+  "chargeRateKw": 0,
+  "capacities": [
+    {
+      "resource": "Fuel",
+      "units": 15000
+    }
+  ],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.4, 2.6, 6.2],
+      "color": [0.55, 0.56, 0.59],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0, 0, -6.1],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.45, 2.65, 0.1],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 0, 6.1],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.45, 2.65, 0.1],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, -2.8, -3.6],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.8, 0.25, 0.8],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, -2.8, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.8, 0.25, 0.8],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, -2.8, 3.6],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.8, 0.25, 0.8],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cone",
+      "position": [0, -4.0, -3.6],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.55, 1.4, 0.95],
+      "color": [0.22, 0.22, 0.24],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.72,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cone",
+      "position": [0, -4.0, 0],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.55, 1.4, 0.95],
+      "color": [0.22, 0.22, 0.24],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.72,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cone",
+      "position": [0, -4.0, 3.6],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.55, 1.4, 0.95],
+      "color": [0.22, 0.22, 0.24],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.72,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, -5.3, -3.6],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.82, 0.05, 0],
+      "color": [0.35, 0.6, 1.0],
+      "emissive": 0.06,
+      "specular": 0.2,
+      "gloss": 0.4,
+      "segments": 24,
+      "visible": true,
+      "collider": false,
+      "animation": 1,
+      "endPosition": [0, -5.62, -3.6],
+      "endRotationDeg": [90, 0, 0],
+      "endEmissive": 1
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, -5.3, 0],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.82, 0.05, 0],
+      "color": [0.35, 0.6, 1.0],
+      "emissive": 0.06,
+      "specular": 0.2,
+      "gloss": 0.4,
+      "segments": 24,
+      "visible": true,
+      "collider": false,
+      "animation": 1,
+      "endPosition": [0, -5.62, 0],
+      "endRotationDeg": [90, 0, 0],
+      "endEmissive": 1
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, -5.3, 3.6],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.82, 0.05, 0],
+      "color": [0.35, 0.6, 1.0],
+      "emissive": 0.06,
+      "specular": 0.2,
+      "gloss": 0.4,
+      "segments": 24,
+      "visible": true,
+      "collider": false,
+      "animation": 1,
+      "endPosition": [0, -5.62, 3.6],
+      "endRotationDeg": [90, 0, 0],
+      "endEmissive": 1
+    },
+    {
+      "kind": "box",
+      "position": [2.44, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.06, 1.5, 5.4],
+      "color": [0.62, 0.63, 0.66],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [2.45, 2.0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.04, 0.5, 5.0],
+      "color": [0.72, 0.58, 0.22],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.7,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [2.45, -2.0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.04, 0.5, 5.0],
+      "color": [0.72, 0.58, 0.22],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.7,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "animations": [
+    {
+      "name": "ENGINE",
+      "trigger": "toggle",
+      "verbs": "on-off",
+      "gates": "thrust",
+      "durationSeconds": 0.8,
+      "startsOpen": true
+    },
+    {
+      "name": "NOZZLE",
+      "trigger": "throttle",
+      "verbs": "on-off",
+      "gates": "nothing",
+      "durationSeconds": 0.25,
+      "startsOpen": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "ringA",
+      "position": [0, 0, -6.2],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 1.2
+    },
+    {
+      "name": "ringB",
+      "position": [0, 0, 6.2],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 1.2
+    },
+    {
+      "name": "spoke",
+      "position": [-2.4, 0, 0],
+      "direction": [-1, 0, 0],
+      "type": "stack",
+      "size": 0.9
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [2.4, 2.6, 6.2]
+    },
+    {
+      "center": [0, -4.0, 0],
+      "halfExtents": [1.0, 1.4, 4.6]
+    }
+  ]
+}

@@ -45,6 +45,7 @@ layout(location = 5) in vec3 vModelPosition;
 layout(location = 6) in vec3 vSunDirBody;
 layout(location = 7) flat in float vBodyRadius;
 layout(location = 8) in vec3 vViewDirBody;
+layout(location = 9) flat in vec3 vCameraPosBody;
 
 layout(location = 0) out vec4 outColor;
 
@@ -108,7 +109,21 @@ vec3 hable(vec3 x)
     return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
 }
 
-vec3 gradeCinematic(vec3 color)
+/// The grade WITHOUT the black lift. Everything that paints over an already
+/// graded frame has to use this one, and the atmosphere shell is the reason
+/// it exists.
+///
+/// The lift is an image-wide decision — shadows breathe instead of crushing —
+/// and it belongs to the frame, not to each surface in it. A TRANSLUCENT pass
+/// that grades its own contribution adds the lift a second time, and the
+/// shell's alpha is taken FROM the graded colour: so a ray through pure
+/// vacuum, whose radiance is exactly zero, came out at the lift's own value
+/// (0.016) and painted 1.6% of a bright grey over everything inside the mesh.
+/// Terra wore a hard-edged grey halo out to the shell's radius — which the
+/// F20 aurora work had just pushed from 83 km to 350 km, turning a small
+/// mistake into a large one. The vacuum test `coverage < 0.002` could never
+/// fire, because the floor was eight times the threshold.
+vec3 gradeCinematicCore(vec3 color)
 {
     // Filmic curve, normalized to a 4.0 white point.
     const vec3 mapped = hable(color * kExposure) / hable(vec3(4.0)).x;
@@ -117,8 +132,13 @@ vec3 gradeCinematic(vec3 color)
     // Desaturate toward luminance.
     const float luminance = dot(graded, vec3(0.2126, 0.7152, 0.0722));
     graded = mix(vec3(luminance), graded, kSaturation);
+    return clamp(graded, 0.0, 1.0);
+}
+
+vec3 gradeCinematic(vec3 color)
+{
     // Raised, slightly cool blacks: shadows breathe instead of crushing.
-    graded = kBlackLift + graded * (1.0 - kBlackLift);
+    const vec3 graded = kBlackLift + gradeCinematicCore(color) * (1.0 - kBlackLift);
     return clamp(graded, 0.0, 1.0);
 }
 
@@ -149,21 +169,119 @@ void main()
     // triplet (normal, light, view) has to agree — these three do.
     bool proceduralPlanet = false;
     vec3 planetNormalBody = vec3(0.0, 1.0, 0.0);
+    // The body-frame view direction, EXACT and per fragment. See the planet
+    // branch: the interpolated vViewDirBody is piecewise-linear across the
+    // mesh's facets, and anything with a steep response to it (the limb
+    // darkening's pow(facing, 0.45), the footprint's 1/cos) turns those
+    // creases into a visible lattice-longitude grid.
+    vec3 planetViewDirBody = vec3(0.0, 0.0, 1.0);
+    // Distance to the planet's TRUE surface along this pixel's ray. The
+    // interpolated one is faceted, and the aerial-perspective march is clipped
+    // by it — see the note where it is used.
+    float planetHitDistance = 0.0;
+    // A GAS GIANT'S VISIBLE SURFACE IS THE TOP OF ITS OWN ATMOSPHERE, so
+    // there is no air between it and the camera to march. Running the aerial
+    // perspective over it is not merely wasted work, it is a second copy of
+    // the same air — and a six-step march is sensitive enough to where it is
+    // cut off that the mesh's facets came back through it as a grid worth
+    // three per cent of the disc. Rocky worlds keep it: on Terra the column
+    // between the ground and orbit is real, and it is the blue.
+    bool gasSurface = false;
     float terrainShadow = 1.0;
     float waterMask = 0.0;
     if (vTintAlpha > 3.5)
     {
         const int style = int(round((vTintAlpha - 3.6) * 10.0));
-        const vec3 dirBody = normalize(vModelPosition);
-        // Screen footprint of this fragment, in radians of body angle: the
+        // THE SHADING DIRECTION IS INTERSECTED, NOT INTERPOLATED.
+        //
+        // `normalize(vModelPosition)` is the obvious answer and it is wrong in
+        // a way that took a headless capture to see: the interpolated position
+        // lies on the FLAT FACET, not on the sphere, so the direction field it
+        // gives is the gnomonic chart of a polyhedron. Its value is
+        // continuous but its derivative steps at every facet edge, and the
+        // cloud field is sampled at frequencies fine enough to beat against
+        // that — so the planet came out with a latitude-longitude GRID drawn
+        // across it, about four grey levels deep, in every screenshot anyone
+        // ever took of Saturn.
+        //
+        // The honest direction owes nothing to the mesh: intersect this
+        // fragment's view ray with the TRUE unit sphere, in body space, from a
+        // camera position that is `flat` and therefore exact. One quadratic,
+        // no derivatives, no tessellation. The mesh goes back to being what it
+        // should always have been — a silhouette and a depth value.
+        vec3 dirBody = normalize(vModelPosition);
+        {
+            const vec3 rayOrigin = vCameraPosBody;
+            const float originDistanceSquared = dot(rayOrigin, rayOrigin);
+            // Past ten thousand radii the body is a couple of pixels wide and
+            // f32 has run out of room to subtract 1 from `dot(ro, ro)`
+            // meaningfully. The facet chart is fine at that size.
+            if (originDistanceSquared < 1.0e8)
+            {
+                const vec3 rayDir = normalize(dirBody - rayOrigin);
+                const float half_b = dot(rayOrigin, rayDir);
+                const float discriminant = half_b * half_b - (originDistanceSquared - 1.0);
+                if (discriminant > 0.0)
+                {
+                    const float hit = -half_b - sqrt(discriminant);
+                    dirBody = normalize(rayOrigin + rayDir * hit);
+                    planetHitDistance = hit * vBodyRadius;
+                }
+            }
+        }
+        // SCREEN FOOTPRINT of this fragment, in radians of body angle: the
         // single number that decides how much detail may exist here.
-        const float footprint = max(length(fwidth(dirBody)), 1.0e-9);
+        //
+        // ANALYTIC, NOT fwidth(), and that is the fix for the worst artefact
+        // this renderer has shipped. `fwidth(normalize(vModelPosition))` asks
+        // the RASTERISER how fast the body direction is changing, and the
+        // rasteriser answers with a number that carries the mesh in it: on a
+        // UV sphere the screen-space derivative steps at every facet
+        // boundary, the detail octaves fade on smoothstep curves sitting
+        // exactly across those steps, and a latitude-longitude GRID appears
+        // over the whole planet. Saturn wore one in every screenshot.
+        //
+        // The honest quantity owes nothing to the triangles: a pixel subtends
+        // uCamera.qualityTime.w radians at the camera, the fragment is
+        // `fragmentDistance` away, and a surface tilted away from the view
+        // spreads that footprint by 1/cos(incidence). It is the same formula
+        // Tools/planet_preview has always used on the CPU — which is exactly
+        // why the preview never showed the bug the game had.
+        // ...and the view direction from the SAME exact geometry: the camera
+        // is `flat` and the surface point is the intersection above, so this
+        // owes nothing to the interpolator either. Using the interpolated
+        // vViewDirBody here put a crease at every facet edge, and pow(facing,
+        // 0.45) below turned each crease into a line.
+        planetViewDirBody = normalize(vCameraPosBody - dirBody);
+        const float incidence = max(abs(dot(dirBody, planetViewDirBody)), 0.06);
+        const float footprint =
+            max(uCamera.qualityTime.w * fragmentDistance /
+                    max(vBodyRadius * incidence, 1.0),
+                1.0e-9);
         planetShading(style, dirBody, uCamera.qualityTime.x, vBodyRadius,
                       normalize(vSunDirBody), footprint, uCamera.qualityTime.y,
                       surfaceAlbedo, materialSpecular, materialGloss,
                       planetNormalBody, terrainShadow, waterMask);
+        if (style >= 20)
+        {
+            // LIMB DARKENING, and it is the difference between a sphere and
+            // a painted ball. On a rock the disc really is nearly uniform —
+            // you see the same dirt at the centre and at the edge. On a gas
+            // giant you do not: near the limb your line of sight enters the
+            // cloud deck at a grazing angle and never reaches as deep, so it
+            // gathers less scattered light. Every photograph of Jupiter has
+            // this dark rim, and without it the banding sits on the disc
+            // like a decal.
+            //
+            // A power law on the facing cosine, which is the cheap standard
+            // stand-in for the Minnaert law and indistinguishable from it at
+            // the angles a planet is ever seen at.
+            const float facing = max(dot(dirBody, planetViewDirBody), 0.0);
+            surfaceAlbedo *= 0.35 + 0.65 * pow(facing, 0.45);
+        }
         surfaceAlpha = 1.0;
         proceduralPlanet = true;
+        gasSurface = style >= 20;
     }
     // ---- CLOUD DECK (instance tint alpha in (3.15, 3.5]) --------------------
     // M28: the shell mesh is only a support surface now. Coverage, edges,
@@ -265,16 +383,239 @@ void main()
         const int steps = (uCamera.qualityTime.x >= 1.5) ? 8 : 5;
         const vec3 sky = atmosphereScatter(rayDir, 1.0e12, centre, radius, sunDir,
                                            air, steps, transmittance);
-        const float opacity = clamp(1.0 - min(transmittance.r,
-                                              min(transmittance.g, transmittance.b)),
-                                    0.0, 1.0);
-        if (opacity < 0.002)
+        // THE SHELL RETURNS A RADIANCE, NOT A PAINT COLOUR, and the blend has
+        // to be told so. What belongs in the frame is `graded + background *
+        // transmittance`; a src-alpha blend spells that as rgb = graded /
+        // alpha with alpha = coverage, so the coverage is taken FROM the
+        // graded colour and the colour pre-divided by it.
+        //
+        // Using `1 - transmittance` instead — which is what this did — counts
+        // the same (1 - T) twice and dissolves the faint outer limb. Worse,
+        // it hands alpha ~ 0 to any band that EMITS and has no extinction of
+        // its own, which is exactly what the F19 nightglow is: above about
+        // 72 km it was being discarded outright.
+        // VACUUM IS TESTED ON THE RADIANCE, BEFORE THE GRADE, and it has to
+        // be. Every term of the grade has a floor: the black lift adds 0.016
+        // and the contrast pivot adds another 0.008, so `gradeCinematic(0)` is
+        // 0.024 and even `gradeCinematicCore(0)` is 0.0084 — four times the
+        // 0.002 the vacuum test was comparing against. A ray through empty
+        // space above the air therefore painted a pale grey at 1% alpha, and
+        // since the shell now reaches 350 km for the aurora, Terra wore a flat
+        // grey disc half again its own radius with a hard edge where the mesh
+        // ended. That is the halo in every orbital screenshot.
+        //
+        // 2e-4 of radiance is a fiftieth of a grey level once it has been
+        // through the curve. Below that there is nothing to draw.
+        const vec3 radiance = sky * kSunColor;
+        if (max(radiance.r, max(radiance.g, radiance.b)) < 2.0e-4)
         {
-            discard; // vacuum
+            discard; // vacuum, and now it really is vacuum
         }
-        outColor = vec4(gradeCinematic(sky * kSunColor) +
+        const vec3 graded = gradeCinematicCore(radiance);
+        const float coverage = clamp(max(graded.r, max(graded.g, graded.b)),
+                                     0.0, 1.0);
+        if (coverage < 0.002)
+        {
+            discard;
+        }
+        // Pre-divided by its own maximum channel, so the result peaks at
+        // exactly 1 and nothing clips.
+        outColor = vec4(graded / max(coverage, 1.0e-4) +
                             ditherOffset(gl_FragCoord.xy),
-                        opacity);
+                        coverage);
+        return;
+    }
+
+    // ---- SOFT EMISSIVE: STAR DOME AND SUN GLARE (tint alpha in (2.2, 2.5]) --
+    // Anything whose opacity FADES TO ZERO at its own rim needs this route,
+    // for one reason: the emissive convention below uses the INTERPOLATED
+    // alpha as its flag, and zero opacity is alpha exactly 1.0 — the wrong
+    // side of the test. Whatever falls through is shaded as an ordinary lit
+    // surface, so every soft shape draws a solid OUTLINE of itself. The star
+    // dome came out as a field of wireframe quads; the sun's glare layers
+    // came out as two concentric grey rings around it. A good demonstration,
+    // twice, of why a flag and a value should not share a channel.
+    //
+    // The instance tint alpha is `flat`, so it cannot interpolate across a
+    // threshold, which makes it the right place for a flag. It carries the
+    // day fade too, in (2.25, 2.45]:
+    //
+    //   opacity = vertexAlpha * fade - 1,  vertexAlpha = 1 + brightness
+    //
+    // ...which erases the faint stars first and the brightest last as the sky
+    // comes up, for free, because that is what the arithmetic already does.
+    else if (vTintAlpha > 2.2)
+    {
+        const float fade = clamp((vTintAlpha - 2.25) * 5.0, 0.0, 1.0);
+        const float vertexAlpha = vColor.a / max(vTintAlpha, 1.0e-3);
+        const float opacity = clamp(vertexAlpha * fade - 1.0, 0.0, 1.0);
+        if (opacity < 0.0015)
+        {
+            discard; // below one grey level: an empty part of the sky
+        }
+        outColor = vec4(gradeCinematic(vColor.rgb), opacity);
+        return;
+    }
+
+    // ---- RING SYSTEM (instance tint alpha in (2.05, 2.2]) -------------------
+    // ORDER MATTERS AND IT BIT ONCE: this chain is else-if on a DESCENDING
+    // threshold, so a branch testing `> 2.05` placed above the star dome's
+    // `> 2.2` swallows the dome — the whole sky came out shaded as ring ice
+    // and nine thousand stars vanished from the menu. Keep the thresholds
+    // monotonically decreasing down the chain.
+    // An annulus of ice, and it is NOT a surface: it is a plane-parallel slab
+    // of scatterers a few metres thick and seventy thousand kilometres wide.
+    // Lighting it with a lambert on a vertex normal, which is what it had,
+    // gets the one thing wrong that everybody knows about Saturn's rings —
+    // that they look completely different from the two sides. Lit from the
+    // front, the dense B ring is the BRIGHTEST thing in the system; lit from
+    // behind, it is the DARKEST, because dense is exactly what light cannot
+    // get through. Voyager's departure shot is famous for it.
+    //
+    // So this is single scattering through a slab of optical depth tau,
+    // Chandrasekhar's plane-parallel case, which is four exponentials:
+    //
+    //   reflected      w * mu0/(mu0+mu) * (1 - exp(-tau*(1/mu + 1/mu0)))
+    //   transmitted    what survives the crossing, times what it hits on the
+    //                  way out — bright where the ring is THIN
+    //
+    // The radius comes from the model position, so every ringlet ringOpacity
+    // knows about is drawn at pixel resolution rather than at the mesh's 160
+    // radial steps. The mesh is now geometry and nothing else.
+    else if (vTintAlpha > 2.05)
+    {
+        // The mesh is authored in body radii, so this IS the ring radius.
+        const float ringRadius = length(vModelPosition);
+        const float opacity = ringOpacity(ringRadius);
+        if (opacity < 0.004)
+        {
+            discard; // a gap: the Cassini division is empty, not dim
+        }
+        const float tau = -log(max(1.0 - opacity, 1.0e-3));
+
+        // C is thin, dark and slightly blue-grey; B is the bright one and the
+        // most strongly reddened by whatever dirties the ice; A sits between.
+        // Cassini imaged this, and it is most of what makes a ring system read
+        // as a structure with a history rather than as a grey disc.
+        const float toB = smoothstepf(1.50, 1.58, ringRadius);
+        const float toA = smoothstepf(2.00, 2.05, ringRadius);
+        vec3 tone = mix(vec3(0.52, 0.53, 0.58), vec3(0.86, 0.76, 0.58), toB);
+        tone = mix(tone, vec3(0.72, 0.67, 0.58), toA);
+        // Brightness follows the same structure the opacity does: a dense
+        // ringlet is both more opaque AND more reflective, and multiplying the
+        // two is what makes the fine radial banding read at a distance where
+        // the opacity alone has already saturated.
+        tone *= 0.60 + 0.58 * opacity;
+
+        const vec3 planeNormal = normalize(vWorldNormal);
+        const vec3 toSun = normalize(uCamera.sunPosition.xyz - vWorldPosition);
+        const vec3 toEye = normalize(-vWorldPosition);
+        const float sunSide = dot(planeNormal, toSun);
+        const float eyeSide = dot(planeNormal, toEye);
+        // The floors are not cosmetic: both cosines go to zero when the ring
+        // is edge-on, and they are divisors.
+        const float muSun = max(abs(sunSide), 0.06);
+        const float muEye = max(abs(eyeSide), 0.06);
+        // Dirty water ice. 0.6 is the value that comes out of Cassini's
+        // photometry for the B ring and it is high — these are snowballs.
+        const float singleAlbedo = 0.78;
+
+        float lit;
+        if (sunSide * eyeSide > 0.0)
+        {
+            // FRONT-LIT. Saturates at unity optical depth: past that the slab
+            // reflects everything it is going to reflect, which is why the B
+            // ring has structure at its edges and none in its middle.
+            lit = singleAlbedo * (muSun / (muSun + muEye)) *
+                  (1.0 - exp(-tau * (1.0 / muSun + 1.0 / muEye)));
+            // OPPOSITION SURGE: at zero phase every particle hides its own
+            // shadow and the ring flares. Real and worth about 40%, over a
+            // couple of degrees.
+            const float phase = clamp(dot(toSun, toEye), 0.0, 1.0);
+            lit *= 1.0 + 0.45 * pow(phase, 40.0);
+        }
+        else
+        {
+            // BACK-LIT, and the sign flips: the light has to CROSS the slab,
+            // so what arrives falls off as exp(-tau) and the dense ringlets go
+            // black while the gaps glow. Plus a forward-scattering peak,
+            // because ice grains a few microns across throw most of what they
+            // scatter within a few degrees of straight on — that is the
+            // sunbeam through the C ring.
+            const float crossed = exp(-tau / muSun);
+            const float forward = clamp(-dot(toSun, toEye), 0.0, 1.0);
+            lit = singleAlbedo * crossed * (1.0 - exp(-tau / muEye)) * 0.85 +
+                  crossed * 2.2 * pow(forward, 7.0);
+        }
+
+        // THE PLANET'S SHADOW ACROSS THE ANNULUS, which is what makes a ring
+        // look like it is in orbit around something rather than painted on.
+        // The same occluder spheres the surfaces use, in the same closed form.
+        float shadowed = 1.0;
+        const int ringShadowCount = int(uCamera.sunPosition.w);
+        for (int i = 0; i < ringShadowCount; ++i)
+        {
+            const vec3 m = vWorldPosition - uCamera.shadowSpheres[i].xyz;
+            const float sphereRadius = uCamera.shadowSpheres[i].w;
+            const float along = dot(m, toSun);
+            if (along >= 0.0)
+            {
+                continue; // the occluder is behind this piece of ring
+            }
+            const float miss = sqrt(max(dot(m, m) - along * along, 0.0));
+            const float inner = sphereRadius * (1.0 - kPenumbra);
+            shadowed = min(shadowed,
+                           smoothstep(inner, sphereRadius * (1.0 + kPenumbra), miss));
+        }
+
+        // Saturnshine: the planet is a huge lit disc a radius away, and it
+        // throws enough light back to keep the shadowed ring from being a
+        // hole cut in the frame. Faint, warm, and it fades with distance from
+        // the planet the way an inverse square does.
+        const vec3 planetshine =
+            vec3(0.055, 0.050, 0.040) / (ringRadius * ringRadius);
+        const vec3 radiance =
+            tone * (kSunColor * (lit * shadowed) + planetshine * opacity);
+
+        const vec3 graded = gradeCinematicCore(radiance);
+        // HOW MUCH OF THE PIXEL THE RING BLOCKS, which is not its opacity at
+        // normal incidence: a slab seen at a grazing angle is thicker along
+        // the line of sight by 1/mu, and that is why the rings close up into a
+        // solid band as they turn edge-on.
+        const float coverage = clamp(1.0 - exp(-tau / muEye), 0.0, 1.0);
+        outColor = vec4(graded / max(coverage, 1.0e-3) +
+                            ditherOffset(gl_FragCoord.xy),
+                        coverage);
+        return;
+    }
+    // ---- THE PHOTOSPHERE (instance tint alpha in (2.03, 2.05]) --------------
+    // A star's disc, and the only surface in the game that is supposed to
+    // CLIP. The tint carries a radiance of eighteen, four times the grade's
+    // white point, so the middle of the disc is pure white with a wide margin
+    // — and that margin is the point: it keeps the white region's EDGE in the
+    // same place as the sun's apparent size changes from Mercury to Neptune,
+    // instead of the whole disc fading as it shrinks.
+    //
+    // LIMB DARKENING is real and strong on a star — the sun's edge is about
+    // 40% of its centre in visible light, because looking at the limb you see
+    // higher, cooler gas. At a radiance of eighteen it stays clipped almost to
+    // the edge and shows only as the warm rim it also is, which is exactly
+    // what a photograph of the sun looks like.
+    else if (vTintAlpha > 2.03)
+    {
+        const vec3 outward = normalize(vWorldNormal);
+        const vec3 toEye = normalize(-vWorldPosition);
+        const float mu = clamp(dot(outward, toEye), 0.0, 1.0);
+        // Eddington's law with u = 0.62, the visible-light value.
+        const float darkening = 0.38 + 0.62 * pow(mu, 0.72);
+        // The limb is a couple of hundred kelvin cooler, so it reddens as it
+        // dims. Both together, or the edge looks like a cut rather than a
+        // curve.
+        const vec3 limbTint = mix(vec3(1.0, 0.72, 0.42), vec3(1.0, 1.0, 1.0),
+                                  smoothstepf(0.0, 0.45, mu));
+        outColor = vec4(gradeCinematic(vColor.rgb * (darkening * limbTint)) +
+                            ditherOffset(gl_FragCoord.xy),
+                        1.0);
         return;
     }
 
@@ -298,7 +639,7 @@ void main()
     // test below stays in world space — it is about positions, not normals.
     const vec3 normal = proceduralPlanet ? planetNormalBody : normalize(vWorldNormal);
     const vec3 lightDir = proceduralPlanet ? normalize(vSunDirBody) : sunDirWorld;
-    const vec3 shadeViewDir = proceduralPlanet ? normalize(vViewDirBody) : viewDir;
+    const vec3 shadeViewDir = proceduralPlanet ? planetViewDirBody : viewDir;
     // WRAP diffuse: light bleeds a little past the geometric terminator
     // (atmosphere/bounce stand-in) — the day/night line becomes a soft
     // gradient instead of a hard cut. Normalized so noon stays at 1.
@@ -317,6 +658,21 @@ void main()
     {
         const vec3 m = vWorldPosition - uCamera.shadowSpheres[i].xyz;
         const float r = uCamera.shadowSpheres[i].w;
+        // A BODY DOES NOT ECLIPSE ITSELF. Its own night side is the lambert
+        // term's business, and the lambert term has a soft terminator on
+        // purpose — a wrap that stands in for the scattering and bounce light
+        // that blur a real day/night line. The eclipse test has no such thing:
+        // it goes from lit to black across the penumbra measured in MISS
+        // DISTANCE, which at the terminator is a straight vertical cut down
+        // the middle of the disc. Saturn grew one the moment it entered the
+        // occluder list.
+        //
+        // Anything within four thousandths of a radius of the surface is ON
+        // it — 25 km on Terra, above the highest ground and below any orbit.
+        if (dot(m, m) <= r * r * 1.008)
+        {
+            continue;
+        }
         const float b = dot(m, sunDirWorld);
         if (b >= 0.0 || -b > distanceToSun)
         {
@@ -384,7 +740,7 @@ void main()
     // 200 km away goes blue from orbit and amber at sunset, for the same
     // reason the sky does — because it is the same air.
     vec3 finalColor = lit;
-    if (uCamera.atmosphereBody.w > 0.0)
+    if (uCamera.atmosphereBody.w > 0.0 && !gasSurface)
     {
         const AtmosphereParams air =
             atmospherePreset(int(round(uCamera.qualityTime.z)));
@@ -393,8 +749,21 @@ void main()
                                                           : ((uCamera.qualityTime.x >= 0.5)
                                                                  ? 4
                                                                  : 3);
+        // THE MARCH IS CLIPPED BY THE DISTANCE TO THE FRAGMENT, and that
+        // distance must not be the interpolated one. `fragmentDistance` is
+        // measured to the flat FACET, which on a UV sphere sits up to a
+        // sagitta inside the true surface — eleven kilometres on Saturn — and
+        // steps from facet to facet. A six-step march is sensitive to where
+        // it is cut off at the percent level, so that step came out as a
+        // percent-deep LATITUDE-LONGITUDE GRID over the whole planet, three
+        // quarters of the entire high-frequency error in the frame. The
+        // analytic hit distance from the sphere intersection above is smooth,
+        // and it is free — it was already computed.
+        const float marchLimit =
+            (proceduralPlanet && planetHitDistance > 0.0) ? planetHitDistance
+                                                          : fragmentDistance;
         const vec3 haze = atmosphereScatter(
-            normalize(vWorldPosition), fragmentDistance,
+            normalize(vWorldPosition), marchLimit,
             uCamera.atmosphereBody.xyz, uCamera.atmosphereBody.w, sunDirWorld,
             air, steps, transmittance);
         finalColor = lit * transmittance + haze * kSunColor;

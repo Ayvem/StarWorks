@@ -90,7 +90,11 @@
       "gloss": 0.6000000238418579,
       "segments": 28,
       "visible": true,
-      "collider": false
+      "collider": false,
+      "animation": 1,
+      "endPosition": [0, 0, 0.41999998688697815],
+      "endRotationDeg": [0, 0, 0],
+      "endEmissive": 1
     },
     {
       "kind": "tube",
@@ -104,6 +108,24 @@
       "segments": 20,
       "visible": true,
       "collider": false
+    }
+  ],
+  "animations": [
+    {
+      "name": "ENGINE",
+      "trigger": "toggle",
+      "verbs": "on-off",
+      "gates": "thrust",
+      "durationSeconds": 0.6000000238418579,
+      "startsOpen": true
+    },
+    {
+      "name": "NOZZLE",
+      "trigger": "throttle",
+      "verbs": "on-off",
+      "gates": "nothing",
+      "durationSeconds": 0.20000000298023224,
+      "startsOpen": false
     }
   ],
   "nodes": [

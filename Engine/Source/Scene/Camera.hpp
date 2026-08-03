@@ -29,6 +29,12 @@ namespace sw
         void setPosition(const WorldVec3& position);
         void setOrientation(const Quat& orientation);
 
+        /// Shifts the eye without touching where it is looking. Exists for the
+        /// floating origin: when the world's origin moves to another star the
+        /// camera has to move with it in the SAME frame, or the one frame in
+        /// between is rendered from four light-years away.
+        void translate(const WorldVec3& delta) { m_position += delta; }
+
         [[nodiscard]] const WorldVec3& position() const { return m_position; }
         [[nodiscard]] const Quat& orientation() const { return m_orientation; }
         [[nodiscard]] f32 verticalFov() const { return m_verticalFov; }

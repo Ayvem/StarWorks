@@ -32,6 +32,8 @@
 
 namespace game
 {
+    class ThrustSystem; // Systems.hpp; the game keeps a pointer (creative mode)
+
     class StarWorksGame final : public sw::Application
     {
     public:
@@ -50,9 +52,15 @@ namespace game
         [[nodiscard]] sw::u32 registerMesh(sw::Mesh mesh);
         /// surfaceStyle: -1 flat color, otherwise a SurfaceStyle id (see
         /// colorizeCelestial in the .cpp) painting continents/craters/rust.
-        [[nodiscard]] CelestialLodComponent makeSphereLodSet(const sw::Vec4& color,
-                                                             sw::i32 surfaceStyle = -1);
+        [[nodiscard]] CelestialLodComponent makeSphereLodSet(
+            const sw::Vec4& color, sw::i32 surfaceStyle = -1,
+            sw::f64 bodyRadiusMeters = 0.0);
         void buildScene();
+        /// F15: assembles the ENDURANCE from its ten catalogue parts and
+        /// parks it, spinning, on rails around Saturn — a flyable vessel,
+        /// not scenery. Called by buildScene; a no-op when the shipped
+        /// catalogue (and its 200-range ids) is missing.
+        void buildEndurance();
         /// Puts one building on a body: the ONE path, used by the scene
         /// builder and by the player's ground build cursor alike.
         /// `direction` is a unit vector in the body's rotating frame.
@@ -62,6 +70,12 @@ namespace game
                                       const sw::Vec4& marker = {});
         void buildGlyphMeshes();
         void updateWarp();
+        /// The SYNC-warp gate (F17): the multiplayer catch-up is the one
+        /// warp that skips hours and bypasses the altitude ladder, so it is
+        /// the one still refused on the shape of the trajectory.
+        [[nodiscard]] bool warpAllowed() const;
+        /// Why not, in three words, for the panel.
+        [[nodiscard]] const char* warpBlockReason() const;
         void updateShipControls();
         /// The maneuver node, dragged along its own orbit with the mouse.
         /// Runs after the map camera: a pick is a ray from THIS frame's eye.
@@ -186,6 +200,14 @@ namespace game
         sw::f64 m_mapHeightMeters = 6.0e7;
         sw::f32 m_mapYaw = 0.0f;
         sw::f32 m_mapPitch = 1.52f; // ~top-down; right-drag tilts/orbits
+        /// Which body the map camera orbits. -1 = AUTO: follow the
+        /// controlled craft's SOI primary (the default, and what the map
+        /// always did). Tab cycles through every celestial body so an
+        /// arrival can be framed from the TARGET's side while the node is
+        /// being dragged; Shift+Tab cycles backwards, and leaving AUTO
+        /// changes nothing about the craft — this is a camera, not a frame
+        /// of physics.
+        sw::i32 m_mapFocusIndex = -1;
         bool m_mapView = false;
 
         // Control target: ship, or EVA capsule (G). Tab = pilot/free camera.
@@ -261,6 +283,7 @@ namespace game
         sw::u32 m_starfieldMeshIndex = 0;
         sw::u32 m_sunHaloMeshIndex = 0;
         sw::u32 m_sunCoreMeshIndex = 0;
+        sw::u32 m_sunAureoleMeshIndex = 0;
         sw::u32 m_particleGlowMeshIndex = 0; // soft radial-falloff billboard
         sw::u32 m_flareMeshIndex = 0;        // lens-flare ghost disc
         sw::f32 m_skyDayFactor = 0.0f;       // 0 space/night -> 1 full daylight
@@ -411,6 +434,9 @@ namespace game
         [[nodiscard]] sw::ecs::Entity instantiateBlueprint(sw::ecs::Entity existingRoot,
                                                            sw::ecs::Entity pad = {});
         void cyclePilotedVessel();
+        /// Stops the piloted vessel's gravity spin (F15). A no-op on
+        /// anything that was not spinning, which is every rocket.
+        void despinBoardedVessel();
         bool m_editorMode = false;
         bool m_pausedBeforeEditor = false;
         std::vector<BlueprintPart> m_blueprint;
@@ -657,6 +683,14 @@ namespace game
         bool m_saveNameFocused = false;
         /// What the last save or load did, shown under the menu's buttons.
         std::string m_shellStatus;
+        /// CREATIVE MODE: engines burn no fuel. Chosen on the title screen,
+        /// fixed for the session afterwards (it rides in the save, v10+).
+        bool m_creativeMode = false;
+        /// The thrust system instance, kept so the mode can reach it (same
+        /// pattern as m_aerodynamics / m_bubbleSystem).
+        ThrustSystem* m_thrustSystem = nullptr;
+        /// Pushes m_creativeMode into the systems that act on it.
+        void applyCreativeMode();
         /// The title screen's own camera (see updateMenuCamera). Used as the
         /// render camera whenever the menu is up with no session behind it;
         /// a pause menu keeps the player's frozen view instead.
@@ -678,8 +712,23 @@ namespace game
             sw::u32 id;
         };
         std::vector<HudButton> m_hudButtons; // rebuilt each frame
+        /// True once this frame's button table has been opened. Guards the
+        /// rule that exactly ONE collector clears — see hudBeginButtons.
+        bool m_hudButtonsOpen = false;
+        /// Opens the frame's button table: clears it, once, before anything
+        /// is collected. Every collector after this one APPENDS.
+        void hudBeginButtons();
+        /// A modal taking the screen over: throws away what is already
+        /// collected so nothing behind it stays clickable. Deliberately a
+        /// different name, because confusing the two is the bug this pair
+        /// exists to prevent.
+        void hudSeizeButtons();
         void collectSasButtons();
         void handleHudClicks();
+        /// One matched button: does what it means. Returns true when the
+        /// click is finished, false to fall through to the hangar's 3D pick.
+        /// The routing itself lives in sw::ui::routeHudClick.
+        bool applyHudClick(const HudButton& button);
 
         // ====================================================================
         // MULTIPLAYER
@@ -719,14 +768,6 @@ namespace game
         FlightState m_flight{};
         void refreshFlightState();
 
-        /// TIME WARP IS NOT FREE ANY MORE. Past physics warp (x5) the craft
-        /// must either be standing on something or be in a closed orbit
-        /// whose periapsis clears the atmosphere. Anything else — a suborbital
-        /// arc, a reentry, an escape trajectory — is a situation whose
-        /// outcome depends on the integration the warp would switch off.
-        [[nodiscard]] bool warpAllowed() const;
-        /// Why not, in three words, for the panel.
-        [[nodiscard]] const char* warpBlockReason() const;
 
         /// Absolute simulation time a SYNC warp is aiming at, or 0.
         /// Distinct from m_warpToSeconds (the node) because it bypasses the
@@ -924,6 +965,187 @@ namespace game
 
         sw::ecs::Entity m_solEntity{};
         sw::ecs::Entity m_terraEntity{};
+
+        // ---- THE FLOATING ORIGIN --------------------------------------------
+        // Every position in the ECS is relative to the anchor of the system
+        // this index names, and index 0 — Sol — is the identity, so a save
+        // written before any of this existed still loads.
+        //
+        // IT IS NOT A CONVENIENCE, IT IS THE ONLY WAY THE NUMBERS FIT. A double
+        // carries about sixteen digits, so at Proxima's 4.0e16 metres the gap
+        // between two representable positions is EIGHT METRES. Held in absolute
+        // coordinates a craft in orbit there would jitter by the length of
+        // itself, a landing would be a coin flip, and the terrain — which
+        // subtracts two nearby world positions to find a patch origin — would
+        // dissolve. Rebased onto the star it is standing next to, the same
+        // craft is at 1e7 metres and the gap is a NANOMETRE.
+        //
+        // What makes it cheap is that the renderer was already camera-relative:
+        // everything reaching the GPU is a difference, so a shift the camera
+        // shares is invisible. What makes it dangerous is the handful of places
+        // that cache an absolute position across frames — see rebaseOrigin().
+        sw::u32 m_originSystem = sw::space::kSolSystem;
+
+        /// A local (ECS) position in absolute catalogue coordinates.
+        [[nodiscard]] sw::WorldVec3 absolutePosition(const sw::WorldVec3& local) const
+        {
+            return sw::space::systems()[m_originSystem].position + local;
+        }
+        /// ...and back again.
+        [[nodiscard]] sw::WorldVec3 localPosition(const sw::WorldVec3& absolute) const
+        {
+            return absolute - sw::space::systems()[m_originSystem].position;
+        }
+        /// Moves the world origin to another system's anchor, shifting every
+        /// absolute position in the game by the difference. Safe only between
+        /// ticks, on the main thread.
+        void rebaseOrigin(sw::u32 systemIndex);
+
+        /// One entity per catalogue star, index-parallel to sw::space::stars().
+        /// Every one of them exists for the whole session: you have to be able
+        /// to SEE where you are going, and a star four light-years away costs
+        /// one transform and one distance computation a tick.
+        std::vector<sw::ecs::Entity> m_starEntities;
+        void buildCatalogueStars();
+        /// The star that lights this point — brightest, not nearest.
+        [[nodiscard]] sw::ecs::Entity dominantStar(const sw::WorldVec3& position) const;
+        /// Refreshed once per frame in onRender: the star whose light the
+        /// shaders are given, whose glare gets the three-layer treatment, and
+        /// whose radius the shadow tests are written against. Everywhere the
+        /// code used to say "Sol" and mean "the sun", it now says this.
+        sw::ecs::Entity m_lightStar{};
+        /// Every star drawn as a SUN this frame — the dominant one plus any
+        /// companion delivering at least kSunIrradianceRatio of its
+        /// irradiance. Rebuilt each frame; the billboard path skips these.
+        std::vector<sw::ecs::Entity> m_sunsHere;
+        void collectSunsHere(const sw::WorldVec3& position,
+                             std::vector<sw::ecs::Entity>& out) const;
+        /// The three-layer glare, the photosphere disc and (for the dominant
+        /// star only) the lens-flare chain, for ONE star.
+        void collectStarVisual(sw::ecs::Entity star, const sw::Camera& activeCamera,
+                               bool mapView, bool withFlare);
+
+        // ---- PART ANIMATION -------------------------------------------------
+        /// Mesh slot for one animated group of one part, keyed by definition
+        /// id and animation index. A part's STATIC group stays in
+        /// m_partMeshIds, so every part that animates nothing is untouched.
+        std::unordered_map<sw::u64, sw::u32> m_partGroupMeshIds;
+        [[nodiscard]] static constexpr sw::u64 partGroupKey(sw::u32 definitionId,
+                                                            sw::u32 group)
+        {
+            return (static_cast<sw::u64>(definitionId) << 8) | group;
+        }
+        /// Adds the live animation state to a freshly spawned part, if its
+        /// definition has any. One call, from every path that makes a part.
+        void attachPartAnimation(sw::ecs::Entity part, sw::u32 definitionId);
+        /// Emits the extra draw items for a part's moving groups.
+        void collectAnimatedGroups(sw::ecs::Entity entity,
+                                   const sw::parts::PartComponent& part,
+                                   const sw::Mat4& partModel, const sw::Vec3& relative,
+                                   sw::f32 boundsRadius, const sw::Vec4& tint);
+        /// Where an entity is DRAWN this frame: the physics lane's alpha mix
+        /// of its previous and current transforms, which is the pose the
+        /// renderer and the chase camera both use. Anything that has to agree
+        /// with what the pilot can see — a click target, a screen anchor —
+        /// must ask this and not the raw transform.
+        [[nodiscard]] sw::WorldVec3 renderPosition(sw::ecs::Entity entity) const;
+        /// Right-click in flight: the part under the cursor, or null.
+        [[nodiscard]] sw::ecs::Entity pickPartUnderCursor(const sw::Camera& camera) const;
+        /// The same search with the ray handed in: the operable part nearest
+        /// along it, or null. Split out so a headless run can aim it, since a
+        /// capture has no cursor to aim it with.
+        [[nodiscard]] sw::ecs::Entity pickPartAlongRay(const sw::WorldVec3& eye,
+                                                       const sw::Vec3& direction) const;
+        /// The part whose menu is open, and where on screen it sits.
+        sw::ecs::Entity m_menuPart{};
+        sw::Vec2 m_menuAnchor{0.0f, 0.0f};
+        void collectPartMenu(const sw::Camera& camera);
+        void togglePartAnimation(sw::u32 index);
+        /// Feeds the throttle into every throttle-triggered animation.
+        void updateThrottleAnimations();
+        /// How far the mouse travelled while the right button was down. A
+        /// right-DRAG turns the camera; a right-CLICK opens a part's menu.
+        sw::f32 m_rightDragPixels = 0.0f;
+        sw::f32 m_rightHeldSeconds = 0.0f;
+        /// Until when to say that the last click found nothing operable.
+        sw::f64 m_partMenuMissUntil = 0.0;
+        /// Draws every catalogue star that is NOT the local sun: one soft
+        /// billboard each, sized and lit off its apparent magnitude.
+        void collectDistantStars(const sw::Camera& activeCamera);
+        /// Instantiates one system's planets. Idempotent: a system is built at
+        /// most once per session.
+        void loadSystemPlanets(sw::u32 systemIndex);
+        /// Once per frame: hands the origin to the nearest star and builds the
+        /// planets of whichever system the craft has entered.
+        void updateSystemStreaming();
+        /// SW_JUMP=<SYSTEM>: teleport the craft to another star, once, at boot.
+        void applyDebugJump();
+
+        // ---- INTERSTELLAR GUIDANCE ------------------------------------------
+        // Between the stars there is no orbit to read. A conic drawn around a
+        // star you have already escaped is a straight line to within the width
+        // of the screen, and the map's whole vocabulary — periapsis, encounter,
+        // closest approach — has nothing to say about a four-light-year
+        // crossing. What a pilot actually needs there is one number repeated
+        // three times: how far off the required heading am I, about each axis.
+        struct InterstellarGuidance
+        {
+            bool valid = false;
+            sw::u32 systemIndex = 0;
+            const char* systemName = "";
+            sw::f64 distanceMeters = 0.0;
+            /// The rotation that takes the current heading onto the required
+            /// one, as an axis-angle vector in DEGREES about world X, Y and Z.
+            /// Three numbers that go to zero together and each of which says
+            /// which way to turn.
+            sw::Vec3 deviationDegrees{0.0f};
+            sw::f32 totalDegrees = 0.0f;
+            sw::f64 closingSpeedMps = 0.0;
+            sw::f64 etaSeconds = -1.0; // negative: not closing
+        };
+        [[nodiscard]] InterstellarGuidance interstellarGuidance() const;
+        bool m_debugJumped = false;
+        bool m_debugMenuToggled = false;
+        bool m_debugProbed = false;
+        bool m_debugStarProbed = false;
+        bool m_debugClockSet = false;
+        bool m_debugGroundProbed = false;
+        /// SW_GROUNDPROBE: the walker's distance from its body's centre, one
+        /// sample per frame. Standing still, this should be a constant.
+        std::vector<sw::f64> m_groundSamples;
+        sw::u32 m_groundWarmup = 0;
+        /// Frames the probe waits before firing. SW_SHOT moves the camera in
+        /// the call AFTER the probe's, so a probe on frame one measures the
+        /// eye where the boot left it — 1.6 billion km from the ship it is
+        /// meant to be photographing — and reports a pick that misses
+        /// everything for a reason that has nothing to do with the pick.
+        sw::u32 m_debugProbeDelay = 0;
+        /// One flag per catalogue system. Sol's is set at scene build.
+        std::vector<bool> m_systemLoaded;
+
+        // ---- SW_SHOT: the capture camera -----------------------------------
+        // Set the environment variable SW_SHOT to `BODY@RADII[,map][,yaw]` —
+        // for example `SATURN@6.9` — and the build skips the menu, starts a
+        // world, and parks the camera that many body radii from the named
+        // body with the sun over its shoulder. With --frames and --capture
+        // that is a screenshot of the REAL renderer, which is the only thing
+        // that can see a bug in the vertex path, a mesh, or a blend mode.
+        // Empty (the normal case) and none of it happens.
+        std::string m_debugShotBody;
+        sw::f64 m_debugShotRadii = 6.0;
+        sw::f32 m_debugShotYaw = 0.0f;
+        /// SW_SHOT's fourth field: how far above the subject the ship/part
+        /// camera sits, as a multiple of the standoff. Negative looks up at it.
+        sw::f32 m_debugShotPitch = 0.35f;
+        bool m_debugShotMap = false;
+        /// SW_NO_GLARE=1 suppresses the sun's three glare layers, leaving the
+        /// photosphere alone. It exists so Tools/solar_scale/check_render_size
+        /// can MEASURE the sun's disc: the glare is a deliberate optical
+        /// overlay wider than the body, so with it on there is nothing to
+        /// measure but the overlay.
+        bool m_debugNoGlare = false;
+        void parseDebugShot();
+        void applyDebugShot();
 
         std::vector<sw::Mesh> m_meshes;
         sw::ecs::World m_world;

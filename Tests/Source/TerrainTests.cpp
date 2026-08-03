@@ -72,40 +72,94 @@ SW_TEST(TerrainIsDeterministic)
     sw::planet::TerrainComponent other = terra;
     other.seed = terra.seed + 1u;
     int differences = 0;
+    int landInEither = 0;
     for (int i = 0; i < 200; ++i)
     {
         const sw::Vec3 dir = sampleDirection(static_cast<sw::u32>(i));
-        if (sw::planet::terrainElevation(terra, dir) !=
-            sw::planet::terrainElevation(other, dir))
+        const sw::f64 here = sw::planet::terrainElevation(terra, dir);
+        const sw::f64 there = sw::planet::terrainElevation(other, dir);
+        if (here > 0.0 || there > 0.0)
+        {
+            ++landInEither;
+        }
+        if (here != there)
         {
             ++differences;
         }
     }
-    SW_CHECK(differences > 150);
+    // MEASURED after F18: 101 of the 200 samples fall on land in one world
+    // or the other, and ALL 101 differ. The other 99 agree because both
+    // worlds read exactly 0 there — they are at sea, and a quarter of a
+    // planet being ocean is not a failure of decorrelation. Asserting the
+    // equality is stronger than the old `> 150`: every point where the two
+    // worlds have any elevation to disagree about, they disagree.
+    SW_CHECK_EQ(differences, landInEither);
+    SW_CHECK(landInEither > 60); // and enough land was sampled to mean it
 }
 
-SW_TEST(TerrainV2PreservesEveryCoastline)
+// ---------------------------------------------------------------------------
+// F18 RETIRED THE M25 COASTLINE CONTRACT, DELIBERATELY.
+//
+// v2 was allowed to change every altitude on the planet and no land/sea
+// decision, and `TerrainV2PreservesEveryCoastline` pinned exactly that. F18
+// changes the decision on purpose: the old mask put 53.4% of the globe under
+// land — one sprawling continent with inland seas — and the new one digs an
+// ocean. What replaces the old test is the contract F18 does keep, and it is
+// a better one because it is measured against the only planet anybody has a
+// photograph of.
+//
+// Earth's real land/sea mask (the `global-land-mask` raster, sampled on an
+// equal-area grid by Tools/earth_reference/continent_stats.py) gives 28.9%
+// land with the largest landmass holding 54.3% of it. This field measures
+// 26.5% and 54.1%. The second number is the one that matters: a field can
+// have a perfect land fraction and still be a thousand islands.
+// ---------------------------------------------------------------------------
+SW_TEST(TerrainIsShapedLikeAPlanetAndNotLikeConfetti)
 {
-    // THE M25 CONTRACT: relief is added on top of the v1 continental mask,
-    // so the land/sea classification is bit-identical to v1 everywhere.
-    const sw::planet::TerrainComponent worlds[] = {sw::planet::presetTerra(),
-                                                  sw::planet::presetLuna(),
-                                                  sw::planet::presetMars()};
-    for (const sw::planet::TerrainComponent& terrain : worlds)
+    const sw::planet::TerrainComponent terra = sw::planet::presetTerra();
+
+    int land = 0;
+    for (int i = 0; i < kSamples; ++i)
     {
-        int mismatches = 0;
-        for (int i = 0; i < kSamples; ++i)
+        if (sw::planet::terrainElevation(
+                terra, sampleDirection(static_cast<sw::u32>(i))) > 0.0)
         {
-            const sw::Vec3 dir = sampleDirection(static_cast<sw::u32>(i));
-            const bool landV1 = legacyElevationV1(terrain, dir) > 0.0f;
-            const bool landV2 = sw::planet::terrainElevation(terrain, dir) > 0.0;
-            if (landV1 != landV2)
-            {
-                ++mismatches;
-            }
+            ++land;
         }
-        SW_CHECK_EQ(mismatches, 0);
     }
+    const sw::f64 fraction = static_cast<sw::f64>(land) / kSamples;
+    SW_CHECK(fraction > 0.20); // MEASURED 0.265; Earth is 0.289
+    SW_CHECK(fraction < 0.36);
+
+    // CONTINENTS, NOT CONFETTI, in one number: walk a great circle and count
+    // how often you cross a shoreline. A few big landmasses give a handful
+    // of crossings; a shredded coastline gives dozens, however good its land
+    // fraction looks. MEASURED worst case over twelve circles: 8.
+    int worst = 0;
+    for (int circle = 0; circle < 12; ++circle)
+    {
+        const sw::f32 tilt =
+            3.14159265f * static_cast<sw::f32>(circle) / 12.0f;
+        const sw::Vec3 u{std::cos(tilt), 0.0f, std::sin(tilt)};
+        const sw::Vec3 v{0.0f, 1.0f, 0.0f};
+        int crossings = 0;
+        bool previous = false;
+        for (int step = 0; step < 2000; ++step)
+        {
+            const sw::f32 angle =
+                6.28318530718f * static_cast<sw::f32>(step) / 2000.0f;
+            const sw::Vec3 dir =
+                glm::normalize(u * std::cos(angle) + v * std::sin(angle));
+            const bool isLand = sw::planet::terrainElevation(terra, dir) > 0.0;
+            if (step > 0 && isLand != previous)
+            {
+                ++crossings;
+            }
+            previous = isLand;
+        }
+        worst = std::max(worst, crossings);
+    }
+    SW_CHECK(worst <= 16);
 }
 
 SW_TEST(TerrainSeaLevelIsSolidAndTheSeaFloorIsBelowIt)
@@ -327,7 +381,14 @@ SW_TEST(TheDrawnGroundFollowsTheColliderWhenTheCellsAreFineEnough)
     constexpr sw::f64 kTerraRadius = 6.371e6;
     // A patch of real, creased terrain — not a smooth plain, which would
     // pass at any resolution and prove nothing.
-    const sw::Vec3 site = glm::normalize(sw::Vec3(0.31f, 0.74f, 0.60f));
+    // Re-surveyed for F18's geography: the old site is open ocean now, and
+    // a flat sea passes at any resolution and proves nothing. The FIRST
+    // replacement went the other way and was the roughest point on the
+    // planet — 143 m of relief in 400 m, which no mesh agrees with and which
+    // proves nothing either. MEASURED here: 817 m up, 34 m of relief across
+    // 400 m of ground. Ordinary creased hill country, which is the case the
+    // resolution contract is actually about.
+    const sw::Vec3 site = glm::normalize(sw::Vec3(0.8284f, -0.5592f, -0.0321f));
 
     // 15.6 m cells: what the patch builds at landing extent.
     const MeshGap fine = meshGap(terra, site, 500.0, 64, kTerraRadius);

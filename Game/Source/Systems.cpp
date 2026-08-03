@@ -28,6 +28,63 @@ namespace game
             });
     }
 
+    void RailsSpinSystem::update(sw::ecs::World& world, sw::f32 /*deltaSeconds*/)
+    {
+        // The split clock, for the reason CelestialSpinSystem gives.
+        sw::f64 whole = 0.0;
+        sw::f64 fraction = 0.0;
+        m_timebase.presentSecondsSplit(whole, fraction);
+        world.forEach<TransformComponent, PreviousTransformComponent, SpinComponent,
+                      sw::phys::OnRailsComponent>(
+            [whole, fraction](sw::ecs::Entity, TransformComponent& transform,
+                  PreviousTransformComponent& previous, const SpinComponent& spin,
+                  sw::phys::OnRailsComponent&) {
+                // fmod before the cast: 0.586 rad/s reaches a million
+                // radians in a fortnight, and an f32 angle that large has
+                // lost the fraction of a turn that IS the answer.
+                // A STOPPED RING KEEPS ITS ATTITUDE. Rate zero means "this
+                // craft is not spinning", not "snap it back to where its
+                // spin would have started" — which is what writing the
+                // closed form unconditionally would do the moment a pilot
+                // de-spun the ring and then left it.
+                if (spin.radiansPerSecond == 0.0f)
+                {
+                    return;
+                }
+                const sw::f64 rate = static_cast<sw::f64>(spin.radiansPerSecond);
+                const sw::f64 turn = 6.283185307179586 / std::abs(rate);
+                const sw::f64 angle =
+                    std::fmod(rate * (std::fmod(whole, turn) + fraction),
+                              6.283185307179586);
+                // THE AXIS IS WHERE THE CRAFT'S OWN +Z IS HELD in the world,
+                // and the spin is about it. A closed form has no attitude to
+                // build on — so the base is derived, by the shortest arc
+                // that takes the model axis onto the world one, and the ring
+                // can be parked in any plane without a component to store it.
+                const sw::Vec3 worldAxis = glm::normalize(spin.axis);
+                const sw::Vec3 modelAxis{0.0f, 0.0f, 1.0f};
+                const sw::f32 alignment = glm::dot(modelAxis, worldAxis);
+                sw::Quat base{1.0f, 0.0f, 0.0f, 0.0f};
+                if (alignment < -0.9999f)
+                {
+                    base = glm::angleAxis(glm::pi<sw::f32>(),
+                                          sw::Vec3{1.0f, 0.0f, 0.0f}); // antiparallel
+                }
+                else if (alignment < 0.9999f)
+                {
+                    const sw::Vec3 cross = glm::cross(modelAxis, worldAxis);
+                    base = glm::normalize(
+                        sw::Quat{1.0f + alignment, cross.x, cross.y, cross.z});
+                }
+                // Last tick's attitude, for the interpolator. RailsSystem
+                // already copied it this tick; writing the same value again
+                // costs nothing and keeps this system correct on its own.
+                previous.rotation = transform.rotation;
+                transform.rotation =
+                    glm::angleAxis(static_cast<sw::f32>(angle), worldAxis) * base;
+            });
+    }
+
     void CelestialSpinSystem::update(sw::ecs::World& world, sw::f32 /*deltaSeconds*/)
     {
         // Positions (and previous.position) belong to the engine's
@@ -39,18 +96,29 @@ namespace game
         // under warp is "not many" — the world spun around the star with a
         // planet that had barely turned, and a save reloaded with the
         // terrain in a different place than it went out.
-        const sw::f64 now = m_timebase.presentSeconds();
+        // THE SPLIT CLOCK, for the same reason the positions use it: the
+        // fmod below keeps the ANGLE small but it cannot recover precision the
+        // multiply has already thrown away, and `rate * now` at now = 3e11 is
+        // 2.2e7 radians with an ulp of 3.7e-9 — 2.4 cm on Terra's surface,
+        // moving every tick. Reducing the TIME first instead of the angle
+        // keeps the product small from the start.
+        sw::f64 whole = 0.0;
+        sw::f64 fraction = 0.0;
+        m_timebase.presentSecondsSplit(whole, fraction);
         world.forEach<TransformComponent, PreviousTransformComponent, SpinComponent,
                       sw::phys::GravitySourceComponent>(
-            [now](sw::ecs::Entity, TransformComponent& transform,
+            [whole, fraction](sw::ecs::Entity, TransformComponent& transform,
                   PreviousTransformComponent& previous, const SpinComponent& spin,
                   sw::phys::GravitySourceComponent& source) {
                 previous.rotation = transform.rotation;
-                // fmod keeps f32 precision intact after a year of spinning:
-                // 7.29e-5 rad/s reaches 2,300 radians in a single orbit.
-                const sw::f64 angle =
-                    std::fmod(static_cast<sw::f64>(spin.radiansPerSecond) * now,
-                              6.283185307179586);
+                // The rotation PERIOD reduces the whole seconds exactly, and
+                // the fraction rides on top with its full precision.
+                const sw::f64 rate = static_cast<sw::f64>(spin.radiansPerSecond);
+                const sw::f64 turn =
+                    (rate != 0.0) ? 6.283185307179586 / std::abs(rate) : 0.0;
+                const sw::f64 reduced =
+                    (turn > 0.0) ? std::fmod(whole, turn) + fraction : whole + fraction;
+                const sw::f64 angle = std::fmod(rate * reduced, 6.283185307179586);
                 transform.rotation = glm::angleAxis(static_cast<sw::f32>(angle),
                                                     glm::normalize(spin.axis));
                 // The SAME rotation, kept in f64. Anything sitting 6,371 km
@@ -270,6 +338,47 @@ namespace game
                     {
                         target = -target;
                     }
+                    else if (sas.mode != SasComponent::kPrograde)
+                    {
+                        // ---- THE ORBIT'S OTHER FOUR DIRECTIONS ------------
+                        //
+                        // Built from the SAME velocity prograde is, which is
+                        // the point: the frame toggle moves all six markers
+                        // together or none of them, and an autopilot holding
+                        // a normal computed in one frame while the navball
+                        // draws it in the other is the landing bug of F6 all
+                        // over again with a different vector.
+                        //
+                        // NORMAL is the angular momentum r x v — the axis the
+                        // orbit turns about, so a burn along it rotates the
+                        // plane and changes nothing else. RADIAL OUT is
+                        // prograde x normal, which for a circular orbit is
+                        // straight up and for an eccentric one is the in-plane
+                        // direction perpendicular to the velocity, pointing
+                        // away from the focus. That is the definition worth
+                        // having: a radial burn moves the line of apsides
+                        // without touching the period.
+                        sw::Vec3 prograde{};
+                        sw::Vec3 normal{};
+                        sw::Vec3 radialOut{};
+                        if (!sw::phys::orbitalFrame(transform.position - primary->center,
+                                                    relativeVelocity, prograde, normal,
+                                                    radialOut))
+                        {
+                            // Straight up or straight down: the orbit has no
+                            // plane. Hold rather than point somewhere invented.
+                            body.angularVelocity *= 0.85f;
+                            return;
+                        }
+                        switch (sas.mode)
+                        {
+                        case SasComponent::kNormal: target = normal; break;
+                        case SasComponent::kAntiNormal: target = -normal; break;
+                        case SasComponent::kRadialOut: target = radialOut; break;
+                        case SasComponent::kRadialIn: target = -radialOut; break;
+                        default: break;
+                        }
+                    }
                 }
 
                 // Proportional attitude controller: command an angular
@@ -298,10 +407,11 @@ namespace game
     {
         world.forEach<TransformComponent, sw::phys::DynamicBodyComponent, ShipComponent,
                       ShipControlsComponent>(
-            [deltaSeconds, &world](sw::ecs::Entity entity, TransformComponent& transform,
-                                   sw::phys::DynamicBodyComponent& body,
-                                   ShipComponent& ship,
-                                   const ShipControlsComponent& controls) {
+            [deltaSeconds, &world, this](sw::ecs::Entity entity,
+                                         TransformComponent& transform,
+                                         sw::phys::DynamicBodyComponent& body,
+                                         ShipComponent& ship,
+                                         const ShipControlsComponent& controls) {
                 // ---- attitude (RCS): COMMAND the body-frame angular rate ----
                 //
                 // This system no longer turns the ship: it only says how
@@ -360,7 +470,11 @@ namespace game
                                                    throttleFactor *
                                                    static_cast<sw::f64>(deltaSeconds);
                         sw::f64 fuelBurned = 0.0;
-                        if (fuelNeeded > 0.0)
+                        // Creative: full thrust, nothing leaves the tanks.
+                        // The skip is HERE, not a fake refill afterwards —
+                        // a refill would still jiggle the vessel's mass
+                        // through the assembly pass every tick.
+                        if (fuelNeeded > 0.0 && !m_infiniteFuel)
                         {
                             world.forEach<sw::parts::PartComponent,
                                           sw::factory::InventoryComponent>(

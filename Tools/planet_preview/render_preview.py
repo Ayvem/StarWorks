@@ -9,8 +9,11 @@
 # shading path the fragment shader runs — footprint-driven LOD included —
 # and writes a PNG.
 #
-# It is a review and non-regression instrument, not a renderer: no clouds,
-# no atmosphere shell, no HUD. What it does show, exactly, is the terrain
+# It is a review and non-regression instrument, not a renderer: no HUD, no
+# rings, no vessels. It DOES draw the cloud deck and the atmosphere, and
+# that line used to say it did not — which cost two sessions of chasing a
+# bug that was a correct cloud field all along. What it shows, exactly, is
+# the terrain
 # shading: relief, self-shadowing, biomes, LOD behaviour with distance.
 #
 #     python3 Tools/planet_preview/render_preview.py \
@@ -153,6 +156,13 @@ int main(int argc, char** argv)
                                         footprint, time, albedo, specular, gloss,
                                         normalBody, selfShadow, water);
 
+                    // Mirrors the gas-giant limb darkening in Mesh.frag.
+                    if (style >= 20)
+                    {
+                        const float facing =
+                            std::max(glm::dot(dirBody, -rayDir), 0.0f);
+                        albedo *= 0.35f + 0.65f * std::pow(facing, 0.45f);
+                    }
                     const float wrapped =
                         (glm::dot(normalBody, sunDirBody) + diffuseWrap) /
                         (1.0f + diffuseWrap);
@@ -318,6 +328,17 @@ SHOTS = [
     # dark hemisphere like noon).
     ("terra-night",            0, 4.0e5, 2.0, 0.0, -0.25, -0.50, 2.03, 0.0),
     ("terra-terminator",       0, 6.0e6, 2.0, 0.0, 0.02, -0.50, 2.03, 0.0),
+    # F20 — THE AURORA. The oval rings the MAGNETIC axis (0.1908, 0.9816, 0),
+    # which puts its pole at latitude 1.3788, longitude 0, and the ring itself
+    # 18.5 degrees off it. All three shots need the sun UNDER the horizon:
+    # above -8 degrees the shader correctly draws nothing.
+    #   polar  the whole oval from above, the shape check
+    #   orbit  low pass over the ring, the structure check
+    #   limb   from the side and below, the one that proves the curtains
+    #          stand UP instead of lying on the ground like paint
+    ("terra-aurora-polar",     0, 8.0e6, 2.0, 0.0, -0.60,  1.3788, 0.0,  0.0),
+    ("terra-aurora-orbit",     0, 1.5e6, 2.0, -1.5708, -0.90, 1.3000, 0.0, 0.85),
+    ("terra-aurora-limb",      0, 4.0e5, 2.0, 1.5708, -0.90, 0.6000, 0.0, 1.32),
     # Landing scale: 900 m up, looking toward the horizon. This is the shot
     # that exposed a mountain summit rendering as a perfectly level mesa.
     ("terra-landing",          0, 9.0e2, 2.0, 0.0, 0.45, -0.646, 2.007, 1.15),
@@ -325,9 +346,58 @@ SHOTS = [
     ("terra-far",              0, 6.0e6, 2.0, 0.6, 0.55, -0.50, 2.03, 0.0),
     ("luna-orbit",             1, 1.2e5, 2.0, 0.5, 0.20, 0.30, 1.20, 0.0),
     ("mars-orbit",             2, 2.5e5, 2.0, 0.5, 0.25, -0.20, 0.60, 0.0),
+    # The solar system (F14): one orbit shot per new world.
+    ("mercury-orbit",          3, 2.0e5, 2.0, 0.5, 0.30, 0.10, 1.10, 0.0),
+    ("io-orbit",               4, 1.5e5, 2.0, 0.5, 0.35, -0.20, 0.80, 0.0),
+    ("europa-orbit",           5, 1.0e5, 2.0, 0.5, 0.30, 0.15, 2.10, 0.0),
+    ("ganymede-orbit",         6, 2.0e5, 2.0, 0.5, 0.30, -0.10, 1.40, 0.0),
+    ("callisto-orbit",         7, 2.0e5, 2.0, 0.5, 0.30, 0.25, 3.10, 0.0),
+    ("titan-orbit",            8, 1.5e5, 2.0, 0.5, 0.30, -0.15, 0.50, 0.0),
+    ("enceladus-orbit",        9, 4.0e4, 2.0, 0.5, 0.30, -0.60, 1.90, 0.0),
+    ("rhea-orbit",            10, 8.0e4, 2.0, 0.5, 0.30, 0.20, 2.60, 0.0),
+    ("titania-orbit",         11, 8.0e4, 2.0, 0.5, 0.30, -0.30, 0.90, 0.0),
+    ("oberon-orbit",          12, 8.0e4, 2.0, 0.5, 0.30, 0.10, 4.20, 0.0),
+    ("triton-orbit",          13, 1.0e5, 2.0, 0.5, 0.30, -0.40, 2.90, 0.0),
+    ("jupiter-approach",      20, 3.0e7, 2.0, 0.5, 0.40, -0.20, 5.10, 0.0),
+    ("saturn-approach",       21, 2.5e7, 2.0, 0.5, 0.40, 0.15, 1.70, 0.0),
+    ("uranus-approach",       22, 1.2e7, 2.0, 0.5, 0.40, 0.30, 0.30, 0.0),
+    ("neptune-approach",      23, 1.2e7, 2.0, 0.5, 0.40, -0.25, 3.60, 0.0),
+    ("venus-approach",        24, 3.0e6, 2.0, 0.5, 0.40, 0.10, 2.40, 0.0),
+    # THE REPORTED FRAME: 10 357 km over Saturn, which is where the banding
+    # has to hold up and where the lattice artefact showed itself.
+    ("saturn-24r",             21, 8.15e7, 2.0, 0.6, 0.55, 0.0, 0.0, 0.0),
+    ("saturn-close",          21, 1.0357e7, 2.0, 0.5, 0.40, 0.15, 1.70, 0.0),
+    ("jupiter-close",         20, 1.2e7, 2.0, 0.5, 0.40, -0.20, 5.10, 0.0),
+    ("uranus-close",          22, 4.0e6, 2.0, 0.5, 0.40, 0.30, 0.30, 0.0),
+    ("neptune-close",         23, 4.0e6, 2.0, 0.5, 0.40, -0.25, 3.60, 0.0),
+    # ...and the same three with the sun high, so the banding is judged on
+    # the material rather than on a grazing terminator.
+    ("saturn-noon",           21, 1.0357e7, 2.0, 0.5, 1.20, 0.15, 1.70, 0.0),
+    ("jupiter-noon",          20, 1.2e7, 2.0, 0.5, 1.20, -0.20, 5.10, 0.0),
+    ("neptune-noon",          23, 4.0e6, 2.0, 0.5, 1.20, -0.25, 3.60, 0.0),
+    # THE WHOLE DISC. Everything above frames a piece of a planet; these
+    # frame the planet, which is the view the game spends most of its time
+    # in and the one where a limb, a terminator or a polar cap either works
+    # or does not.
+    ("saturn-full",           21, 2.0e8, 2.0, 0.5, 0.90, 0.15, 1.70, 0.0),
+    ("saturn-distant",        21, 8.0e8, 2.0, 0.5, 0.90, 0.15, 1.70, 0.0),
+    ("jupiter-full",          20, 2.4e8, 2.0, 0.5, 0.90, -0.20, 5.10, 0.0),
+    ("uranus-full",           22, 9.0e7, 2.0, 0.5, 0.90, 0.30, 0.30, 0.0),
+    ("neptune-full",          23, 9.0e7, 2.0, 0.5, 0.90, -0.25, 3.60, 0.0),
+    ("terra-full",             0, 2.2e7, 2.0, 0.6, 0.90, -0.50, 2.03, 0.0),
+    # THE ENDURANCE'S OWN VIEW: it parks at a = 4.0e8 m from Saturn's centre,
+    # which is 341 800 km of altitude over a 58 232 km planet. Reported as
+    # showing a display bug at exactly this range.
+    ("saturn-endurance",      21, 3.418e8, 2.0, 0.5, 0.90, 0.15, 1.70, 0.0),
+    ("saturn-endurance-lo",   21, 3.418e8, 0.0, 0.5, 0.90, 0.15, 1.70, 0.0),
+    ("mars-full",              2, 1.2e7, 2.0, 0.5, 0.90, -0.20, 0.60, 0.0),
 ]
 
-RADII = {0: 6.371e6, 1: 1.7374e6, 2: 3.3895e6}
+RADII = {0: 6.371e6, 1: 1.7374e6, 2: 3.3895e6,
+         3: 2.4397e6, 4: 1.8216e6, 5: 1.5608e6, 6: 2.6341e6, 7: 2.4103e6,
+         8: 2.5747e6, 9: 2.521e5, 10: 7.638e5, 11: 7.884e5, 12: 7.614e5,
+         13: 1.3534e6,
+         20: 6.9911e7, 21: 5.8232e7, 22: 2.5362e7, 23: 2.4622e7, 24: 6.0518e6}
 
 
 def main() -> int:
@@ -344,7 +414,9 @@ def main() -> int:
                          "PlanetSurface.glsl", "Atmosphere.glsl"]) + HARNESS
     workdir = tempfile.mkdtemp(prefix="sw_preview_")
     cpp = os.path.join(workdir, "preview.cpp")
-    exe = os.path.join(workdir, "preview")
+    # ".exe" on Windows, where g++ appends it regardless of -o; without
+    # it the harness compiles and then cannot find what it just built.
+    exe = os.path.join(workdir, "preview" + (".exe" if os.name == "nt" else ""))
     with open(cpp, "w", encoding="utf-8") as handle:
         handle.write(program)
     build = subprocess.run(

@@ -506,6 +506,27 @@ namespace sw::parts
         return local;
     }
 
+    MeshData buildPartMeshGroup(const PartDefinition& definition, i32 group)
+    {
+        MeshData mesh;
+        for (const PartShape& shape : definition.shapes)
+        {
+            if (!shape.visible || shape.animation != group)
+            {
+                continue;
+            }
+            const MeshData shapeMesh = buildShapeMesh(shape);
+            const u32 base = static_cast<u32>(mesh.vertices.size());
+            mesh.vertices.insert(mesh.vertices.end(), shapeMesh.vertices.begin(),
+                                 shapeMesh.vertices.end());
+            for (const u32 index : shapeMesh.indices)
+            {
+                mesh.indices.push_back(base + index);
+            }
+        }
+        return mesh;
+    }
+
     MeshData buildPartMesh(const PartDefinition& definition)
     {
         MeshData mesh;
@@ -643,7 +664,43 @@ namespace sw::parts
             radius = std::max(radius, glm::length(box.center) +
                                           glm::length(glm::abs(box.halfExtents)));
         }
+        // AND THE DEPLOYED POSE. A solar wing folded against the hull is a
+        // metre across and four metres across with its arrays out; a radius
+        // measured on the stowed pose alone would cull the part the moment the
+        // player looked slightly away from a deployed panel, which is the one
+        // moment they are looking AT it.
+        for (const PartShape& shape : definition.shapes)
+        {
+            if (shape.animation < 0)
+            {
+                continue;
+            }
+            const Vec3 halfExtents = shapeBoxHalfExtents(shape);
+            radius = std::max(radius,
+                              glm::length(shape.endPosition) + glm::length(halfExtents));
+        }
         return radius;
+    }
+
+    f32 rayEntersSphere(const Vec3& toCentre, const Vec3& direction, f32 radius)
+    {
+        const f32 alongAxis = glm::dot(toCentre, direction);
+        const f32 centreDistanceSq = glm::dot(toCentre, toCentre);
+        if (centreDistanceSq <= radius * radius)
+        {
+            return 0.0f; // the eye is already inside it
+        }
+        if (alongAxis <= 0.0f)
+        {
+            return -1.0f; // wholly behind
+        }
+        const f32 offAxisSq = centreDistanceSq - alongAxis * alongAxis;
+        const f32 radiusSq = radius * radius;
+        if (offAxisSq > radiusSq)
+        {
+            return -1.0f;
+        }
+        return alongAxis - std::sqrt(radiusSq - offAxisSq);
     }
 
     bool raycastPart(const PartDefinition& definition, const Vec3& origin,

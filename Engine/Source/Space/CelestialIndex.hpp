@@ -63,6 +63,14 @@ namespace sw::space
         /// WORLD-frame state of a body at time t (analytic, any t).
         void stateAt(i32 index, f64 timeSeconds, WorldVec3& outPosition,
                      WorldVec3* outVelocity = nullptr) const;
+        /// The same, at full clock precision: exact whole seconds plus a
+        /// fraction. The per-tick systems that POSITION the world use this;
+        /// the map, the HUD and the trajectory predictor use the plain one,
+        /// where a millimetre is not a picture anybody can see.
+        void stateAtSplit(i32 index, f64 wholeSeconds, f64 fraction,
+                          WorldVec3& outPosition,
+                          WorldVec3* outVelocity = nullptr) const;
+
         [[nodiscard]] WorldVec3 positionAt(i32 index, f64 timeSeconds) const;
 
         /// The body whose sphere of influence rules `worldPosition` at time

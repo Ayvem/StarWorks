@@ -57,6 +57,11 @@ namespace game
         // v2: + surfaceRelative, and kStability joined the modes.
         m_saveSchema.registerComponent<SasComponent>("game.Sas", 2);
         m_saveSchema.registerComponent<sw::parts::PartComponent>("parts.Part", 1);
+        // A panel caught halfway through opening reloads halfway through
+        // opening. Unregistered, this would not be a lost animation — it would
+        // be a game that cannot write a save at all.
+        m_saveSchema.registerComponent<sw::parts::PartAnimationComponent>(
+            "parts.PartAnimation", 1);
         // v2: + centre of mass, inertia and hull extents — what the
         // aerodynamics needs to turn a moment into a rotation.
         m_saveSchema.registerComponent<sw::parts::VesselComponent>("parts.Vessel", 2);
@@ -119,6 +124,11 @@ namespace game
         m_saveSchema.registerComponent<ShipControlsComponent>("game.ShipControls", 2);
         m_saveSchema.registerComponent<CapsuleComponent>("game.Capsule", 1);
         m_saveSchema.registerComponent<MapMarkerComponent>("game.MapMarker", 1);
+        // Every star in the twelve-light-year catalogue carries one, and the
+        // save refuses to write a world containing a component it does not
+        // know — which is how this one was found, loudly, on the first frame
+        // after the catalogue went in.
+        m_saveSchema.registerComponent<StarVisualComponent>("game.StarVisual", 1);
         m_saveSchema.registerComponent<ConveyorComponent>("game.Conveyor", 2); // v2: source
     }
 
@@ -209,7 +219,12 @@ namespace game
     {
         sw::ser::BinaryWriter writer;
         writer.write<sw::u32>(0x53575347); // "SWSG"
-        writer.write<sw::u32>(9);          // game save version (9: Milestone 23)
+        // Game save version. Component CONTENT changes ride on the
+        // per-component versions in the schema; this number moves when the
+        // SESSION block below changes shape. v10: + the creative-mode flag.
+        // v11: + the origin system, which is the one number that decides what
+        // every position in the file MEANS.
+        writer.write<sw::u32>(11);
 
         sw::save::saveWorld(m_world, m_saveSchema, writer);
         sw::save::saveSimulation(m_simulation, writer);
@@ -221,6 +236,12 @@ namespace game
         writer.write(static_cast<sw::u8>(m_shipMode ? 1 : 0));
         writer.write(static_cast<sw::u8>(m_speedSurfaceRelative ? 1 : 0));
         writer.write(m_warpIndex);
+        // WHICH STAR THE ORIGIN IS ON. Without it a save made at Barnard's
+        // Star reloads with every position interpreted against Sol — the ship
+        // would be six light-years from where it was parked, and nothing in
+        // the file would look wrong. Sol is zero, so a save written before the
+        // catalogue existed reads back as Sol, which is where it was.
+        writer.write(m_originSystem);
         writer.write(m_mapHeightMeters);
         writer.write(m_camera.position());
         writer.write(m_camera.orientation());
@@ -230,6 +251,7 @@ namespace game
         writer.write(m_nodePrograde);
         writer.write(m_nodeNormal);
         writer.write(m_nodeRadial);
+        writer.write(static_cast<sw::u8>(m_creativeMode ? 1 : 0)); // v10
 
         // The directory may not exist yet — a named save is the first thing
         // that ever writes into it.
@@ -250,7 +272,8 @@ namespace game
         {
             SW_THROW("'{}' is not a StarWorks save", path.string());
         }
-        if (const sw::u32 version = reader.read<sw::u32>(); version != 9)
+        const sw::u32 version = reader.read<sw::u32>();
+        if (version < 9 || version > 11)
         {
             SW_THROW("Unsupported save version {}", version);
         }
@@ -259,6 +282,7 @@ namespace game
         sw::save::loadSimulation(m_simulation, reader);
         m_celestialIndex.rebuild(m_world);
         m_lastPredictionSeconds = -1.0e9; // stale flight plan: recompute
+        m_mapFocusIndex = -1;             // view state, not save state: AUTO
 
         m_shipEntity = reader.read<sw::ecs::Entity>();
         m_capsuleEntity = reader.read<sw::ecs::Entity>();
@@ -266,6 +290,14 @@ namespace game
         m_shipMode = reader.read<sw::u8>() != 0;
         m_speedSurfaceRelative = reader.read<sw::u8>() != 0;
         m_warpIndex = reader.read<sw::u32>();
+        // v11 and up. Older files predate interstellar travel entirely, so
+        // their positions can only ever have meant Sol.
+        m_originSystem = (version >= 11) ? reader.read<sw::u32>()
+                                         : sw::space::kSolSystem;
+        if (m_originSystem >= sw::space::systems().size())
+        {
+            m_originSystem = sw::space::kSolSystem;
+        }
         m_mapHeightMeters = reader.read<sw::f64>();
         m_camera.setPosition(reader.read<sw::WorldVec3>());
         m_camera.setOrientation(reader.read<sw::Quat>());
@@ -274,6 +306,9 @@ namespace game
         m_nodePrograde = reader.read<sw::f64>();
         m_nodeNormal = reader.read<sw::f64>();
         m_nodeRadial = reader.read<sw::f64>();
+        // v9 saves predate the mode and were all survival by definition.
+        m_creativeMode = (version >= 10) && reader.read<sw::u8>() != 0;
+        applyCreativeMode();
         if (const auto* sas = m_world.tryGetComponent<SasComponent>(m_shipEntity))
         {
             m_sasMode = sas->mode;

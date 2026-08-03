@@ -210,6 +210,45 @@ namespace sw::phys::kepler
         return true;
     }
 
+    namespace
+    {
+        /// The mean anomaly at a time, reduced modulo the period for a closed
+        /// orbit so the multiply happens on a small number.
+        [[nodiscard]] f64 meanAnomalyAt(const KeplerOrbit& orbit, f64 timeSeconds)
+        {
+            const f64 elapsed = timeSeconds - orbit.epochSeconds;
+            if (orbit.isHyperbolic() || !(orbit.meanMotion > 0.0))
+            {
+                return orbit.meanAnomalyAtEpoch + orbit.meanMotion * elapsed;
+            }
+            const f64 period = 6.283185307179586 / orbit.meanMotion;
+            return orbit.meanAnomalyAtEpoch +
+                   orbit.meanMotion * std::fmod(elapsed, period);
+        }
+    } // namespace
+
+    bool evaluateSplit(const KeplerOrbit& orbit, f64 wholeSeconds, f64 fraction,
+                       WorldVec3& outPosition, WorldVec3* outVelocity)
+    {
+        // THE REDUCTION HAPPENS ON THE EXACT PART. fmod of an integral double
+        // by the period is exact in the integral operand, so what reaches the
+        // multiply is a small number carrying the fraction's full seventeen
+        // digits — which is the whole point of splitting the clock. Handing
+        // `whole + fraction` to the plain evaluate() instead would round the
+        // fraction away before it ever got here.
+        if (orbit.isHyperbolic() || !(orbit.meanMotion > 0.0))
+        {
+            return evaluate(orbit, wholeSeconds + fraction, outPosition, outVelocity);
+        }
+        const f64 period = 6.283185307179586 / orbit.meanMotion;
+        const f64 reduced =
+            std::fmod(wholeSeconds - orbit.epochSeconds, period) + fraction;
+        // ...and evaluate() reduces again, harmlessly: `reduced` is already
+        // under two periods, so the second fmod is a no-op on the value and
+        // the epoch is folded in by passing it back through.
+        return evaluate(orbit, orbit.epochSeconds + reduced, outPosition, outVelocity);
+    }
+
     bool evaluate(const KeplerOrbit& orbit, f64 timeSeconds, WorldVec3& outPosition,
                   WorldVec3* outVelocity)
     {
@@ -253,8 +292,7 @@ namespace sw::phys::kepler
             return false;
         }
 
-        const f64 meanAnomaly =
-            orbit.meanAnomalyAtEpoch + orbit.meanMotion * (timeSeconds - orbit.epochSeconds);
+        const f64 meanAnomaly = meanAnomalyAt(orbit, timeSeconds);
 
         f64 trueAnomaly = 0.0;
         f64 radius = 0.0;

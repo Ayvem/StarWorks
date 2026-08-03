@@ -49,6 +49,51 @@ namespace game
         void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
     };
 
+    /// SELF-ROTATION OF A RAILED CRAFT — a ring ship's artificial gravity.
+    ///
+    /// A station that spins for gravity is not a dynamic body. The
+    /// Endurance rides a Kepler orbit like any other unattended vessel,
+    /// and RailsSystem writes only its POSITION — which leaves its
+    /// attitude free, and free is exactly what a 5.6 rpm ring needs.
+    ///
+    /// ANALYTIC, like the day cycle and for the same reason: under warp
+    /// the Physics lane keeps strict steps and DROPS the backlog it cannot
+    /// afford, so an integrated spin quietly falls behind the orbit it is
+    /// riding — and a save reloads with the ring at an angle it never
+    /// passed through. angle = rate x present is exact at any warp and
+    /// across a save.
+    ///
+    /// The hand-off costs nothing: when the bubble wakes the vessel into a
+    /// DynamicBody, this system stops seeing it and SpinSystem picks it up
+    /// mid-turn, integrating on from the attitude this one left behind.
+    class RailsSpinSystem final : public sw::ecs::System
+    {
+    public:
+        explicit RailsSpinSystem(const sw::sim::SimulationLane& timebase)
+            : m_timebase(timebase)
+        {
+        }
+
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "RailsSpinSystem";
+        }
+
+        [[nodiscard]] sw::ecs::SystemAccess access() const override
+        {
+            return sw::ecs::SystemAccess{}
+                .write<TransformComponent>()
+                .write<PreviousTransformComponent>()
+                .read<SpinComponent>()
+                .read<sw::phys::OnRailsComponent>();
+        }
+
+        void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
+
+    private:
+        const sw::sim::SimulationLane& m_timebase;
+    };
+
     /// Rotation of celestial bodies (the day cycle), ON RAILS.
     ///
     /// The angle is a pure function of the lane's present time, not an
@@ -176,7 +221,17 @@ namespace game
                 .read<ShipControlsComponent>();
         }
 
+        /// CREATIVE MODE: engines produce full thrust and burn nothing.
+        /// A flag on the system rather than per-entity state, because the
+        /// mode belongs to the SESSION (it is chosen at NEW GAME and rides
+        /// in the save), not to any one vessel — and the host owns it in
+        /// multiplayer for the same reason it owns everything else.
+        void setInfiniteFuel(bool on) { m_infiniteFuel = on; }
+
         void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
+
+    private:
+        bool m_infiniteFuel = false;
     };
 
     /// Physics lane: turns angular velocity into ATTITUDE, for every

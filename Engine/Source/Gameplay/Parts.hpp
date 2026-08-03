@@ -88,6 +88,27 @@ namespace sw::parts
         u32 segments = 24;        // radial tessellation of round kinds
         bool visible = true;      // rendered
         bool collider = false;    // part of the collision hull
+
+        // ---- ANIMATION: the same shape, posed twice -------------------------
+        // `animation` is an index into PartDefinition::animations, or -1 for a
+        // shape that never moves. When it moves, the fields above are its pose
+        // at phase 0 and the three below are its pose at phase 1; everything
+        // in between is interpolated.
+        //
+        // TWO POSES AND NOT A CURVE, on purpose. A hinge, a piston, a nozzle
+        // lighting up — every animation a part needs is one rest state and one
+        // working state. Keyframes would buy sequences nobody has asked for and
+        // cost an authoring tool nobody would enjoy using; two poses can be
+        // authored by MOVING THE THING, which is the whole of Part Studio's
+        // existing vocabulary.
+        i32 animation = -1;
+        Vec3 endPosition{0.0f};    // part-local, at phase 1
+        Vec3 endRotationDeg{0.0f}; // euler XYZ, at phase 1
+        /// Self-illumination at phase 1. Negative means "same as `emissive`",
+        /// which is what every shape that only moves wants. It exists for the
+        /// one animation that does not move at all: an engine bell whose glow
+        /// cone goes from dark to white with the throttle.
+        f32 endEmissive = -1.0f;
     };
 
     /// Node types follow KSP: STACK nodes joint along the rocket axis and
@@ -196,6 +217,91 @@ namespace sw::parts
         f64 minOreDensity = 0.0;
     };
 
+    // ---- ANIMATIONS -----------------------------------------------------------
+    /// What drives an animation's phase.
+    enum class AnimationTrigger : u8
+    {
+        /// The pilot, through the part's right-click menu. Phase walks from 0
+        /// to 1 over `durationSeconds` and back.
+        Toggle = 0,
+        /// The throttle, continuously. Phase IS the throttle, so a nozzle
+        /// brightens as the engine is opened up rather than snapping on.
+        Throttle,
+        Count,
+    };
+
+    /// What the animation is called in the pilot's menu, as a pair of verbs.
+    /// A closed list rather than free text: the HUD font has no lower case and
+    /// forty glyphs, and every part in the game does one of these four things.
+    enum class AnimationVerbs : u8
+    {
+        OpenClose = 0, // solar arrays, cargo bays
+        OnOff,         // engines, lights
+        ExtendRetract, // landing gear, ladders
+        DeployStow,    // antennae, radiators
+        Count,
+    };
+
+    /// What a fully-retracted animation TAKES AWAY. This is the difference
+    /// between an animation and a decoration: a stowed panel that still makes
+    /// power is a moving picture, not a mechanism.
+    enum class AnimationGates : u8
+    {
+        Nothing = 0,
+        Power,  // chargeRateKw is scaled by the phase
+        Thrust, // thrustNewtons is scaled by the phase
+        Count,
+    };
+
+    struct PartAnimation
+    {
+        static constexpr usize kNameCapacity = 20;
+
+        char name[kNameCapacity] = {}; // shown in the pilot's menu
+        AnimationTrigger trigger = AnimationTrigger::Toggle;
+        AnimationVerbs verbs = AnimationVerbs::OpenClose;
+        AnimationGates gates = AnimationGates::Nothing;
+        f32 durationSeconds = 3.0f;
+        /// Where a freshly built part starts. A solar wing folds into its
+        /// fairing; a landing gear is down on the pad.
+        bool startsOpen = false;
+    };
+
+    /// A rigid motion between two poses, expressed the way it LOOKS rather
+    /// than the way it was authored.
+    ///
+    /// Two poses interpolated the obvious way — slerp the rotation, lerp the
+    /// position — is wrong for a hinge, and wrongest exactly where hinges are
+    /// used. A solar panel swinging ninety degrees about a mount at its root
+    /// has both ends of its travel correct and its MIDDLE cutting the corner:
+    /// the panel shrinks toward the hub and springs back out, which reads as a
+    /// telescope rather than a hinge.
+    ///
+    /// Every rigid motion is a rotation about some axis through some point,
+    /// plus a slide along that axis: Chasles' theorem. Recovering that triple
+    /// from the two poses costs one eigen-solve of a 3x3 and turns the same
+    /// authored data into an arc. The pivot is only determined perpendicular
+    /// to the axis — sliding it along the axis changes nothing — so the
+    /// minimum-norm solution is taken, which is the pivot a person would point
+    /// at if asked where the hinge was.
+    struct HingeMotion
+    {
+        Vec3 pivot{0.0f};
+        Vec3 axis{0.0f, 1.0f, 0.0f};
+        f32 angleRadians = 0.0f;
+        Vec3 slide{0.0f}; // pure translation (the whole motion when angle = 0)
+    };
+
+    /// Recovers the hinge that takes (positionA, rotationA) to
+    /// (positionB, rotationB).
+    [[nodiscard]] HingeMotion hingeBetween(const Vec3& positionA, const Quat& rotationA,
+                                           const Vec3& positionB, const Quat& rotationB);
+
+    /// The pose at `phase` in [0,1] along that hinge.
+    void poseAlongHinge(const HingeMotion& hinge, const Vec3& positionA,
+                        const Quat& rotationA, f32 phase, Vec3& outPosition,
+                        Quat& outRotation);
+
     /// loadCatalog() fills the registry from a directory of them.
     struct PartDefinition
     {
@@ -247,7 +353,11 @@ namespace sw::parts
         /// collider shapes", which is what every part did before hitboxes
         /// existed.
         std::vector<HitBox> hitboxes;
+        /// At most four: a part with five things to deploy is two parts.
+        std::vector<PartAnimation> animations;
     };
+
+    inline constexpr usize kMaxPartAnimations = 4;
 
     /// The catalog. Before loadCatalog() succeeds it holds a minimal
     /// BUILT-IN fallback (same stable ids, box geometry) so tests and a
@@ -294,6 +404,27 @@ namespace sw::parts
     inline constexpr u32 kBuildingVab = 112;         // where rockets are made
     inline constexpr u32 kBuildingLaunchPad = 113;   // ...and where they stand
     inline constexpr u32 kPropVehicleCradle = 114;   // a rocket, riding a belt
+
+    // The ENDURANCE family (F15): the ring ship parked at Saturn. Each piece
+    // is an ordinary vessel part — the ship is the ASSEMBLY, authored as a
+    // blueprint in GameScene, not as one monolithic model. Ids 200+ so the
+    // rocket/building ranges keep room to grow.
+    //
+    // The eight of them are the film's own parts list: twelve modules of
+    // FIVE kinds (four propulsion, four cargo pods, two habitats, one cryo
+    // bay, one command module) strung on twelve connecting tunnels, plus
+    // the two support craft. There is no hub and there are no spokes —
+    // the Endurance is a bare ring, and that is most of its silhouette.
+    inline constexpr u32 kPartEnduranceHabitat = 200; // crew quarters + arrays
+    inline constexpr u32 kPartEnduranceEngine = 201;  // 3 plasma engines each
+    inline constexpr u32 kPartEnduranceCommand = 202; // cockpit, comms, cupola
+    inline constexpr u32 kPartEnduranceTunnel = 203;  // module-to-module link
+    inline constexpr u32 kPartEnduranceRanger = 204;  // the lifting body
+    inline constexpr u32 kPartEnduranceLander = 205;  // the heavy-lift ferry
+    inline constexpr u32 kPartEnduranceCargo = 206;   // detachable, becomes base
+    inline constexpr u32 kPartEnduranceCryo = 207;    // hypersleep + sick bay
+    inline constexpr u32 kPartEnduranceCoreHub = 208; // six ports, ring centre
+    inline constexpr u32 kPartEnduranceSpoke = 209;   // core-to-ring strut
 
     /// A PROP: authored geometry the GAME places, never the player. Conveyor
     /// cargo is the first one — a crate is not something you pick out of a
@@ -421,6 +552,62 @@ namespace sw::parts
         JointType type = JointType::Stack;
         f64 strengthN = 2.0e5;   // static load limit (editor validation)
         f64 breakForceN = 2.0e5; // dynamic impact limit (structural failure)
+    };
+
+    /// THE LIVE STATE OF ONE PART'S ANIMATIONS, on the part entity.
+    ///
+    /// Fixed-size and trivially copyable because every component in this
+    /// engine has to be — the save is a column memcpy — and four is the cap
+    /// because a part with five things to deploy is two parts.
+    ///
+    /// `phase` is what is drawn; `target` is where the pilot last told it to
+    /// go. Keeping both is what makes a panel caught halfway through opening
+    /// close again from where it is rather than snapping shut, and it is also
+    /// the whole of the save state: a game reloaded mid-deployment carries on.
+    struct PartAnimationComponent
+    {
+        static constexpr u32 kMaxAnimations = 4;
+
+        f32 phase[kMaxAnimations]{};
+        f32 target[kMaxAnimations]{};
+        u32 count = 0;
+    };
+
+    static_assert(std::is_trivially_copyable_v<PartAnimationComponent>);
+
+    /// How much of a gated capability this part currently has: 1 when no
+    /// animation gates it, otherwise the phase of the one that does.
+    [[nodiscard]] f64 animationGate(const PartDefinition& definition,
+                                    const PartAnimationComponent* state,
+                                    AnimationGates gate);
+
+    /// Advances every part's animation phases toward their targets.
+    ///
+    /// INTEGRATED, not analytic, and this is the one place in the codebase
+    /// that goes against the house rule. Everything else that moves with time
+    /// — spin, conveyors, orbits — is a closed form of the clock, so that warp
+    /// and save/load are exact. An animation cannot be: its start time is
+    /// whenever the pilot clicked, which is not a quantity the world knows,
+    /// and a three-second door under x1000 warp would open and shut four
+    /// hundred times between two frames. Under warp it simply snaps, which is
+    /// also what a pilot would see: at a thousand times real time, three
+    /// seconds is three milliseconds.
+    class PartAnimationSystem final : public ecs::System
+    {
+    public:
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "PartAnimationSystem";
+        }
+
+        [[nodiscard]] ecs::SystemAccess access() const override
+        {
+            return ecs::SystemAccess{}
+                .write<PartAnimationComponent>()
+                .read<PartComponent>();
+        }
+
+        void update(ecs::World& world, f32 deltaSeconds) override;
     };
 
     static_assert(std::is_trivially_copyable_v<PartComponent>);

@@ -365,13 +365,19 @@ namespace sw::phys
     // ------------------------------------------------------------------------
     void RailsSystem::update(ecs::World& world, f32 /*deltaSeconds*/)
     {
-        const f64 time = m_timebase.presentSeconds();
+        // AT FULL CLOCK PRECISION, like the celestials: a railed craft parked
+        // beside a planet has to hold still RELATIVE to it, and two analytic
+        // positions evaluated at differently-rounded times drift apart by
+        // metres once the session has run for an interstellar crossing.
+        f64 whole = 0.0;
+        f64 fraction = 0.0;
+        m_timebase.presentSecondsSplit(whole, fraction);
 
         world.forEach<TransformComponent, PreviousTransformComponent, OnRailsComponent>(
-            [time, &world](ecs::Entity, TransformComponent& transform,
+            [whole, fraction, &world](ecs::Entity, TransformComponent& transform,
                            PreviousTransformComponent& previous, OnRailsComponent& rails) {
                 WorldVec3 relative{};
-                if (!kepler::evaluate(rails.orbit, time, relative))
+                if (!kepler::evaluateSplit(rails.orbit, whole, fraction, relative))
                 {
                     // Not an orbit. Snapping the entity to the primary's
                     // centre — which is what a zeroed relative position does

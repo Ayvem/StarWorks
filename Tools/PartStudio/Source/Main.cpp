@@ -8,6 +8,14 @@
 #include <cstring>
 #include <string>
 
+// A CAPTURE PATH FOR THE TOOL, and not only for the game. An animation is
+// authored here and played back here, so a picture of the tool with the phase
+// slider up is the picture that says whether the feature works — the game's
+// own camera cannot easily be pointed at a rocket standing on a pad.
+std::string g_openPart;
+std::string g_capturePath;
+float g_openPhase = 0.0f;
+
 namespace
 {
     sw::ApplicationConfig parseArguments(int argc, char** argv)
@@ -28,6 +36,18 @@ namespace
             {
                 config.preferCpuDevice = true;
             }
+            else if (std::strcmp(argv[i], "--part") == 0 && i + 1 < argc)
+            {
+                g_openPart = argv[++i];
+            }
+            else if (std::strcmp(argv[i], "--phase") == 0 && i + 1 < argc)
+            {
+                g_openPhase = std::stof(argv[++i]);
+            }
+            else if (std::strcmp(argv[i], "--capture") == 0 && i + 1 < argc)
+            {
+                g_capturePath = argv[++i];
+            }
         }
         return config;
     }
@@ -38,6 +58,7 @@ int main(int argc, char** argv)
     try
     {
         studio::PartStudioApp app(parseArguments(argc, argv));
+        app.applyStartupOptions(g_openPart, g_openPhase, g_capturePath);
         app.run();
     }
     catch (const std::exception& e)

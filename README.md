@@ -12,7 +12,61 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F13c: A title screen worth the planet behind it
+## Current state — F18/F19: Continents measured against Earth, craters, twilight and a ring shadow
+
+**The land mask was one call to fBm, and it made a world with lakes rather than a world with an ocean** — 53.4% of the globe was land. It is now a low-frequency plate field sharpened into plateaus, with finer noise only allowed to decorate the coast, and **every constant in it was found by search rather than by eye**: Earth's real land/sea raster measured on an equal-area grid gives 28.9% land with the largest landmass holding 54.3% of it, and 360 parameter combinations were scored against those numbers. The shipped field measures 26.5% and 54.1%, in four continents. The tool that did it ships with the code.
+
+The pale patches that started the whole investigation turned out to be **the cloud deck** — the preview tool's header claimed it drew no clouds and had been wrong since M28, so three hypotheses were tested against a lying instrument. What settled it was rendering the land mask alone, outside the shader.
+
+**The moons have craters** across six size classes with rims, floors, ejecta and ray systems, and a character each: Callisto saturated, Europa smooth, Io with none at all because it resurfaces itself. **The air has a twilight**: the sun's path past the terminator dives through the atmosphere instead of climbing out of it, ozone absorbs where it should, multiple scattering is bounded and the limb integral now conserves energy. **And Saturn wears its own rings' shadow** — one `ringOpacity(r)` written once, drawing the annulus and casting the shadow, so the gaps you see and the gaps in the shadow are the same gaps.
+
+**228/228 tests, both build types, `PARITY OK`.**
+
+## Previously — F17: The gas giants, and a warp lock that let go
+
+**A frame from ten thousand kilometres over Saturn showed a flat grey ball under a lattice of dark ellipses.** The band function was reading a 3-D noise along a line: from orbit that is banding, but from close range you are inside one lattice cell, so the planet renders as a single colour with the lattice faintly showing through. The profile is now periodic — a sine has the same amplitude whether you see a hemisphere or a hundred kilometres of it — with its phase bent by turbulence sampled six times finer in latitude than in longitude, which is what turns round eddies into the ribbons a gas giant is actually made of. Detail is added in two octave bands, each faded out by the fragment footprint once a pixel covers more of the planet than the detail is wide. Measured on the CPU twin at the reported altitude, Jupiter's luminance spread went from 28 levels out of 255 to 60, Saturn's from 16 to 39.
+
+**Then the whole disc, from far away, showed the rest of it: a beach ball** — evenly spaced stripes of identical width, which is the only thing a sine wave can draw. The profile is now a five-octave field in latitude alone, so its cells *are* bands at every scale and no two are the same width, with a second slow field deciding how deep each belt runs and a bright equatorial zone giving the disc an axis. Jupiter's albedo now spans 0.32–1.01 across latitude. The gas giants also got **limb darkening** — near the limb your line of sight enters the cloud deck at a grazing angle and never reaches as deep, which is the dark rim in every photograph of Jupiter and the difference between a sphere and a painted ball.
+
+Reading the atmosphere code turned up the rest of it: `atmospherePreset` had two branches, Mars and Terra, so **every gas giant was wearing Earth's blue sky**. Jupiter and Saturn now get hydrogen under a warm ammonia haze that gilds the limb, Uranus and Neptune the blue that is really methane absorption eating the red, Venus an all-Mie ivory deck.
+
+**And the warp lock was asking the wrong question.** It refused warp unless you were grounded or in a closed orbit clearing the air — which fires on any transient, so a nudged burn pinned the ladder at the physics ceiling and left it there. The ceiling is now altitude and nothing else, re-evaluated every frame, so a falling craft is walked down the rungs as it descends instead of being refused once from high up on a prediction. The step to **x5 sits exactly at the top of the atmosphere**, and above it the ladder is written in body radii — the same number has to mean the same thing at Terra and at Saturn, which is nine times wider. **228/228 tests, both build types, `PARITY OK`.**
+
+## Previously — F16: Physics warp to x100
+
+**An ion engine that can only be flown at x5 cannot really be flown at all.** The Endurance's plasma engines push 88 kN through five hundred tonnes — 0.18 m/s², four real hours for a 2.5 km/s plane change — and rails warp is no help, because above physics warp the integrator is off and an analytic orbit has no engines.
+
+The old x5 ceiling turned out not to be a stability limit at all. The physics lane integrates a **fixed 1/50 s step at every time scale**; warp changes how many steps run per frame, never how long one is, so x100 is doing exactly the arithmetic x1 does, a hundred times over. What x5 encoded was the lane's catch-up budget of sixteen ticks a frame — that budget is now raised to what the selected rung needs and dropped back when it falls, so a hitch at x1 still costs one hitch. The altitude ladder was likewise answering a question about *analytic* jumps, and now caps rails warp only: physics warp cannot skip an SOI boundary or outrun the terrain, because it takes its usual steps. Inside an atmosphere the limit stays x10, for a human reason rather than a numerical one.
+
+And the HUD prints what the hardware actually paid: `WARP X100-X47` when a machine can only integrate 47 of the 100 you asked for, where silence used to read as a bug. **227/227 tests, both build types.**
+
+## Previously — F15: The Endurance, and learning to fly it
+
+**The ring ship from Interstellar is in the game, it is built the only way this engine builds ships — from parts — and you can fly it.** Ten new `.swpart` definitions (ids 200–209): habitat, propulsion, command, connecting tunnel, cargo pod, cryogenic bay, core docking hub, core spoke, Ranger, Lander. The ship is a 35-part blueprint in `buildEndurance()`, pushed through the same `instantiateBlueprint` the hangar uses, so every module arrives as a real part entity with a real collision hull — you can walk into the Endurance, not through it.
+
+It is the film's own parts list, not a guess at one: twelve modules of five kinds — four propulsion (three plasma engines apiece, twelve nozzles in all), four detachable cargo pods, two habitats, one cryo bay, one command module — strung on twelve short tunnels, because the modules do not touch. Inside the 64 m ring sits the core docking hub, six berths on six spokes. The trigonometry closes on itself twice (half a tunnel fills the 1.68 m to each polygon vertex; the hub's skin plus a whole spoke lands on the inner faces to the centimetre) and a test asserts both against the shipped catalogue, so re-authoring a module in Part Studio fails loudly instead of quietly opening twelve joints.
+
+**Flyable from the first frame of a new world.** `P` boards it like any other vessel: 88 kN of plasma thrust at 4,200 s over roughly 500 tonnes, 60 t of propellant in the propulsion modules, 400 MJ of batteries and 120 kW of photovoltaics in the habitats. AeroForge solved a wind-tunnel table for all ten parts — the boxes land at Cd ≈ 1.20 head-on, the tunnel and hub at 0.80 side-on, and the Ranger comes out a lifting body at Cl 1.73.
+
+**And it turns at the film's 5.6 rpm — until you take the controls.** `RailsSpinSystem` gives anything with both a spin and a Kepler orbit an analytic rotation, so warp and save/load cannot desynchronise it from the orbit it rides; boarding de-spins the ring, the way its crew does before every manoeuvre in the film. It parks 6.9 Saturn radii out, clear of the rings and inside Rhea, its orbit drawn on the map. **224/224 tests, both build types.**
+
+## Previously — F14c: The map camera learns to visit
+
+**Tab, in the map, cycles which body the camera orbits.** AUTO — the SOI primary whose gravity owns you — remains the default and the behaviour the map always had; Tab walks Sol → Terra → Luna → … → Triton and back to AUTO, Shift+Tab the other way, and the mode line names the focus. The point is arrivals: drag a maneuver node for a transfer and you can now frame the *target* while you drag, with the encounter markers on the body in front of you instead of a pixel three screens from home. It is a camera, not a frame of physics — craft, prediction and node are untouched — and the focus is view state, reset to AUTO by a new game or a load. In flight, Tab still toggles chase/free camera; each view owns the key.
+
+## Previously — F14b: Creative mode
+
+**A second way to play, chosen on the title screen.** `MODE - CREATIVE - NO FUEL BURN` under NEW GAME: engines produce full thrust and the tanks are never consulted. The skip sits exactly at the burn in `ThrustSystem` — not a refill afterwards, which would jiggle the vessel's mass every tick — and the flag lives on the system because the mode belongs to the *session*: it is fixed once the game starts, rides in the save (**version 10**; v9 saves load as survival, which is what they all were), and the host owns it in multiplayer like everything else. The HUD says `FUEL INF - CREATIVE` instead of counting kilograms that cannot fall. Everything else — power, ore, build costs, aerodynamics, gravity — still plays by the rules; creative removes the fuel bill, not the physics.
+
+## Previously — F14: The whole solar system
+
+**Eighteen new bodies, from one table and one loop.** Mercury, Venus, Jupiter and the four Galilean moons, Saturn with Enceladus, Rhea and Titan — and its rings, Cassini division included — Uranus with Titania and Oberon, Neptune with Triton, and Mars's two captured rocks. Real radii, real GM, real orbits, real SOI radii; Uranus rolls on its side, Venus spins backwards, Triton orbits backwards. Every moon's spin is **computed from its own orbit** (they are all tidally locked), so the two numbers cannot disagree. Phobos and Deimos are scenery on rails, honestly: their spheres of influence come out *inside their own rock*.
+
+**Eleven of them you can land on.** One parameterised terrain preset in C++ and its exact GLSL mirror — the parity harness now checks fourteen worlds, elevation delta 0.000000 m on all of them — under family palettes: young ice with crack lineae (Europa rust, Enceladus's south-polar stripes, Triton's dark streaks), old ice-rock (Ganymede grooved, Callisto darkest, Oberon reddened), Io's sulfur and SO₂ frost, Titan's dune belts, Mercury's baked lunar bones. Deposits follow the geology — the ice moons are propellant country, Io has metal and not a gram of water. The gas giants are a second shading family with no terrain at all: warped latitude bands, the Great Red Spot fixed in Jupiter's body frame, Neptune's methane streaks — and Venus wears the same family, because its visible surface *is* a cloud deck.
+
+Two findings paid for themselves. **Saturn's rings rendered as nothing on the first run**: every transparent mesh was routed to the atmosphere's fresnel-shell material, and a fresnel limb on a flat annulus is a ring-shaped nothing — `kLitTransparent` now names the material instead of guessing it. And **zooming the map out to Neptune clipped the entire universe to an empty screen**: the new zoom ceiling (1.3e13 m) sat past the map camera's far plane (2e12) — the same number written in two places, now agreeing at 3e13. **223/223 tests, both build types, `PARITY OK` on all fourteen worlds.**
+
+## Previously — F13c: A title screen worth the planet behind it
 
 **The menu's background image is not an image — it is the game.** The engine has no texture pipeline and never needed one for this: the scene is already built before the menu appears, so the title screen renders the live world from a camera of its own — a slow orbit of Terra at ~6,700 km, parked near the terminator where the lit limb is at its most photogenic, drifting a full lap every thirteen minutes while the simulation stays paused. **STARWORKS** stands across the middle in three passes of the same 5x7 blockwork — glow, shadow, face — over a gradient scrim that darkens the space the title floats in and leaves the planet alone. The buttons are a centred column; a pause menu keeps your own frozen view behind it instead, because that is *your* game back there. Two small things the layout pass caught: labels now shrink to fit their row (the fifth HUD overflow found by arithmetic), and `(` never existed in the 5x7 charset — the pause menu had been silently rendering spaces for parentheses since F9.
 
@@ -379,18 +433,37 @@ GLFW 3.4 and GLM 1.0.1 are fetched and built automatically by CMake.
 ## Building (Windows / Visual Studio 2022)
 
 ```powershell
-cmake --preset windows-msvc
-cmake --build --preset windows-debug
-build\windows\bin\Debug\StarWorks.exe
+cmake --preset windows-msvc                     # configure, once
+cmake --build --preset windows-debug            # Debug
+cmake --build --preset windows-release          # RelWithDebInfo
+.\build\windows\bin\Debug\StarWorks.exe         # run it
 ```
 
+The Visual Studio generator is **multi-config**, which is why the binaries sit under a configuration folder — `build\windows\bin\Debug\` and `build\windows\bin\RelWithDebInfo\` — where Linux writes straight into `build/linux-debug/bin/`. Every tool below follows the same rule.
+
 Or open `build/windows/StarWorks.sln` in Visual Studio and run the `StarWorks` startup project (F5).
+
+**One command for the whole loop:**
+
+```powershell
+.\launch.ps1                       # configure if needed, build Debug, run
+.\launch.ps1 -Release              # RelWithDebInfo instead
+.\launch.ps1 -Test                 # run the suite instead of the game
+.\launch.ps1 -Clean                # purge the build tree first
+.\launch.ps1 -NoRun                # build only
+.\launch.ps1 -GameArgs '--log-file starworks.log'
+.\StarWorks.cmd                    # just launch what is already built (double-clickable)
+```
+
+`launch.ps1` reconfigures only when there is no cache, so the normal loop is a few seconds rather than half a minute. Neither script contains an absolute path — everything is relative to where the script itself sits, so the project works from `G:\`, from a USB stick, or from a folder with a space in its name. `StarWorks.cmd` looks for the packaged build first, then RelWithDebInfo, then Debug, and keeps the console open if the game exits with an error.
+
+> A build made this way runs **on the machine that built it and on no other** — see *Running it on another machine* below for why, and for `package.ps1`.
 
 ## Building (Linux)
 
 ```bash
 cmake --preset linux-debug
-cmake --build --preset linux-debug -j
+cmake --build --preset linux-debug -j        # or --preset linux-release (RelWithDebInfo)
 ./build/linux-debug/bin/StarWorks
 ```
 
@@ -463,12 +536,23 @@ The join panel distinguishes the two failures, because the cure for one is usele
 
 ## Running the tests
 
-223 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
+255 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
 
 ```powershell
-ctest --test-dir build/windows -C Debug --output-on-failure   # Windows
-ctest --test-dir build/linux-debug --output-on-failure        # Linux
+# Windows
+ctest --test-dir build/windows -C Debug --output-on-failure
+ctest --test-dir build/windows -C RelWithDebInfo --output-on-failure
+.\launch.ps1 -Test                                   # build and test in one step
+.\build\windows\bin\Debug\StarWorksTests.exe       # the runner directly, per-test output
 ```
+
+```bash
+# Linux
+ctest --test-dir build/linux-debug --output-on-failure
+./build/linux-release/bin/StarWorksTests
+```
+
+**Run both configurations.** They have disagreed exactly once, and finding it took a Debug-only assert firing above a check that Release compiled out — the kind of divergence a single-configuration run cannot see.
 
 ## Controls
 
@@ -490,7 +574,9 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 **Hangar (VAB):** `B` opens/closes, on foot or in a cockpit (sim paused; separate view). Right-drag orbits, wheel zooms. Click the palette to take a part IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design, LOAD cycles the world's vessels into the editor, **SAVE** — the only button here that touches the world, and only on that press — writes it as a `.swship` and registers it so a VAB can build it. The hangar itself creates nothing; walk to the VAB, pick the design out of its catalogue, and press PRODUCE. `P` in flight switches the piloted vessel. `Space` (or `Z`) fires the decoupler (staging); on foot, `Space` jumps.
 
-**Part Studio (`PartStudio.exe`):** the part authoring tool. Right-drag orbits, left-click selects a primitive or node, `G`/`R`/`S` move/rotate/scale with `X`/`Y`/`Z` axis constraint (`Shift` = fine, grid-snapped), `K` toggles the orange collision overlay, `DEL` removes. Buttons add primitives (box/cylinder/cone/sphere/tube), duplicate, set colors/emissive/segments, flag visible/collider, add stack/radial nodes (X/Y/Z sets a node's direction, SNAP SURF projects it onto the hull). SAVE writes the `.swpart` into the build AND the source `Assets/Parts/` — the game loads it at next launch.
+**Part Studio (`PartStudio.exe`, `PartStudio` on Linux):** the part authoring tool. Right-drag orbits, left-click selects a primitive or node, `G`/`R`/`S` move/rotate/scale with `X`/`Y`/`Z` axis constraint (`Shift` = fine, grid-snapped), `K` toggles the orange collision overlay, `DEL` removes. Buttons add primitives (box/cylinder/cone/sphere/tube), duplicate, set colors/emissive/segments, flag visible/collider, add stack/radial nodes (X/Y/Z sets a node's direction, SNAP SURF projects it onto the hull). SAVE writes the `.swpart` into the build AND the source `Assets/Parts/` — the game loads it at next launch.
+
+**Animations, authored by moving the part.** `+ANIM` adds one and `AN DEL` removes it; `PHASE REST` / `PHASE OPEN` is the slider that decides *which pose you are editing*. Scrub it to OPEN and the same `G` and `R` that have always moved a shape now write its **deployed** pose instead of its rest pose — so a solar array is authored by folding it flat, flipping the phase, and swinging it out. `BIND` attaches the selected shape to the selected animation (`UNBIND` takes it back off). There are deliberately **no pivot or axis fields**: the hinge is derived from the two poses by Chasles' theorem, so it is whatever the shape's own travel says it is. `T TOGGLE` / `T THROTTLE` chooses whether the pilot works it by hand or the throttle drives it, the verb button cycles the label the in-flight menu shows (`OPEN/CLOSE`, `ON/OFF`, `EXT/RETR`, `DEPLOY/STOW`), the gate button cycles what a stowed part stops producing (`GATE NONE`, `GATE PWR`, `GATE THRUST`), `DUR -` / `DUR +` set how long the travel takes, and `OPEN` / `SHUT` sets the state the part is built in. Four animations per part.
 
 **Time warp:** `.` faster / `,` slower, ×0 up to ×10,000,000. ×2 and ×5 are PHYSICS warp: everything stays simulated and the engines still work. Above ×5 the world rides analytic rails, engines cut out — and you must be **standing on something or in a closed orbit whose periapsis clears the atmosphere**, because rails cannot express a reentry, a suborbital arc or a decaying orbit, and warping one used to hand back a vehicle somewhere it could never have reached. The altitude ladder still caps the rate on top of that. `,` at ×1 stops time — pausing is the bottom rung of the same ladder, not a key of its own.
 
@@ -500,15 +586,66 @@ ctest --test-dir build/linux-debug --output-on-failure        # Linux
 
 **Files:** `F5` quicksaves, `F9` quickloads, `Esc` opens the menu.
 
+## The tools
+
+Four executables are built beside the game, into the same `bin` folder. On Windows they land under the configuration — `build\windows\bin\Debug\` or `...\RelWithDebInfo\`; on Linux, straight into `build/linux-debug/bin/` or `build/linux-release/bin/`.
+
+| | what it is |
+|---|---|
+| `PartStudio` | the `.swpart` authoring tool — primitives, colours, attach nodes, **animations** |
+| `AeroForge` | the offline wind tunnel that solves each part's `.aero.json` |
+| `NetProbe` | stands a host and a client on real sockets and prints what replication costs |
+| `StarWorksTests` | the suite, no window and no GPU required |
+
+They are built by the same command as the game, so there is nothing extra to configure:
+
+```powershell
+# Windows
+cmake --build --preset windows-release                 # game + all three tools
+cmake --build --preset windows-release --target PartStudio   # or just one
+
+.\build\windows\bin\RelWithDebInfo\PartStudio.exe
+.\build\windows\bin\RelWithDebInfo\AeroForge.exe Assets\Parts --report
+.\build\windows\bin\RelWithDebInfo\NetProbe.exe
+```
+
+```bash
+# Linux
+cmake --build --preset linux-release -j
+cmake --build --preset linux-release --target PartStudio
+
+./build/linux-release/bin/PartStudio
+./build/linux-release/bin/AeroForge Assets/Parts --report
+./build/linux-release/bin/NetProbe
+```
+
+### Part Studio
+
+**It edits the files the game ships, and it writes to both copies.** Each build mirrors `Assets/` next to the executable, and that mirror is what the Studio opens — so `SAVE` writes the `.swpart` there *and*, when it can find the project root (a folder holding both `CMakeLists.txt` and `Assets/`), into the source `Assets/Parts/` as well. That second write is what stops the next rebuild from clobbering an afternoon's work, and it is deliberately skipped for a packaged build, where there correctly is no source to update. The game picks the part up at its next launch.
+
+Its controls, including the animation authoring added in F29, are in the *Controls* section above. Re-run `AeroForge` on a part whose geometry you changed; nothing else needs doing.
+
+```powershell
+# Windows: author a part, then re-solve its aerodynamics
+.\build\windows\bin\RelWithDebInfo\PartStudio.exe
+.\build\windows\bin\RelWithDebInfo\AeroForge.exe Assets\Parts --part 5 --report
+```
+
 ## Useful flags
 
-`--frames N` exits after N frames (soak testing); `--log-file path.log` mirrors the log to a file; `--cpu` prefers a software (CPU) Vulkan device over hardware GPUs (and implies `--quality low`); `--quality low|medium|high` sets the shading tier — it drives the planet shader's octave budget, terrain self-shadowing, cloud shadows and the number of atmospheric scattering steps.
+`--frames N` exits after N frames (soak testing); `--log-file path.log` mirrors the log to a file; `--cpu` prefers a software (CPU) Vulkan device over hardware GPUs (and implies `--quality low`); `--quality low|medium|high` sets the shading tier — it drives the planet shader's octave budget, terrain self-shadowing, cloud shadows and the number of atmospheric scattering steps; `--capture path.png` writes the last frame straight off the swapchain.
 
 ## Aerodynamic tables
 
 Every vessel part carries a `.aero.json` beside its `.swpart`, solved offline. Re-run the forge after editing a part's geometry in Part Studio — nothing else needs to change, and a part whose table is missing simply falls back to the old isotropic drag.
 
+```powershell
+# Windows
+.\build\windows\bin\RelWithDebInfo\AeroForge.exe Assets\Parts --report
+```
+
 ```bash
+# Linux
 build/linux-release/bin/AeroForge Assets/Parts --report
 ```
 
@@ -519,6 +656,7 @@ build/linux-release/bin/AeroForge Assets/Parts --report
 The planet surface is one analytic function shared by the CPU (collision, terrain patch, site placement) and the GPU (`Shaders/Noise.glsl`, `Terrain.glsl`, `PlanetSurface.glsl`, `Clouds.glsl`, `Atmosphere.glsl`). Two scripts keep that honest:
 
 ```bash
+# Linux
 # Prove the GLSL twins are exact ports of the engine headers (they are
 # transpiled to C++ and diffed over 20,000 directions per body).
 python3 Tools/glsl_parity/check_parity.py --glm build/linux-release/_deps/glm-src
@@ -530,7 +668,111 @@ python3 Tools/planet_preview/render_preview.py \
     --glm build/linux-release/_deps/glm-src --out captures/
 ```
 
-On Windows point `--glm` at `build/windows/_deps/glm-src` and make sure a C++20 compiler is on the PATH.
+```powershell
+# Windows — same two scripts, and note WHICH compiler
+python Tools\glsl_parity\check_parity.py --glm build\windows\_deps\glm-src
+
+python Tools\planet_preview\render_preview.py `
+    --glm build\windows\_deps\glm-src --out captures\
+```
+
+**These two want `g++` or `clang++`, not MSVC.** They compile the transpiled shader with `-std=c++20 -O2 -ffp-contract=off`, which are GNU-style flags — `cl.exe` does not speak them, and `clang-cl` does not either. Install MinGW-w64 or LLVM/Clang and put it on the PATH, or point the script at it: `--compiler "C:\msys64\ucrt64\bin\g++.exe"` (the `CXX` environment variable works too).
+
+`-ffp-contract=off` is not a detail. The shader compiler does not contract a multiply-add into an FMA either, and letting the C++ twin do so would hide exactly the kind of last-bit divergence this harness exists to catch.
+
+### Is the solar system the right size?
+
+Two checks, because "the Sun looks too small from Mars" can be a wrong number
+in the scene table OR a wrong projection in the renderer, and neither one shows
+the other:
+
+```bash
+# Linux
+# The scene's own radii and orbits, parsed out of the shipped source and
+# compared against NASA's fact sheets. Prints the apparent diameter of the Sun
+# from every planet and of every moon from its primary.
+python3 Tools/solar_scale/check_scale.py
+
+# ...and what the engine actually DRAWS: park the camera a known number of
+# body radii away, photograph the frame, measure the disc in pixels, compare
+# with tan(asin(R/d))/tan(fov/2) * height/2.
+xvfb-run -a python3 Tools/solar_scale/check_render_size.py
+```
+
+```powershell
+# Windows — no xvfb, because there is a desktop already. The second one runs
+# the real executable, so it has to be told where that is.
+python Tools\solar_scale\check_scale.py
+
+python Tools\solar_scale\check_render_size.py `
+    --binary build\windows\bin\RelWithDebInfo\StarWorks.exe
+```
+
+The first script reads the source and needs nothing built. The second launches the game once per body with `--cpu --capture`, so it wants a build — and `--binary` defaults to the Linux path, which is the one thing to remember on Windows.
+
+The second one holds airless bodies to 1.5% and brackets the rest between their
+solid radius and the envelope their air is drawn in — because a planet with an
+atmosphere is genuinely bigger than its ground, and the limb glow is supposed
+to be out there.
+
+### Photographing the real renderer
+
+The preview above runs the *fragment* path on the CPU, which is exactly what it
+is for — and exactly why it cannot see a bug in the vertex path, in a mesh, in a
+blend mode or in the tessellation. For those, point the actual engine at a body
+and take the picture:
+
+```bash
+# Linux. Skip the menu, start a world, park the camera 6.9 Saturn radii out
+# with the sun over its shoulder, run 40 frames, write the last one.
+SW_SHOT="SATURN@6.9" xvfb-run -a build/linux-release/bin/StarWorks \
+    --cpu --quality high --frames 40 --capture /tmp/saturn.png
+```
+
+```powershell
+# Windows. PowerShell has no `VAR=value command` prefix — an environment
+# variable is set with $env: and stays set for the rest of the session, so
+# clear it afterwards or the next run will still be pointing at Saturn.
+$env:SW_SHOT = 'SATURN@6.9'
+.\build\windows\bin\RelWithDebInfo\StarWorks.exe `
+    --cpu --quality high --frames 40 --capture saturn.png
+Remove-Item Env:\SW_SHOT
+```
+
+`SW_SHOT` is `BODY@RADII[,map][,YAW][,PITCH]` — the body name as it appears in
+the scene table (`TERRA`, `LUNA`, `JUPITER`, …), the distance in body radii,
+`map` for the star map, an extra yaw in radians, and how far above the subject
+the camera sits (negative looks up at it). Two names are not bodies: `SHIP`
+frames the craft you are flying and `PART` the part whose menu is open, and for
+those the second field is **metres** rather than radii, because that is the unit
+a rocket is measured in.
+
+It exists purely so a change to the look of a world can be LOOKED AT, headless,
+in the shipping renderer; without it, four separate bugs lived in released
+frames while the preview said everything was fine.
+
+The other debug hooks read the same way, and all of them are environment
+variables for the same reason — a capture has no keyboard:
+
+| | |
+|---|---|
+| `SW_JUMP=<SYSTEM>` | start at another star (`ALPHA CENTAURI`, `SIRIUS`, …) |
+| `SW_TARGET=<BODY>` | select a body as the navigation target |
+| `SW_ESCAPE=<bn km>` | park the craft that far out, outbound at 120 km/s |
+| `SW_WARP=<n>` | select warp rung *n* |
+| `SW_BOARD=1` | take the controls of the nearest craft (a new world starts you on foot) |
+| `SW_THRUST=<0..1>` | hold the throttle open |
+| `SW_PARTMENU=<n>[,<id>]` | open a part's menu; *n*≥2 also presses row *n*−2 |
+| `SW_PICKPROBE=1` | write what the part picker can see to a file |
+| `SW_NO_GLARE=1` | draw the star without its glare, to measure the disc alone |
+
+```powershell
+# Windows: photograph the in-flight part menu on the Endurance's habitat
+$env:SW_BOARD = '1'; $env:SW_PARTMENU = '1,200'; $env:SW_SHOT = 'PART@26,0.9'
+.\build\windows\bin\RelWithDebInfo\StarWorks.exe `
+    --cpu --quality high --frames 300 --capture menu.png
+Remove-Item Env:\SW_BOARD, Env:\SW_PARTMENU, Env:\SW_SHOT
+```
 
 ## Repository layout
 

@@ -56,7 +56,24 @@ namespace studio
         // ---- editing ----------------------------------------------------------
         void markGeometryDirty() { m_geometryDirty = true; }
         void rebuildShapeMeshes();
+    public:
+        /// Command-line startup: open a named part, scrub the phase, and
+        /// capture one frame. The tool is otherwise entirely interactive.
+        void applyStartupOptions(const std::string& partName, float phase,
+                                 const std::string& capturePath);
+
+    private:
         void beginMode(Mode mode);
+        // ---- ANIMATION AUTHORING --------------------------------------------
+        /// The scrub: 0 is the rest pose, 1 the deployed one, and anything
+        /// between is the hinge playing back live in the viewport.
+        sw::f32 m_phase = 0.0f;
+        sw::i32 m_selectedAnimation = -1;
+        [[nodiscard]] bool editingEndPose() const;
+        [[nodiscard]] sw::Mat4 shapePreviewMatrix(sw::usize index) const;
+        void addAnimation();
+        void deleteSelectedAnimation();
+        void assignSelectedShapeToAnimation();
         void applyMode();
         void cancelMode();
         void updateModal();

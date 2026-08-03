@@ -16,6 +16,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <vector>
+
 // Forward declarations from VMA (vk_mem_alloc.h is included in .cpp only,
 // to keep this header light and compile times sane).
 VK_DEFINE_HANDLE(VmaAllocator)
@@ -114,6 +116,18 @@ namespace sw::vulkan
 
         /// Synchronous staging upload into a device-local buffer.
         void uploadToBuffer(const VulkanBuffer& target, const void* data, VkDeviceSize size);
+
+        /// Pulls a rendered image back to the CPU, 4 bytes per pixel, tightly
+        /// packed. Synchronous and slow by design: this exists so a build can
+        /// LOOK AT ITSELF, not for anything on a frame path.
+        ///
+        /// `currentLayout` is the layout the image is already in and the one
+        /// it is put back into afterwards, so the caller's state machine is
+        /// undisturbed. The caller must have made the work that produced the
+        /// image visible (a device wait idle is enough and is what the
+        /// renderer does).
+        [[nodiscard]] std::vector<u8> readImageToHost(VkImage image, VkExtent2D extent,
+                                                      VkImageLayout currentLayout);
 
     private:
         const VulkanDevice& m_device;

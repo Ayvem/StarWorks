@@ -18,12 +18,25 @@ namespace game
     {
         // Far planes sized for the full system: the Sun must render from
         // Mars (3.8e11 m away when opposed). Reverse-Z keeps the precision.
-        m_camera.setPerspective(sw::math::toRadians(60.0f), 0.5f, 1.0e13f);
+        // THE FAR PLANE IS TWELVE LIGHT-YEARS NOW, and it had to be: at 1.0e13
+        // metres — Neptune's orbit and a bit — every star in the catalogue was
+        // BEHIND IT and clipped away, so flying to Sirius meant flying toward
+        // an empty patch of sky that stayed empty until the moment of arrival.
+        // Reverse-Z is what makes this free: depth is stored with the near
+        // plane at 1.0 and the far at 0.0 in an f32 buffer, so precision is
+        // set by the near plane and moving the far one out by four orders of
+        // magnitude costs a fraction of a bit.
+        m_camera.setPerspective(sw::math::toRadians(60.0f), 0.5f, 1.5e17f);
+        parseDebugShot();
         // Shading tier (M26): HIGH on a real GPU, LOW under a software
         // rasterizer. It gates the per-fragment planet path's octave budget
         // and its terrain self-shadowing march.
         renderer().setQuality(config.renderQuality);
-        m_mapCamera.setPerspective(sw::math::toRadians(60.0f), 1.0e5f, 2.0e12f);
+        // Far plane past the whole system as seen from anywhere in it: the
+        // map's max height is 1.3e13 m (it has to frame Neptune at 4.5e12),
+        // and a far plane below the zoom ceiling clips the entire scene into
+        // an empty view the moment you zoom past it.
+        m_mapCamera.setPerspective(sw::math::toRadians(60.0f), 1.0e5f, 4.0e17f);
         m_glyphMeshIndex.fill(0xFFFFFFFFu);
 
         // DATA-DRIVEN PARTS: the shipped .swpart files replace the built-in
@@ -129,6 +142,13 @@ namespace game
 
     void StarWorksGame::onUpdate(sw::f32 deltaSeconds)
     {
+        // A NEW FRAME'S BUTTON TABLE MAY BE OPENED AGAIN. handleHudClicks
+        // below reads the table THIS frame's render has not built yet, which
+        // is the previous frame's — a one-frame lag that has always been
+        // there and is invisible at sixty hertz. What matters here is only
+        // that the latch guarding "one clear per frame" is released on the
+        // frame boundary, and this is it.
+        m_hudButtonsOpen = false;
         // ---- the shell, before anything the game does ----------------------
         // Booting and the menu are not the game with a flag set; they are
         // states in which the game is NOT running, so they return early
@@ -201,7 +221,45 @@ namespace game
         {
             m_speedSurfaceRelative = !m_speedSurfaceRelative;
         }
-        if (keyPressed(sw::KeyCode::Tab))
+        if (keyPressed(sw::KeyCode::Tab) && m_mapView)
+        {
+            // IN THE MAP, Tab cycles the camera's focus body: AUTO (the
+            // SOI primary, as always) -> Sol -> Terra -> Luna -> ... and
+            // back to AUTO. Shift+Tab walks the other way. Framing the
+            // TARGET while dragging a node is what makes an arrival
+            // readable — the encounter markers sit on the body you are
+            // looking at instead of a pixel three screens from home.
+            const auto count = static_cast<sw::i32>(m_celestialIndex.size());
+            if (count > 0)
+            {
+                const bool backwards = input().isKeyDown(sw::KeyCode::LeftShift) ||
+                                       input().isKeyDown(sw::KeyCode::RightShift);
+                // The cycle runs over [-1, count): -1 is AUTO.
+                m_mapFocusIndex = backwards
+                                      ? (m_mapFocusIndex < 0 ? count - 1
+                                                             : m_mapFocusIndex - 1)
+                                      : (m_mapFocusIndex + 1 >= count
+                                             ? -1
+                                             : m_mapFocusIndex + 1);
+                // THE ZOOM MUST FOLLOW THE BODY, or the cycle only appears
+                // to work for the small ones. A height tuned for Terra
+                // (6e7 m) lands INSIDE Sol (radius 7e8) and inside Jupiter —
+                // an empty or garbled view that reads as "Tab skipped it".
+                // Arriving on a body reframes to at least four radii; going
+                // back to a small one keeps your zoom (zooming in is a
+                // choice, being inside a star is not).
+                if (m_mapFocusIndex >= 0)
+                {
+                    const sw::f64 radius =
+                        m_celestialIndex.body(static_cast<sw::usize>(m_mapFocusIndex))
+                            .bodyRadius;
+                    m_mapHeightMeters =
+                        std::clamp(std::max(m_mapHeightMeters, radius * 4.0),
+                                   kMapMinHeight, kMapMaxHeight);
+                }
+            }
+        }
+        else if (keyPressed(sw::KeyCode::Tab))
         {
             m_shipMode = !m_shipMode;
             if (!m_shipMode)
@@ -298,15 +356,21 @@ namespace game
             }
         }
 
-        // ---- SAS: T cycles OFF -> SAS -> PGD -> RTG -> NODE; buttons too ------
+        // ---- SAS: T cycles OFF -> SAS -> PGD -> RTG -> RAD/NML -> NODE -------
         // NODE is skipped when there is no node: cycling onto a mode that
         // cannot point anywhere would look like the key had stopped working.
         if (keyPressed(sw::KeyCode::T))
         {
-            const sw::u32 ring[5] = {SasComponent::kOff, SasComponent::kStability,
-                                     SasComponent::kPrograde, SasComponent::kRetrograde,
+            // ...and now through the orbit's other four directions as well.
+            // NODE stays LAST so that skipping it when there is no node is
+            // still a matter of shortening the ring rather than of leaving a
+            // hole in the middle of it.
+            const sw::u32 ring[9] = {SasComponent::kOff,       SasComponent::kStability,
+                                     SasComponent::kPrograde,  SasComponent::kRetrograde,
+                                     SasComponent::kRadialOut, SasComponent::kRadialIn,
+                                     SasComponent::kNormal,    SasComponent::kAntiNormal,
                                      SasComponent::kNode};
-            const sw::u32 count = m_nodeActive ? 5u : 4u;
+            const sw::u32 count = m_nodeActive ? 9u : 8u;
             sw::u32 index = 0;
             for (sw::u32 i = 0; i < count; ++i)
             {
@@ -412,9 +476,31 @@ namespace game
             const sw::f32 scroll = input().scrollDeltaY();
             if (scroll != 0.0f)
             {
+                // The zoom floor is per-body: 1.5 radii of whatever the
+                // camera is orbiting. The global constant alone (2e7 m) is
+                // INSIDE Sol, Jupiter and Saturn — wheel in far enough over
+                // a giant and the map showed its interior.
+                sw::f64 minHeight = kMapMinHeight;
+                if (m_mapFocusIndex >= 0 &&
+                    m_mapFocusIndex < static_cast<sw::i32>(m_celestialIndex.size()))
+                {
+                    minHeight = std::max(
+                        minHeight,
+                        m_celestialIndex.body(static_cast<sw::usize>(m_mapFocusIndex))
+                                .bodyRadius *
+                            1.5);
+                }
+                else if (const sw::i32 primary = controlledPrimaryIndex(); primary >= 0)
+                {
+                    minHeight = std::max(
+                        minHeight,
+                        m_celestialIndex.body(static_cast<sw::usize>(primary))
+                                .bodyRadius *
+                            1.5);
+                }
                 m_mapHeightMeters = std::clamp(
                     m_mapHeightMeters * std::pow(1.3, static_cast<sw::f64>(-scroll)),
-                    kMapMinHeight, kMapMaxHeight);
+                    minHeight, kMapMaxHeight);
             }
             // Right-drag orbits the map camera around the focus (yaw +
             // tilt); default stays near top-down.
@@ -427,9 +513,17 @@ namespace game
 
             // KSP-style framing: the map centers on the SOI primary of the
             // controlled craft — Terra view at LEO, Sol view once you leave
-            // Terra's sphere of influence.
+            // Terra's sphere of influence. Unless Tab picked a body: then
+            // the camera rides THAT one, wherever the craft is.
             sw::WorldVec3 mapCenter{0.0};
-            if (const sw::i32 primaryIndex = controlledPrimaryIndex(); primaryIndex >= 0)
+            if (m_mapFocusIndex >= 0 &&
+                m_mapFocusIndex < static_cast<sw::i32>(m_celestialIndex.size()))
+            {
+                mapCenter = m_celestialIndex.positionAt(
+                    m_mapFocusIndex, m_physicsLane->presentSeconds());
+            }
+            else if (const sw::i32 primaryIndex = controlledPrimaryIndex();
+                     primaryIndex >= 0)
             {
                 mapCenter = m_celestialIndex.positionAt(primaryIndex,
                                                         m_physicsLane->presentSeconds());
@@ -480,6 +574,11 @@ namespace game
 
         // Fresh hierarchy snapshot for the map, HUD and flight plan.
         m_celestialIndex.rebuild(m_world);
+        // AFTER the playback and BEFORE anything reads a position this frame:
+        // the origin may move here, and every cached absolute position in the
+        // game is shifted with it (see rebaseOrigin).
+        updateSystemStreaming();
+        updateThrottleAnimations();
         refreshPrediction();
         updateTerrainPatch();
         updateGrassField();
@@ -604,7 +703,7 @@ namespace game
         if (m_shell == Shell::Booting)
         {
             m_drawItems.clear();
-            m_hudButtons.clear();
+            hudBeginButtons(); // the boot bar is its own screen
             collectShellHud();
             renderer().renderFrame(m_camera, m_drawItems);
             return;
@@ -619,7 +718,7 @@ namespace game
             // cannot happen.
             if (m_shell == Shell::Menu)
             {
-                m_hudButtons.clear();
+                hudSeizeButtons();
                 collectShellHud();
             }
             // The hangar is its own little world: fixed light, no eclipse,
@@ -632,6 +731,11 @@ namespace game
             renderer().renderFrame(m_hangarCamera, m_drawItems);
             return;
         }
+        // A capture run overrides the camera here, AFTER every system that
+        // wanted a say in it and BEFORE anything reads it. No-op unless
+        // SW_SHOT is set.
+        applyDebugJump();
+        applyDebugShot();
         // The title screen swaps in the menu's backdrop camera; everything
         // downstream (sun, shadow spheres, fog) reads `activeCamera` and
         // needs no other change. A pause menu keeps the player's own view.
@@ -643,30 +747,81 @@ namespace game
         // Light comes from Sol's actual position (camera-relative), and
         // every celestial body except the star casts an analytic shadow —
         // no sunlight behind a planet.
-        if (const auto* sol = m_world.tryGetComponent<TransformComponent>(m_solEntity))
+        // THE SUN IS WHICHEVER STAR IS BRIGHTEST FROM HERE. Between the
+        // systems that is still Sol for the first two light-years and then it
+        // is not, and every shader that says "sunlight" means this one.
+        m_lightStar = dominantStar(cameraPosition);
+        if (m_lightStar.isNull())
         {
-            renderer().setSunPosition(sw::Vec3(sol->position - cameraPosition));
+            m_lightStar = m_solEntity;
         }
-        std::array<sw::Renderer::ShadowSphere, sw::Renderer::kMaxShadowSpheres>
-            occluders{};
-        sw::u32 occluderCount = 0;
-        for (sw::usize i = 0;
-             i < m_celestialIndex.size() &&
-             occluderCount < sw::Renderer::kMaxShadowSpheres;
-             ++i)
+        if (const auto* sun = m_world.tryGetComponent<TransformComponent>(m_lightStar))
+        {
+            renderer().setSunPosition(sw::Vec3(sun->position - cameraPosition));
+        }
+        // THE EIGHT NEAREST BODIES, not the first eight in the index. There
+        // are nineteen of them and the shader takes eight, and the index is
+        // ordered by construction — Sol, Terra, Luna, Mars and its rocks,
+        // Mercury, Venus, Jupiter — so the cut fell before Saturn, always.
+        // The one body in the game with a RING SYSTEM was therefore the one
+        // body that could not cast a shadow, and Saturn's rings ran straight
+        // through its own shadow cone as if the planet were not there. That
+        // shadow is in every photograph of the planet ever taken.
+        //
+        // Nineteen distances and a partial sort, once a frame.
+        struct ScoredOccluder
+        {
+            sw::f64 distanceSquared;
+            sw::Renderer::ShadowSphere sphere;
+        };
+        std::vector<ScoredOccluder> scored;
+        scored.reserve(m_celestialIndex.size());
+        for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
         {
             const auto& body = m_celestialIndex.body(i);
-            if (body.entity == m_solEntity)
+            // NO STAR CASTS A SHADOW, and it used to say `m_solEntity`.
+            // With thirty-six stars in the world that let Proxima cast one on
+            // Proxima b: the shadow cone's apex sits inside a source that is
+            // also the light, so the test came out lit or unlit essentially at
+            // random per pixel and the planet was a salt-and-pepper mess of
+            // exactly two colours — its own day side and its own night side,
+            // interleaved. It measured as fourteen times Mars's high-frequency
+            // noise, which is how it was found rather than argued about.
+            if (m_world.tryGetComponent<StarVisualComponent>(body.entity) != nullptr ||
+                body.bodyRadius <= 0.0)
             {
                 continue;
             }
-            if (const auto* bodyTransform =
-                    m_world.tryGetComponent<TransformComponent>(body.entity))
+            const auto* bodyTransform =
+                m_world.tryGetComponent<TransformComponent>(body.entity);
+            if (bodyTransform == nullptr)
             {
-                occluders[occluderCount++] = {
-                    sw::Vec3(bodyTransform->position - cameraPosition),
-                    static_cast<sw::f32>(body.bodyRadius)};
+                continue;
             }
+            const sw::WorldVec3 offset = bodyTransform->position - cameraPosition;
+            // RANKED BY ANGULAR SIZE, not by distance: a shadow matters when
+            // the thing casting it is big in the sky, and Luna at 400 000 km
+            // beats Jupiter at five astronomical units on both counts. The
+            // key is (distance / radius) squared, smallest first.
+            const sw::f64 range = glm::length(offset);
+            const sw::f64 key = (range * range) / (body.bodyRadius * body.bodyRadius);
+            scored.push_back({key,
+                              {sw::Vec3(offset), static_cast<sw::f32>(body.bodyRadius)}});
+        }
+        const sw::usize keep =
+            std::min<sw::usize>(scored.size(), sw::Renderer::kMaxShadowSpheres);
+        std::partial_sort(scored.begin(),
+                          scored.begin() + static_cast<std::ptrdiff_t>(keep),
+                          scored.end(),
+                          [](const ScoredOccluder& a, const ScoredOccluder& b) {
+                              return a.distanceSquared < b.distanceSquared;
+                          });
+        std::array<sw::Renderer::ShadowSphere, sw::Renderer::kMaxShadowSpheres>
+            occluders{};
+        const auto occluderCount = static_cast<sw::u32>(keep);
+        for (sw::usize i = 0; i < keep; ++i)
+        {
+            occluders[i] = scored[i].sphere;
         }
         renderer().setShadowSpheres(
             std::span<const sw::Renderer::ShadowSphere>(occluders.data(),
@@ -726,6 +881,28 @@ namespace game
                 {
                     bestStyle = lod->surfaceStyle;
                 }
+            }
+            // ...BUT NOT FROM ANOTHER PLANET. "The nearest body that has an
+            // atmosphere, always" is right in spirit and wrong in f32: the
+            // shader's ray-sphere test computes `dot(c, c) - r * r`, and from
+            // Jupiter, Terra's centre is 7.8e11 m away. That squares to 6e23,
+            // where a float's spacing is 7e16 — nine million times the 4e13
+            // that `r * r` is trying to subtract. The discriminant is then
+            // pure quantization noise WITH A RANDOM SIGN, so a fragment on
+            // Jupiter would decide it was looking through Terra's air, and the
+            // structured garbage that came back was a grid over the disc.
+            //
+            // Two hundred radii is past any air (Terra's ends at 1.05, the
+            // limb is readable to perhaps 20) and keeps every squared term
+            // inside four million radii squared, where f32 still has digits.
+            // It also skips the whole march for every fragment in deep space,
+            // which is most of them.
+            constexpr sw::f64 kAirVisibleRadii = 200.0;
+            if (bestRadius <= 0.0f || bestDistance > bestRadius * kAirVisibleRadii)
+            {
+                bestRadius = 0.0f;
+                bestCentre = sw::Vec3{0.0f};
+                bestStyle = 0;
             }
             renderer().setAtmosphereBody(bestCentre, bestRadius, bestStyle);
         }

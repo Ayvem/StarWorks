@@ -1,0 +1,131 @@
+{
+  "id": 209,
+  "type": "Structural",
+  "name": "EN-10 Core Spoke",
+  "dryMassKg": 5000,
+  "costCredits": 11000,
+  "volumeM3": 42,
+  "crashToleranceMps": 10,
+  "breakingForceN": 8000000,
+  "dragCoefficientArea": 14,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.75, 11.8, 0],
+      "color": [0.62, 0.63, 0.66],
+      "emissive": 0,
+      "specular": 0.34,
+      "gloss": 0.62,
+      "segments": 18,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, -8.4],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.92, 0.12, 0.72],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, -2.8],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.92, 0.12, 0.72],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, 2.8],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.92, 0.12, 0.72],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, 8.4],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.92, 0.12, 0.72],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0.82, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.08, 0.22, 10.5],
+      "color": [0.72, 0.58, 0.22],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.7,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-0.82, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.08, 0.22, 10.5],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.34,
+      "gloss": 0.62,
+      "segments": 18,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "hub",
+      "position": [0, 0, -11.8],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 0.8
+    },
+    {
+      "name": "ring",
+      "position": [0, 0, 11.8],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 0.8
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [0.75, 0.75, 11.8]
+    }
+  ]
+}

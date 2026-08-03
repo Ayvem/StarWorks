@@ -1,0 +1,224 @@
+{
+  "id": 200,
+  "type": "Battery",
+  "name": "EN-1 Habitat Module",
+  "dryMassKg": 24000,
+  "costCredits": 42000,
+  "volumeM3": 330,
+  "crashToleranceMps": 10,
+  "breakingForceN": 4000000,
+  "dragCoefficientArea": 36,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 60,
+  "capacities": [
+    {
+      "resource": "ElectricCharge",
+      "units": 400000
+    }
+  ],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.4, 2.6, 6.2],
+      "color": [0.82, 0.83, 0.85],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0, 0, -6.1],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.45, 2.65, 0.1],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 0, 6.1],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.45, 2.65, 0.1],
+      "color": [0.34, 0.35, 0.38],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [2.42, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.04, 1.0, 4.4],
+      "color": [1.0, 0.93, 0.72],
+      "emissive": 0.85,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [2.46, 1.8, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05, 0.55, 5.2],
+      "color": [0.09, 0.11, 0.18],
+      "emissive": 0,
+      "specular": 0.55,
+      "gloss": 0.85,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [2.46, -1.8, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05, 0.55, 5.2],
+      "color": [0.09, 0.11, 0.18],
+      "emissive": 0,
+      "specular": 0.55,
+      "gloss": 0.85,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-2.35, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.05, 2.1, 4.6],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 2.66, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.9, 0.06, 5.0],
+      "color": [0.62, 0.63, 0.66],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, -2.66, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.9, 0.06, 5.0],
+      "color": [0.62, 0.63, 0.66],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [1.2, 2.64, -4.2],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.5, 0.05, 0.5],
+      "color": [0.72, 0.58, 0.22],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.7,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 2.78, 0],
+      "rotationDeg": [0, 0, 90],
+      "size": [0.05, 2.2, 5.2],
+      "color": [0.06, 0.09, 0.22],
+      "emissive": 0,
+      "specular": 0.55,
+      "gloss": 0.82,
+      "segments": 24,
+      "visible": true,
+      "collider": false,
+      "animation": 0,
+      "endPosition": [2.2, 4.98, 0],
+      "endRotationDeg": [0, 0, 0]
+    },
+    {
+      "kind": "box",
+      "position": [0, -2.78, 0],
+      "rotationDeg": [0, 0, 90],
+      "size": [0.05, 2.2, 5.2],
+      "color": [0.06, 0.09, 0.22],
+      "emissive": 0,
+      "specular": 0.55,
+      "gloss": 0.82,
+      "segments": 24,
+      "visible": true,
+      "collider": false,
+      "animation": 0,
+      "endPosition": [2.2, -4.98, 0],
+      "endRotationDeg": [0, 0, 180]
+    }
+  ],
+  "animations": [
+    {
+      "name": "SOLAR ARRAY",
+      "trigger": "toggle",
+      "verbs": "open-close",
+      "gates": "power",
+      "durationSeconds": 6,
+      "startsOpen": true
+    }
+  ],
+  "nodes": [
+    {
+      "name": "ringA",
+      "position": [0, 0, -6.2],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 1.2
+    },
+    {
+      "name": "ringB",
+      "position": [0, 0, 6.2],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 1.2
+    },
+    {
+      "name": "spoke",
+      "position": [-2.4, 0, 0],
+      "direction": [-1, 0, 0],
+      "type": "stack",
+      "size": 0.9
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [2.4, 2.6, 6.2]
+    }
+  ]
+}

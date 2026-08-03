@@ -770,6 +770,7 @@ namespace game
             m_world.addComponent(part, BoundsComponent{
                                            sw::parts::partBoundsRadius(*definition)});
             m_world.addComponent(part, MeshComponent{m_partMeshIds.at(bp.definitionId)});
+            attachPartAnimation(part, bp.definitionId);
             sw::parts::PartComponent component{};
             component.definitionId = bp.definitionId;
             component.vessel = root;
@@ -1175,7 +1176,7 @@ namespace game
     {
         // The hangar owns the whole button set for the frame (the SAS row
         // is a flight instrument and stays out of the hangar).
-        m_hudButtons.clear();
+        hudBeginButtons(); // the hangar renders through its own path
 
         const sw::Vec4 titleColor{1.0f, 0.85f, 0.35f, 1.0f};
         const sw::Vec4 textColor{0.8f, 0.9f, 1.0f, 0.95f};

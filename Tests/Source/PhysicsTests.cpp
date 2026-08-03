@@ -1098,10 +1098,65 @@ SW_TEST(AnUprightRocketStaysWhereItWasPut)
 }
 
 // ----------------------------------------------------------------------------
-// The warp gate: when is the analytic world a good enough stand-in?
+// The warp ceiling: how fast may time run HERE?
 // ----------------------------------------------------------------------------
 
-SW_TEST(WarpIsPermittedOnlyOnRailsOrOnTheGround)
+SW_TEST(TheWarpCeilingFollowsAltitudeAndTheBodysOwnAir)
+{
+    // F17: the ordinary ceiling is a question about WHERE YOU ARE. The two
+    // policy numbers are the game's: x5 while inside an atmosphere, x100 of
+    // fully-integrated physics warp anywhere else.
+    constexpr f64 kAtmospheric = 5.0;
+    constexpr f64 kPhysics = 100.0;
+    constexpr f64 kTerraRadius = 6.371e6;
+    constexpr f64 kTerraAir = 1.4e5;
+    constexpr f64 kSaturnRadius = 5.8232e7;
+    constexpr f64 kSaturnAir = 4.0e6;
+    const auto ceiling = [](f64 altitude, f64 air, f64 radius) {
+        return phys::maxWarpForAltitude(altitude, air, radius, kAtmospheric, kPhysics);
+    };
+
+    // IN THE AIR, and exactly to the top of it: x5, on both worlds, even
+    // though Saturn's air is thirty times deeper in kilometres. The
+    // boundary is the atmosphere, not a constant tuned on Terra.
+    SW_CHECK_EQ(ceiling(0.0, kTerraAir, kTerraRadius), kAtmospheric);
+    SW_CHECK_EQ(ceiling(1.39e5, kTerraAir, kTerraRadius), kAtmospheric);
+    SW_CHECK_EQ(ceiling(3.9e6, kSaturnAir, kSaturnRadius), kAtmospheric);
+    // ...and one metre above it, physics warp is available.
+    SW_CHECK(ceiling(1.41e5, kTerraAir, kTerraRadius) >= kPhysics);
+    SW_CHECK(ceiling(4.01e6, kSaturnAir, kSaturnRadius) >= kPhysics);
+
+    // THE REPORTED FRAME: 10 357 km over Saturn — 0.18 body radii, six
+    // thousand kilometres clear of the air. It used to be pinned at x5 by
+    // the trajectory gate; it is now worth x1000.
+    SW_CHECK_EQ(ceiling(1.03576e7, kSaturnAir, kSaturnRadius), 1.0e3);
+
+    // THE LADDER IS IN BODY RADII, which is the whole reason it can be one
+    // ladder: the same fraction of a radius buys the same rung at Terra and
+    // at Saturn, nine times wider.
+    SW_CHECK_EQ(ceiling(0.2 * kTerraRadius, kTerraAir, kTerraRadius),
+                ceiling(0.2 * kSaturnRadius, kSaturnAir, kSaturnRadius));
+    SW_CHECK_EQ(ceiling(50.0 * kTerraRadius, 0.0, kTerraRadius), 1.0e6);
+    SW_CHECK_EQ(ceiling(1.0e4 * kTerraRadius, 0.0, kTerraRadius), 1.0e7);
+
+    // AN AIRLESS BODY has no step at all: the ceiling at the surface is
+    // physics warp, because there is no air to fly through.
+    SW_CHECK_EQ(ceiling(0.0, 0.0, 1.7374e6), kPhysics);
+
+    // And it is MONOTONIC in altitude — the property that makes it
+    // self-enforcing on a descent, walking a falling craft down the rungs
+    // instead of refusing it once, from high up, on a prediction.
+    f64 previous = 0.0;
+    for (int i = 0; i <= 400; ++i)
+    {
+        const f64 altitude = static_cast<f64>(i) * 0.05 * kTerraRadius;
+        const f64 now = ceiling(altitude, kTerraAir, kTerraRadius);
+        SW_CHECK(now >= previous);
+        previous = now;
+    }
+}
+
+SW_TEST(SyncWarpIsPermittedOnlyOnRailsOrOnTheGround)
 {
     constexpr f64 kAir = 1.4e5; // Terra's atmosphere top
 
@@ -1625,4 +1680,78 @@ SW_TEST(NoPhysicsEntryPointAnswersADegenerateQuestionWithANaN)
     const glm::dquat degenerate = spinRotationAt(noAxis, 0.5);
     SW_CHECK(std::isfinite(degenerate.w) && std::isfinite(degenerate.x) &&
              std::isfinite(degenerate.y) && std::isfinite(degenerate.z));
+}
+
+// ============================================================================
+// THE ORBIT'S OTHER FOUR DIRECTIONS
+//
+// Radial and normal are two vectors and four buttons, and every one of them is
+// a cross product whose sign is a coin flip until somebody writes the
+// convention down. Getting one backwards is not a crash: it is a plane change
+// that turns the orbit the wrong way, with a marker on the navball sitting
+// exactly where the nose already points, and nothing anywhere that says so.
+//
+// So the frame is one function with two consumers — the autopilot flies it and
+// the navball draws it — and this is the definition, pinned.
+// ============================================================================
+SW_TEST(TheOrbitalFrameIsRightHandedAndPointsWhereItsNamesSay)
+{
+    using namespace sw;
+
+    // A textbook circular orbit: position along +X, velocity along +Y.
+    // Angular momentum r x v is then +Z, and radial-out must come back to +X —
+    // straight up, away from the focus.
+    Vec3 prograde{};
+    Vec3 normal{};
+    Vec3 radialOut{};
+    SW_CHECK(phys::orbitalFrame({7.0e6, 0.0, 0.0}, {0.0, 7546.0, 0.0}, prograde, normal,
+                                radialOut));
+    SW_CHECK(glm::length(prograde - Vec3{0.0f, 1.0f, 0.0f}) < 1.0e-5f);
+    SW_CHECK(glm::length(normal - Vec3{0.0f, 0.0f, 1.0f}) < 1.0e-5f);
+    SW_CHECK(glm::length(radialOut - Vec3{1.0f, 0.0f, 0.0f}) < 1.0e-5f);
+
+    // RADIAL OUT REALLY IS OUTWARD, which is the half of the convention a
+    // player would notice first and the half a sign error would invert.
+    SW_CHECK(glm::dot(radialOut, Vec3{1.0f, 0.0f, 0.0f}) > 0.99f);
+
+    // ORTHONORMAL, and right-handed in that order: prograde x normal =
+    // radialOut is the definition, so the three cannot drift apart.
+    SW_CHECK(std::abs(glm::length(prograde) - 1.0f) < 1.0e-5f);
+    SW_CHECK(std::abs(glm::length(normal) - 1.0f) < 1.0e-5f);
+    SW_CHECK(std::abs(glm::length(radialOut) - 1.0f) < 1.0e-5f);
+    SW_CHECK(std::abs(glm::dot(prograde, normal)) < 1.0e-5f);
+    SW_CHECK(std::abs(glm::dot(prograde, radialOut)) < 1.0e-5f);
+    SW_CHECK(std::abs(glm::dot(normal, radialOut)) < 1.0e-5f);
+    SW_CHECK(glm::length(glm::cross(prograde, normal) - radialOut) < 1.0e-5f);
+
+    // A RETROGRADE ORBIT FLIPS THE NORMAL AND NOTHING ELSE. Same place, same
+    // speed, going the other way: normal reverses, and radial-out — which is
+    // a statement about the planet, not about the direction of travel — does
+    // not.
+    Vec3 backProgradeVec{};
+    Vec3 backNormal{};
+    Vec3 backRadial{};
+    SW_CHECK(phys::orbitalFrame({7.0e6, 0.0, 0.0}, {0.0, -7546.0, 0.0}, backProgradeVec,
+                                backNormal, backRadial));
+    SW_CHECK(glm::length(backNormal + normal) < 1.0e-5f);
+    SW_CHECK(glm::dot(backRadial, radialOut) > 0.99f);
+
+    // AN ECCENTRIC ORBIT: away from apsis the velocity is not perpendicular to
+    // the radius, and radial-out is then NOT the radius direction — it is the
+    // in-plane vector perpendicular to the velocity. It must still point
+    // outward, and it must still be perpendicular to prograde.
+    const WorldVec3 r{6.0e6, 2.0e6, 0.0};
+    const WorldVec3 v{-1500.0, 8200.0, 0.0};
+    Vec3 ep{}, en{}, er{};
+    SW_CHECK(phys::orbitalFrame(r, v, ep, en, er));
+    SW_CHECK(std::abs(glm::dot(ep, er)) < 1.0e-5f);
+    SW_CHECK(glm::dot(er, glm::normalize(Vec3(r))) > 0.0f); // outward, not inward
+    SW_CHECK(glm::dot(er, glm::normalize(Vec3(r))) < 0.9999f); // and not the radius
+
+    // NO PLANE, NO FRAME. Straight up: r x v vanishes, normal and radial mean
+    // nothing, and the caller must be told rather than handed a normalised
+    // zero. This is the case a craft hovering on its engines is in.
+    Vec3 a{}, b{}, c{};
+    SW_CHECK(!phys::orbitalFrame({7.0e6, 0.0, 0.0}, {120.0, 0.0, 0.0}, a, b, c));
+    SW_CHECK(!phys::orbitalFrame({7.0e6, 0.0, 0.0}, {0.0, 0.0, 0.0}, a, b, c));
 }

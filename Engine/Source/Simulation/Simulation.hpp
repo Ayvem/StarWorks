@@ -27,6 +27,8 @@
 // ============================================================================
 
 #include "Core/Types.hpp"
+
+#include <cmath>
 #include "ECS/SystemScheduler.hpp"
 
 #include <memory>
@@ -87,6 +89,30 @@ namespace sw::sim
         /// See the strict catch-up note above LaneConfig.
         void setStrictCatchUp(bool strict) { m_strictCatchUp = strict; }
         [[nodiscard]] bool strictCatchUp() const { return m_strictCatchUp; }
+
+        /// THE CATCH-UP BUDGET, RAISED ON DEMAND.
+        ///
+        /// A fixed-step lane's time scale ceiling is arithmetic: it can
+        /// integrate `maxTicksPerFrame` steps per rendered frame and no
+        /// more, so the fastest real-time multiple it can hold is
+        /// ticks x frequency / fps. Sixteen 50 Hz ticks at 60 fps is x19 —
+        /// which is why physics warp used to stop at x5.
+        ///
+        /// It is a KNOB rather than a constant because the two things it
+        /// trades are wanted at different moments. A big budget buys a high
+        /// physics warp; a small one bounds how much simulation a single
+        /// hitch frame can burn at x1, which is the behaviour you want when
+        /// nobody asked to fast-forward. So the game raises it for the warp
+        /// rung it is on and lowers it again afterwards.
+        ///
+        /// Nothing here can desynchronise: with strict catch-up the master
+        /// clock is already held to what the lane consumes, so a budget the
+        /// machine cannot afford simply runs the world slower than asked.
+        void setMaxTicksPerFrame(u32 ticks)
+        {
+            m_config.maxTicksPerFrame = (ticks > 0u) ? ticks : 1u;
+        }
+        [[nodiscard]] u32 maxTicksPerFrame() const { return m_config.maxTicksPerFrame; }
         /// Scaled seconds this lane can still absorb THIS frame without
         /// dropping backlog (fixed-step lanes; bulk lanes are unbounded).
         [[nodiscard]] f64 remainingCapacitySeconds() const;
@@ -117,6 +143,13 @@ namespace sw::sim
         /// exactly the current tick's target time; dropped backlog moves
         /// it forward consistently (the lane's world skips as one).
         [[nodiscard]] f64 presentSeconds() const;
+
+        /// The same instant, carried at full precision: exact whole seconds
+        /// plus a fraction in [0, 1). Anything ANALYTIC — a Kepler orbit, a
+        /// planet's spin — must evaluate at this and not at presentSeconds(),
+        /// which cannot hold a fraction of a second once the session has run
+        /// for an interstellar crossing. See Simulation::wholeSeconds().
+        void presentSecondsSplit(f64& outWhole, f64& outFraction) const;
 
         /// Systems of this lane (register at startup, before the first tick).
         [[nodiscard]] ecs::SystemScheduler& scheduler() { return m_scheduler; }
@@ -178,15 +211,59 @@ namespace sw::sim
         void setTimeScale(f32 scale);
         [[nodiscard]] f32 timeScale() const { return m_timeScale; }
 
+        /// THE TIME SCALE ACTUALLY DELIVERED, smoothed over about a second.
+        ///
+        /// `timeScale()` is what the pilot asked for; this is what the
+        /// hardware paid. They differ whenever a strict lane clamps the
+        /// master clock — which is the DESIGNED behaviour of physics warp on
+        /// a machine that cannot integrate that fast, and which was until
+        /// now completely invisible: the HUD said x100 while the world moved
+        /// at forty. Reporting it is the difference between "warp is broken"
+        /// and "this machine gives you x40 of the x100 you asked for".
+        [[nodiscard]] f32 achievedTimeScale() const { return m_achievedTimeScale; }
+
         /// Total scaled seconds fed into the lanes (excludes paused frames).
-        [[nodiscard]] f64 simulatedSeconds() const { return m_simulatedSeconds; }
+        [[nodiscard]] f64 simulatedSeconds() const
+        {
+            return m_wholeSeconds + m_fractionSeconds;
+        }
+        /// THE CLOCK, SPLIT, AND THE REASON IT HAS TO BE.
+        ///
+        /// Everything analytic — every planet's position, every rail, every
+        /// planet's rotation — is a function of ABSOLUTE simulated time, and
+        /// an interstellar crossing costs about 3e11 seconds of it. A double
+        /// at 3e11 has a step of 61 microseconds; Terra moves 29.8 km in a
+        /// second, so each tick's time is snapped to a grid 1.8 m wide. That
+        /// is not drift, which would be invisible — it is NOISE, different
+        /// every tick, and it is exactly what a player standing on the ground
+        /// after a trip to Proxima Centauri sees as the whole world
+        /// vibrating. Measured: 0.10 m of it after three centuries of
+        /// simulated time, 2.2 m after one crossing, 35 m after ten.
+        ///
+        /// So the clock is carried as an exact INTEGER second count plus a
+        /// fraction in [0, 1). The whole part is exact to 2^53 seconds — two
+        /// hundred and eighty-five million years — and the fraction keeps its
+        /// full seventeen digits however large the whole part grows. Reducing
+        /// the mean anomaly modulo the orbital period instead was measured
+        /// first and is NOT enough: it fixes the anomaly's ulp and leaves the
+        /// time's, which is the larger of the two (1.82 m of the 2.18 m).
+        [[nodiscard]] f64 wholeSeconds() const { return m_wholeSeconds; }
+        [[nodiscard]] f64 fractionSeconds() const { return m_fractionSeconds; }
         /// Serialization support: restores the master simulation clock.
-        void setSimulatedSeconds(f64 seconds) { m_simulatedSeconds = seconds; }
+        void setSimulatedSeconds(f64 seconds)
+        {
+            m_wholeSeconds = std::floor(seconds);
+            m_fractionSeconds = seconds - m_wholeSeconds;
+        }
 
     private:
         std::vector<std::unique_ptr<SimulationLane>> m_lanes;
-        f64 m_simulatedSeconds = 0.0;
+        /// Exact integer seconds, and the fraction below one. See
+        /// wholeSeconds() for why this is not one double.
+        f64 m_wholeSeconds = 0.0;
+        f64 m_fractionSeconds = 0.0;
         f32 m_timeScale = 1.0f;
+        f32 m_achievedTimeScale = 1.0f;
         bool m_paused = false;
     };
 } // namespace sw::sim

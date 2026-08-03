@@ -881,3 +881,127 @@ SW_TEST(TheBurnReadoutCountsDownToZero)
     // is the bug, measured, so that it cannot come back unnoticed.
     SW_CHECK(worstNaive > 0.99 * kPlannedDv);
 }
+
+// ============================================================================
+// THE RANGE CAP ON A PLAN THAT NEVER ENDS
+//
+// A hyperbolic escape from the outermost body has no sphere of influence to
+// leave and no revolution to close, so the scan ran to the twenty-year horizon
+// — a line reaching a hundred billion kilometres, sampled thousands of times
+// and then split into thousands of screen-space boxes, because every chord of
+// it spans four orders of magnitude of camera distance. Placing a maneuver
+// node on one visibly hitched the frame.
+//
+// Two things have to hold for the fix to be a fix rather than a truncation:
+// the capped plan must STOP at the range asked for, and a plan that has a real
+// event before that range must be completely unaffected.
+// ============================================================================
+SW_TEST(AnEscapeTrajectoryStopsAtTheRangeCapAndABoundOneDoesNot)
+{
+    ecs::World world;
+    const ecs::Entity sol = world.createEntity();
+    {
+        TransformComponent transform{};
+        world.addComponent(sol, transform);
+        phys::GravitySourceComponent gravity{kMuSol, 6.957e8};
+        world.addComponent(sol, gravity); // no SOI: a lone star owns all space
+        world.addComponent(sol, makeCelestialBody("SOL"));
+    }
+    CelestialIndex index;
+    index.rebuild(world);
+
+    // Well clear of the sun and comfortably above escape speed there.
+    const WorldVec3 position{kTerraSma, 0.0, 0.0};
+    const f64 escapeSpeed = std::sqrt(2.0 * kMuSol / kTerraSma);
+    const WorldVec3 velocity{0.0, 0.0, escapeSpeed * 1.4};
+
+    PredictionSettings capped{};
+    capped.maxRangeMeters = 1.0e13;
+    std::vector<TrajectorySegment> plan;
+    predictTrajectory(index, position, velocity, 0.0, capped, plan);
+
+    SW_CHECK(plan.size() == 1);
+    SW_CHECK(plan[0].endReason == SegmentEnd::RangeLimit);
+    // It stopped AT the cap, not somewhere near it: the event time is refined
+    // by bisection, so the radius there is the cap to within a part in 1e4.
+    WorldVec3 end{};
+    phys::kepler::evaluate(plan[0].orbit, plan[0].endTime, end);
+    const f64 endRadius = glm::length(end);
+    SW_CHECK(std::abs(endRadius - capped.maxRangeMeters) < capped.maxRangeMeters * 1.0e-4);
+    // And it got there in a finite, sensible time rather than running to the
+    // twenty-year horizon.
+    SW_CHECK(plan[0].endTime > 0.0);
+    SW_CHECK(plan[0].endTime < capped.horizonSeconds);
+
+    // A BOUND ORBIT INSIDE THE CAP IS UNTOUCHED. Terra's own circular orbit
+    // never reaches 1e13 m, so the cap must not appear anywhere in its plan —
+    // it still closes after one revolution, as it always did.
+    const f64 circular = std::sqrt(kMuSol / kTerraSma);
+    std::vector<TrajectorySegment> bound;
+    predictTrajectory(index, position, WorldVec3{0.0, 0.0, circular}, 0.0, capped, bound);
+    SW_CHECK(bound.size() == 1);
+    SW_CHECK(bound[0].endReason == SegmentEnd::Closed);
+}
+
+// ============================================================================
+// AND THE ARC IS WALKED BY ANOMALY, NOT BY TIME
+//
+// The step for a hyperbola is a fraction of its own time scale — about an hour
+// for a solar escape — while the arc it has to cover is years of it. Sampled
+// uniformly in time that is seventy thousand probes with every child body
+// tested at each, four times a second, for a plan the player creates by
+// pressing one key. Measured at 341 ms per call before any of this, 138 ms
+// with the range cap alone, and 8 ms once the samples were spaced by
+// hyperbolic anomaly instead.
+//
+// The saving is only real if the coverage survives it, and that is what this
+// checks: a hyperbolic flyby whose exit and encounter were found before must
+// still find them, to the same precision.
+// ============================================================================
+SW_TEST(SpacingSamplesByAnomalyStillCatchesTheSoiExit)
+{
+    ecs::World world;
+    const ecs::Entity sol = world.createEntity();
+    {
+        TransformComponent transform{};
+        world.addComponent(sol, transform);
+        world.addComponent(sol, phys::GravitySourceComponent{kMuSol, 6.957e8});
+        world.addComponent(sol, makeCelestialBody("SOL"));
+    }
+    const phys::KeplerOrbit terraOrbit =
+        phys::kepler::fromElements(kMuSol, kTerraSma, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    const ecs::Entity terra = world.createEntity();
+    {
+        TransformComponent transform{};
+        phys::kepler::evaluate(terraOrbit, 0.0, transform.position);
+        world.addComponent(terra, transform);
+        phys::GravitySourceComponent gravity{kMuTerra, 6.371e6};
+        gravity.soiRadius = 9.24e8;
+        world.addComponent(terra, gravity);
+        world.addComponent(terra, makeCelestialBody("TERRA", sol, &terraOrbit));
+    }
+    CelestialIndex index;
+    index.rebuild(world);
+
+    // A craft leaving Terra on a hyperbola: 300 km up, well over escape speed.
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(index.indexOf(terra), 0.0, terraPosition, &terraVelocity);
+    const f64 radius = 6.371e6 + 3.0e5;
+    const f64 escape = std::sqrt(2.0 * kMuTerra / radius);
+    const WorldVec3 position = terraPosition + WorldVec3{radius, 0.0, 0.0};
+    const WorldVec3 velocity = terraVelocity + WorldVec3{0.0, 0.0, escape * 1.25};
+
+    PredictionSettings settings{};
+    std::vector<TrajectorySegment> plan;
+    predictTrajectory(index, position, velocity, 0.0, settings, plan);
+
+    // It leaves Terra's sphere of influence and hands off to Sol.
+    SW_CHECK(plan.size() >= 2);
+    SW_CHECK(plan[0].endReason == SegmentEnd::SoiExit);
+    // ...AT the sphere of influence, to within a part in ten thousand. This is
+    // the number the anomaly walk could have blunted and did not.
+    WorldVec3 exitPoint{};
+    phys::kepler::evaluate(plan[0].orbit, plan[0].endTime, exitPoint);
+    SW_CHECK(std::abs(glm::length(exitPoint) - 9.24e8) < 9.24e8 * 1.0e-4);
+}

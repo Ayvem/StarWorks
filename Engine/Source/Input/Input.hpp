@@ -87,6 +87,31 @@ namespace sw
         [[nodiscard]] bool wasMouseButtonPressed(MouseButton button) const;
         [[nodiscard]] bool wasMouseButtonReleased(MouseButton button) const;
 
+        /// A QUICK CLICK, TOLD APART FROM A DRAG THAT HAPPENS TO END.
+        ///
+        /// The same button often does two jobs — hold it to turn the camera,
+        /// tap it to work a switch — and the only thing separating them is how
+        /// long it was down and how far the mouse went. Both bounds are needed
+        /// and neither alone is enough: a slow careful drag can cover almost
+        /// no distance, and a fast flick covers a lot in a very short time.
+        ///
+        /// This lives in the engine, as a function of two numbers, because the
+        /// first attempt at it was six pixels of travel and no time bound at
+        /// all, written inline in the HUD, and it never once fired.
+        [[nodiscard]] static constexpr bool isQuickClick(f32 heldSeconds,
+                                                         f32 travelPixels)
+        {
+            return heldSeconds <= kQuickClickSeconds &&
+                   travelPixels <= kQuickClickPixels;
+        }
+        /// A quarter of a second: longer than any tap, shorter than the
+        /// briefest deliberate look-around.
+        static constexpr f32 kQuickClickSeconds = 0.25f;
+        /// ...and forty pixels, which is a shaky hand rather than a drag. Six
+        /// was the first guess and it is inside the slop of an ordinary click
+        /// on an ordinary mouse.
+        static constexpr f32 kQuickClickPixels = 40.0f;
+
         [[nodiscard]] f32 mouseX() const { return m_mouseX; }
         [[nodiscard]] f32 mouseY() const { return m_mouseY; }
         [[nodiscard]] f32 mouseDeltaX() const { return m_mouseDeltaX; }

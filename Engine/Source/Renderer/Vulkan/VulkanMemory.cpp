@@ -312,4 +312,86 @@ namespace sw::vulkan
         vkFreeCommandBuffers(m_device.handle(), m_uploadPool, 1, &cmd);
         // staging is destroyed here (RAII) — safe: the copy has completed.
     }
+
+    std::vector<u8> VulkanMemory::readImageToHost(VkImage image, VkExtent2D extent,
+                                                  VkImageLayout currentLayout)
+    {
+        const VkDeviceSize bytes =
+            static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+        // A BUFFER, not a linear image. An image copy has to agree with the
+        // driver about tiling and row pitch; a buffer copy is tightly packed
+        // by definition and works the same on every implementation, which
+        // matters here because this path exists to run on llvmpipe.
+        VulkanBuffer readback =
+            createHostVisibleBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = m_uploadPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        SW_VK_CHECK(vkAllocateCommandBuffers(m_device.handle(), &allocInfo, &cmd));
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        SW_VK_CHECK(vkBeginCommandBuffer(cmd, &beginInfo));
+
+        const auto barrier = [&](VkImageLayout from, VkImageLayout to,
+                                 VkAccessFlags2 srcAccess, VkAccessFlags2 dstAccess) {
+            VkImageMemoryBarrier2 imageBarrier{};
+            imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            imageBarrier.srcAccessMask = srcAccess;
+            imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            imageBarrier.dstAccessMask = dstAccess;
+            imageBarrier.oldLayout = from;
+            imageBarrier.newLayout = to;
+            imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageBarrier.image = image;
+            imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            imageBarrier.subresourceRange.levelCount = 1;
+            imageBarrier.subresourceRange.layerCount = 1;
+            VkDependencyInfo dependency{};
+            dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency.imageMemoryBarrierCount = 1;
+            dependency.pImageMemoryBarriers = &imageBarrier;
+            vkCmdPipelineBarrier2(cmd, &dependency);
+        };
+
+        barrier(currentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = {extent.width, extent.height, 1};
+        vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               readback.handle(), 1, &region);
+
+        // Back where it was found: the swapchain image is still owned by the
+        // presentation engine's state machine.
+        barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, currentLayout,
+                VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+
+        SW_VK_CHECK(vkEndCommandBuffer(cmd));
+
+        VkCommandBufferSubmitInfo cmdInfo{};
+        cmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        cmdInfo.commandBuffer = cmd;
+        VkSubmitInfo2 submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submitInfo.commandBufferInfoCount = 1;
+        submitInfo.pCommandBufferInfos = &cmdInfo;
+        SW_VK_CHECK(vkQueueSubmit2(m_device.graphicsQueue(), 1, &submitInfo, m_uploadFence));
+        SW_VK_CHECK(vkWaitForFences(m_device.handle(), 1, &m_uploadFence, VK_TRUE, UINT64_MAX));
+        SW_VK_CHECK(vkResetFences(m_device.handle(), 1, &m_uploadFence));
+        vkFreeCommandBuffers(m_device.handle(), m_uploadPool, 1, &cmd);
+
+        std::vector<u8> pixels(static_cast<usize>(bytes));
+        std::memcpy(pixels.data(), readback.mappedData(), static_cast<usize>(bytes));
+        return pixels;
+    }
 } // namespace sw::vulkan

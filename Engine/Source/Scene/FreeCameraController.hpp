@@ -44,6 +44,15 @@ namespace sw
 
         void update(Input& input, Window& window, f32 deltaSeconds);
 
+        /// Shifts the controller's own copy of the eye position, and ONLY
+        /// that. It keeps a copy SEPARATE from the Camera's and pushes it down
+        /// every input frame, so a floating-origin shift that moved only the
+        /// Camera would be silently undone the moment the player touched a
+        /// key. It deliberately does not touch the Camera: in flight the
+        /// camera is driven by the craft, not by this, and writing to it here
+        /// would teleport the view to wherever the free camera was last left.
+        void translate(const WorldVec3& delta) { m_position += delta; }
+
         [[nodiscard]] Settings& settings() { return m_settings; }
 
     private:

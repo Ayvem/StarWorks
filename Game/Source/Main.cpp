@@ -17,6 +17,7 @@ namespace
     /// --cpu        : prefer a software (CPU) Vulkan device (llvmpipe, ...).
     /// --quality Q  : shading tier, low|medium|high (default high; --cpu
     ///                implies low unless --quality follows it).
+    /// --capture P  : write the last frame to P as a PNG (needs --frames).
     sw::ApplicationConfig parseArguments(int argc, char** argv)
     {
         sw::ApplicationConfig config{};
@@ -46,6 +47,10 @@ namespace
                 // A software rasterizer cannot afford the HIGH fragment
                 // budget; CI captures run LOW by default.
                 config.renderQuality = 0;
+            }
+            else if (std::strcmp(argv[i], "--capture") == 0 && i + 1 < argc)
+            {
+                config.capturePath = argv[++i];
             }
             else if (std::strcmp(argv[i], "--quality") == 0 && i + 1 < argc)
             {

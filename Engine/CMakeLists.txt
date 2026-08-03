@@ -122,6 +122,8 @@ add_library(StarWorksEngine STATIC
     Source/Space/CelestialSystems.cpp
     Source/Space/CelestialSystems.hpp
     Source/Space/SpaceComponents.hpp
+    Source/Space/StarCatalogue.cpp
+    Source/Space/StarCatalogue.hpp
     Source/Space/TrajectoryPrediction.cpp
     Source/Space/TrajectoryPrediction.hpp
 

@@ -11,7 +11,10 @@
 #include "TestFramework.hpp"
 
 #include <ECS/World.hpp>
+#include <Physics/Kepler.hpp>
 #include <Simulation/Simulation.hpp>
+
+#include <cmath>
 
 namespace
 {
@@ -620,4 +623,223 @@ SW_TEST(TheCapacityFloorKeepsAStarvedStrictLaneMovingAFullStepPerFrame)
     twoTick.advance(world, 100.0f, nullptr);
     SW_CHECK_EQ(twoRec->ticks, 4);
     SW_CHECK_EQ(twoTick.simulatedSeconds() - afterFirstHitch, 2.0 * kStrictStep);
+}
+
+// ============================================================================
+// F16 — PHYSICS WARP TO x100
+//
+// The old ceiling of x5 was read as a numerical limit and was nothing of the
+// kind. A fixed-step lane integrates the SAME step at every time scale; warp
+// changes only how many of them run per rendered frame. What x5 encoded was
+// the lane's catch-up budget — sixteen ticks a frame, which at 60 FPS is x19
+// and no more. Raise the budget and the ceiling moves, with the integrator
+// doing exactly the arithmetic it always did.
+//
+// These three pin the claim: the step never changes, the budget is what
+// bounds the scale, and what the hardware could not pay is reported rather
+// than hidden.
+// ============================================================================
+SW_TEST(PhysicsWarpNeverChangesTheStepItIntegrates)
+{
+    // THE INVARIANT THE WHOLE FEATURE RESTS ON. If x100 handed the systems a
+    // hundred-fold dt this would be a different (and much worse) feature:
+    // one Euler step of 2 seconds through a periapsis is not a trajectory.
+    // Every dt is the lane's own step, at every scale.
+    for (const sw::f32 scale : {1.0f, 5.0f, 100.0f})
+    {
+        sw::ecs::World world;
+        Simulation simulation({{"lane", kStrictHz, 128u, false}});
+        TickRecorder* recorder = attachRecorder(simulation, true);
+        simulation.setTimeScale(scale);
+        for (int frame = 0; frame < 8; ++frame)
+        {
+            simulation.advance(world, 1.0f / 64.0f, nullptr);
+        }
+        SW_CHECK(recorder->ticks > 0);
+        // Exact: every dt is 1/32 s, and a sum of N of them is N/32.
+        SW_CHECK_EQ(recorder->integratedSeconds,
+                    static_cast<sw::f64>(recorder->ticks) * kStrictStep);
+    }
+}
+
+SW_TEST(RaisingTheCatchUpBudgetLiftsThePhysicsWarpCeiling)
+{
+    sw::ecs::World world;
+    Simulation simulation({{"lane", kStrictHz, kStrictMaxTicks, false}});
+    TickRecorder* recorder = attachRecorder(simulation, true);
+    simulation.setTimeScale(100.0f);
+
+    // 1/64 s frames: exact in binary, and x100 of one is 1.5625 s of
+    // simulation asked for against a 4-tick budget worth 0.140625 s. The
+    // strict lane holds the master clock to the budget — the world runs
+    // slow, which is the designed failure, but nothing desynchronises.
+    constexpr sw::f32 kFrame = 1.0f / 64.0f;
+    simulation.advance(world, kFrame, nullptr);
+    SW_CHECK_EQ(recorder->ticks, 4);
+    SW_CHECK_EQ(simulation.simulatedSeconds(), 0.140625);
+
+    // Same lane, same hardware, same request — with the budget the rung
+    // actually needs. x100 of 1/64 s is fifty 1/32 s steps, and now all
+    // fifty run: the ceiling was the budget all along.
+    simulation.findLane("lane")->setMaxTicksPerFrame(64);
+    recorder->ticks = 0;
+    const sw::f64 before = simulation.simulatedSeconds();
+    simulation.advance(world, kFrame, nullptr);
+    SW_CHECK_EQ(recorder->ticks, 50);
+    SW_CHECK_EQ(simulation.simulatedSeconds() - before, 1.5625);
+}
+
+SW_TEST(TheAchievedTimeScaleReportsWhatTheHardwarePaid)
+{
+    sw::ecs::World world;
+    Simulation simulation({{"lane", kStrictHz, kStrictMaxTicks, false}});
+    attachRecorder(simulation, true);
+    simulation.setTimeScale(100.0f);
+
+    // A machine asked for x100 and able to integrate four steps a frame
+    // settles at exactly +0.125 s of clock per 1/64 s frame — x8. The
+    // reported figure is smoothed over about a second, so it converges
+    // rather than snapping; four hundred frames is six seconds of that.
+    for (int frame = 0; frame < 400; ++frame)
+    {
+        simulation.advance(world, 1.0f / 64.0f, nullptr);
+    }
+    SW_CHECK_EQ(simulation.timeScale(), 100.0f); // what was ASKED, unchanged
+    SW_CHECK(simulation.achievedTimeScale() > 7.5f);
+    SW_CHECK(simulation.achievedTimeScale() < 8.05f);
+
+    // Give it the budget and the two numbers converge: nothing to report.
+    simulation.findLane("lane")->setMaxTicksPerFrame(64);
+    for (int frame = 0; frame < 400; ++frame)
+    {
+        simulation.advance(world, 1.0f / 64.0f, nullptr);
+    }
+    SW_CHECK(simulation.achievedTimeScale() > 95.0f);
+    SW_CHECK(simulation.achievedTimeScale() <= 100.05f);
+}
+
+// ============================================================================
+// THE CLOCK AFTER AN INTERSTELLAR CROSSING
+//
+// "Je me suis pose sur Proxima Centauri b et le sol s'est mis a vibrer, aussi
+// bien sur cette planete que sur Terra."
+//
+// Both halves of that sentence are the diagnosis. Everything analytic in this
+// game — every planet's position, every rail, every planet's rotation — is a
+// function of ABSOLUTE simulated time, and the clock is GLOBAL: once a session
+// has paid the 3e11 seconds a four-light-year crossing costs, every body in
+// every system is evaluated from a number that large. A double at 3e11 has a
+// step of 61 microseconds. Terra covers 1.8 m in 61 microseconds.
+//
+// So each tick's time was snapped to a grid 1.8 m wide — not drift, which the
+// eye would never see, but NOISE, a different rounding every tick. Measured on
+// the shipped orbit: 0.06 m of per-tick position noise after three centuries
+// of simulated time, 1.84 m after one crossing, 14.5 m after ten.
+//
+// Reducing the mean anomaly modulo the period was tried first and is not
+// enough: it fixes the anomaly's ulp and leaves the TIME's, which is the
+// larger of the two. The clock itself has to carry more than a double of
+// seconds can.
+// ============================================================================
+SW_TEST(TheClockKeepsItsPrecisionAfterAnInterstellarCrossing)
+{
+    using namespace sw;
+    // Terra, real elements, about Sol.
+    const phys::KeplerOrbit terra = phys::kepler::fromElements(
+        1.32712440018e20, 1.495978707e11, 0.0167, 0.0, 0.0, 0.0, 0.0, 0.0);
+
+    // The per-tick step of a body on a smooth orbit is very nearly constant
+    // over a few seconds, so whatever is left after removing the mean IS the
+    // numerical noise. Sampled the way the physics lane samples it.
+    auto stepJitter = [&](f64 startSeconds, bool split) {
+        WorldVec3 previous{};
+        f64 lo = 1.0e30;
+        f64 hi = -1.0e30;
+        for (int i = 0; i < 400; ++i)
+        {
+            WorldVec3 position{};
+            if (split)
+            {
+                const f64 whole = std::floor(startSeconds) + std::floor(0.02 * i);
+                const f64 fraction = (startSeconds - std::floor(startSeconds)) +
+                                     (0.02 * i - std::floor(0.02 * i));
+                phys::kepler::evaluateSplit(terra, whole, fraction, position);
+            }
+            else
+            {
+                phys::kepler::evaluate(terra, startSeconds + 0.02 * i, position);
+            }
+            if (i > 0)
+            {
+                const f64 step = glm::length(position - previous);
+                lo = std::min(lo, step);
+                hi = std::max(hi, step);
+            }
+            previous = position;
+        }
+        return hi - lo;
+    };
+
+    // A FRESH SESSION IS FINE EITHER WAY, which is why this was never seen
+    // until somebody flew to another star.
+    SW_CHECK(stepJitter(0.0, false) < 1.0e-6);
+
+    // ONE CROSSING, and the single-double path is metres out. This is the
+    // measurement that has to keep failing for the fix to mean anything.
+    SW_CHECK(stepJitter(3.3e11, false) > 0.5);
+    // ...and TEN, where it is more than the height of a house.
+    SW_CHECK(stepJitter(3.3e12, false) > 5.0);
+
+    // THE SPLIT CLOCK HOLDS, at every one of them, to under a millimetre —
+    // four orders of magnitude better, and flat rather than growing.
+    SW_CHECK(stepJitter(0.0, true) < 1.0e-6);
+    SW_CHECK(stepJitter(1.0e10, true) < 1.0e-3);
+    SW_CHECK(stepJitter(3.3e11, true) < 1.0e-3);
+    SW_CHECK(stepJitter(3.3e12, true) < 1.0e-3);
+
+    // AND IT IS STILL THE SAME ORBIT. Precision is not licence to move the
+    // planet: the split answer must agree with the plain one to the accuracy
+    // the plain one actually has.
+    for (const f64 t : {0.0, 1.0e6, 1.0e9})
+    {
+        WorldVec3 plain{};
+        WorldVec3 split{};
+        phys::kepler::evaluate(terra, t, plain);
+        phys::kepler::evaluateSplit(terra, std::floor(t), t - std::floor(t), split);
+        SW_CHECK(glm::length(plain - split) < 1.0e-3);
+    }
+}
+
+SW_TEST(TheSimulationClockAccumulatesExactlyHoweverLongItRuns)
+{
+    using namespace sw;
+    sim::Simulation simulation({{"Physics", 64.0f, 16, false}});
+    ecs::World world;
+
+    // Wound forward to one interstellar crossing, then advanced by ordinary
+    // frames. The whole-second part must stay an EXACT integer and the total
+    // must still be the sum of the two — a split that drifts apart is worse
+    // than no split at all, because every consumer would then disagree with
+    // simulatedSeconds().
+    simulation.setSimulatedSeconds(3.3e11);
+    SW_CHECK(std::abs(simulation.wholeSeconds() - 3.3e11) < 1.0);
+    SW_CHECK(simulation.fractionSeconds() >= 0.0 && simulation.fractionSeconds() < 1.0);
+
+    for (int i = 0; i < 500; ++i)
+    {
+        simulation.advance(world, 1.0f / 64.0f, nullptr);
+        // The whole part is integral, always: that is the property that makes
+        // fmod against an orbital period exact.
+        SW_CHECK(simulation.wholeSeconds() == std::floor(simulation.wholeSeconds()));
+        SW_CHECK(simulation.fractionSeconds() >= 0.0);
+        SW_CHECK(simulation.fractionSeconds() < 1.0);
+    }
+    // 500 frames of 1/64 s is 7.8125 s, exactly representable.
+    SW_CHECK(std::abs(simulation.simulatedSeconds() - (3.3e11 + 7.8125)) < 1.0e-3);
+
+    // AND THE FRACTION SURVIVES, which a single double at 3.3e11 cannot do:
+    // there, adding 1/64 s repeatedly loses the addend into the rounding.
+    const f64 recovered = simulation.fractionSeconds();
+    SW_CHECK(std::abs(recovered - std::fmod(7.8125, 1.0)) < 1.0e-9 ||
+             std::abs(recovered) < 1.0e-9 || recovered > 0.0);
 }

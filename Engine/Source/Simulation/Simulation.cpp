@@ -45,6 +45,20 @@ namespace sw::sim
         return m_owner->simulatedSeconds() - m_accumulator;
     }
 
+    void SimulationLane::presentSecondsSplit(f64& outWhole, f64& outFraction) const
+    {
+        // The lane's present is the master clock minus its own un-ticked
+        // residue, and the subtraction has to happen in the FRACTION so the
+        // whole part stays an exact integer. The accumulator is under one
+        // step — a fiftieth of a second on the physics lane — so the borrow
+        // is at most one.
+        outWhole = m_owner->wholeSeconds();
+        outFraction = m_owner->fractionSeconds() - m_accumulator;
+        const f64 borrow = std::floor(outFraction);
+        outWhole += borrow;
+        outFraction -= borrow;
+    }
+
     void SimulationLane::advance(f64 scaledDeltaSeconds, ecs::World& world, ThreadPool* pool,
                                  bool warnOnDrop)
     {
@@ -113,11 +127,14 @@ namespace sw::sim
 
     std::vector<LaneConfig> Simulation::defaultLanes()
     {
-        // Physics: strict fixed step (numerical integration). 16 catch-up
-        // ticks/frame covers PHYSICS WARP (full simulation up to x5 time
-        // scale — drag, thrust and collisions stay live) at 20+ FPS. All
-        // other lanes are rate-based and bulk-consume their backlog, which
-        // keeps production/logistics/economy EXACT under extreme time warp.
+        // Physics: strict fixed step (numerical integration). Sixteen
+        // catch-up ticks/frame is the RESTING budget — enough for x5 at
+        // 20 FPS, and small enough that one hitch frame at x1 cannot burn a
+        // second of simulation. The game raises it (setMaxTicksPerFrame) for
+        // whatever physics-warp rung the pilot selects and lowers it again
+        // afterwards; see the note on that setter. All other lanes are
+        // rate-based and bulk-consume their backlog, which keeps
+        // production/logistics/economy EXACT under extreme time warp.
         return {
             {"Physics", 50.0f, 16, false},
             {"Logistics", 10.0f, 4, true},
@@ -144,7 +161,28 @@ namespace sw::sim
                 scaled = std::min(scaled, lane->remainingCapacitySeconds());
             }
         }
-        m_simulatedSeconds += scaled;
+        // CARRIED, NOT ACCUMULATED INTO ONE DOUBLE. Adding 0.02 to a double
+        // already holding 3e11 loses the 0.02 into the rounding; keeping the
+        // whole seconds exact and the fraction separate keeps every tick's
+        // time to seventeen digits however long the session has run. See
+        // Simulation::wholeSeconds() for what that is worth in metres.
+        m_fractionSeconds += scaled;
+        const f64 carry = std::floor(m_fractionSeconds);
+        m_wholeSeconds += carry;
+        m_fractionSeconds -= carry;
+
+        // WHAT THE HARDWARE ACTUALLY PAID. `scaled` has just been clamped to
+        // what the strict lanes can integrate, so its ratio to the frame is
+        // the time scale the world really ran at. Smoothed over roughly a
+        // second (the frame-rate jitter underneath it is not information)
+        // and only meaningful while running: a paused frame returns early.
+        {
+            const f64 delivered = scaled / static_cast<f64>(frameDeltaSeconds);
+            const f32 smoothing =
+                std::min(1.0f, frameDeltaSeconds / 1.0f); // ~1 s time constant
+            m_achievedTimeScale +=
+                (static_cast<f32>(delivered) - m_achievedTimeScale) * smoothing;
+        }
 
         // Backlog drops are the EXPECTED regime during time warp; only warn
         // about them when running near real time (a genuine slow frame).
@@ -180,7 +218,16 @@ namespace sw::sim
         // What makes the number safe is that above physics warp nothing is
         // integrated: every orbit is analytic, and the rate-based lanes
         // bulk-consume whatever interval they are handed, exactly.
-        const f32 clamped = std::clamp(scale, 0.0f, 1.0e7f);
+        //
+        // AND THEN THE LADDER LEFT THE SYSTEM. Four light-years is 4.0e16
+        // metres; at a hundred kilometres a second that is thirteen thousand
+        // years, and ten million is still a fortnight of sitting there. A
+        // billion makes the crossing seven minutes and ten billion makes it
+        // forty seconds, which is the difference between a destination and a
+        // number on a map. The ceiling here is the ladder's top rung and
+        // nothing else — WHERE that rung may be selected is a separate
+        // question, answered by maxWarpForSpace().
+        const f32 clamped = std::clamp(scale, 0.0f, 1.0e10f);
         if (clamped != m_timeScale)
         {
             m_timeScale = clamped;

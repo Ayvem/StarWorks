@@ -18,6 +18,7 @@
 
 #include "TestFramework.hpp"
 
+#include <Input/Input.hpp>
 #include <UI/HudOrder.hpp>
 
 #include <algorithm>
@@ -171,4 +172,142 @@ SW_TEST(HudOrderHandlesTheDegenerateFrames)
     const std::vector<u32> order = hudDrawOrder(inverted);
     SW_CHECK_EQ(order[0], 1u); // the background, though submitted second
     SW_CHECK_EQ(order[1], 0u);
+}
+
+// ============================================================================
+// A QUICK CLICK, TOLD APART FROM A DRAG
+//
+// The right button turns the camera when held and works a part's switches when
+// tapped, and the only thing separating the two is how long it was down and how
+// far the mouse went. The first attempt used six pixels of travel and no time
+// bound at all — and never fired once, because six pixels is inside the slop of
+// an ordinary click on an ordinary mouse.
+// ============================================================================
+SW_TEST(AQuickClickIsShortAndStillAndADragIsNeither)
+{
+    using sw::Input;
+    // A tap: a few hundredths of a second, a few pixels of shake.
+    SW_CHECK(Input::isQuickClick(0.04f, 0.0f));
+    SW_CHECK(Input::isQuickClick(0.12f, 9.0f));
+    // ...and the shake is allowed to be real. This is the case the six-pixel
+    // bound rejected, which is why the feature appeared to do nothing at all.
+    SW_CHECK(Input::isQuickClick(0.10f, 30.0f));
+
+    // A SLOW, CAREFUL DRAG covers almost no distance and is still a drag.
+    SW_CHECK(!Input::isQuickClick(1.50f, 4.0f));
+    // A FAST FLICK covers a lot in very little time and is also a drag.
+    SW_CHECK(!Input::isQuickClick(0.08f, 400.0f));
+    // Both bounds are needed: neither of the two above is caught by the other.
+    SW_CHECK(!Input::isQuickClick(0.9f, 300.0f));
+
+    // Exactly on the boundary counts as a click — a threshold that excluded
+    // its own value would make the documented limit a lie by one epsilon.
+    SW_CHECK(Input::isQuickClick(Input::kQuickClickSeconds, Input::kQuickClickPixels));
+    SW_CHECK(!Input::isQuickClick(Input::kQuickClickSeconds + 0.01f, 0.0f));
+    SW_CHECK(!Input::isQuickClick(0.0f, Input::kQuickClickPixels + 1.0f));
+}
+
+// ============================================================================
+// WHICH PANEL A CLICK BELONGS TO
+//
+// The second HUD rule that was invisible in review and infuriating on screen.
+// Every clickable rectangle carries a number, the ranges are open-ended upward
+// so each panel has room to grow, and a chain of `if (id >= N)` tests is then
+// only correct written in DESCENDING order of N.
+//
+// It was not. The part menu's ids start at 900 and its test sat BELOW the build
+// menu's `id >= 400`, so every press of OPEN or TURN OFF on a solar array was
+// read as "arm building number 500" and silently did nothing. The menu opened,
+// the rows highlighted under the cursor, and the panel never moved.
+//
+// Every case below fails against that ordering.
+// ============================================================================
+
+#include <UI/HudRoute.hpp>
+
+SW_TEST(TheBuildMenuDoesNotSwallowThePartMenusButtons)
+{
+    // THE BUG, EXACTLY. 900 is above 400, so a chain that tests 400 first
+    // answers BuildArm for every row of the part menu.
+    for (u32 slot = 0; slot < ui::kHudPartAnimationSlots; ++slot)
+    {
+        const ui::HudRoute route = ui::routeHudClick(900u + slot, false, false);
+        SW_CHECK(route.action == ui::HudAction::PartAnimation);
+        SW_CHECK_EQ(route.index, slot);
+    }
+
+    // ...and the build menu still owns its own range, which is the half of
+    // the fix that is easy to break while making the other half work.
+    const ui::HudRoute build = ui::routeHudClick(400u + 17u, false, false);
+    SW_CHECK(build.action == ui::HudAction::BuildArm);
+    SW_CHECK_EQ(build.index, 17u);
+}
+
+SW_TEST(NineHundredMeansTheAssemblyCatalogueWhileItsPanelIsOpen)
+{
+    // 900+ is the one range two panels genuinely share, and the machine's
+    // configuration panel being open is what separates them: the part menu is
+    // only ever collected while it is closed.
+    const ui::HudRoute vab = ui::routeHudClick(903u, true, false);
+    SW_CHECK(vab.action == ui::HudAction::VabSelect);
+    SW_CHECK_EQ(vab.index, 3u);
+
+    const ui::HudRoute part = ui::routeHudClick(903u, false, false);
+    SW_CHECK(part.action == ui::HudAction::PartAnimation);
+
+    // The part menu's range is BOUNDED at the number of animations a part can
+    // carry, so an id above it falls through exactly as it did before the fix
+    // rather than being eaten by a range that grew to fill the gap.
+    const ui::HudRoute beyond =
+        ui::routeHudClick(900u + ui::kHudPartAnimationSlots, false, false);
+    SW_CHECK(beyond.action == ui::HudAction::BuildArm);
+}
+
+SW_TEST(HudRoutingIsOrderedByDescendingRange)
+{
+    // THE INVARIANT, checked over every id any panel can emit: an id must
+    // route to the OWNER of its range and never to a lower, wider one. Written
+    // as a table so adding a range means adding a row here.
+    struct Case
+    {
+        u32 id;
+        bool configTarget;
+        bool mapView;
+        ui::HudAction expected;
+    };
+    const Case cases[] = {
+        {2000, false, false, ui::HudAction::Shell},
+        {2431, true, true, ui::HudAction::Shell},   // even over an open panel
+        {1100, false, false, ui::HudAction::NetSyncTo},
+        {1000, false, false, ui::HudAction::NetHost},
+        {1001, false, false, ui::HudAction::NetJoin},
+        {1002, false, false, ui::HudAction::NetLeave},
+        {1003, false, false, ui::HudAction::NetAddress},
+        {900, true, false, ui::HudAction::VabSelect},
+        {900, false, false, ui::HudAction::PartAnimation},
+        {899, true, false, ui::HudAction::VabCancel},
+        {898, true, false, ui::HudAction::VabProduce},
+        {617, true, false, ui::HudAction::RecipeChoice},
+        {601, true, false, ui::HudAction::PowerPriority},
+        {600, true, false, ui::HudAction::RecipeStop},
+        {400, false, false, ui::HudAction::BuildArm},
+        {301, false, true, ui::HudAction::MapWarpToNode},
+        {300, false, true, ui::HudAction::MapCycleVessel},
+        {207, false, false, ui::HudAction::HangarAction},
+        {100, false, false, ui::HudAction::PalettePart},
+        {2, false, false, ui::HudAction::SasMode},
+    };
+    for (const Case& c : cases)
+    {
+        SW_CHECK(ui::routeHudClick(c.id, c.configTarget, c.mapView).action == c.expected);
+    }
+
+    // THE MAP OWNS ONLY ITS OWN BUTTONS. A hangar or cockpit id pressed while
+    // the map is up must do nothing at all — not the nearest thing below it.
+    SW_CHECK(ui::routeHudClick(207u, false, true).action == ui::HudAction::None);
+    SW_CHECK(ui::routeHudClick(100u, false, true).action == ui::HudAction::None);
+    SW_CHECK(ui::routeHudClick(2u, false, true).action == ui::HudAction::None);
+    // ...but the map's own two, and everything above them, still work there.
+    SW_CHECK(ui::routeHudClick(300u, false, true).action == ui::HudAction::MapCycleVessel);
+    SW_CHECK(ui::routeHudClick(901u, false, true).action == ui::HudAction::PartAnimation);
 }

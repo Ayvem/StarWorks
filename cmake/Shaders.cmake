@@ -86,9 +86,24 @@ function(sw_compile_shaders target)
     set_target_properties(${target}_Shaders PROPERTIES FOLDER "Shaders")
     add_dependencies(${target} ${target}_Shaders)
 
-    # Mirror compiled shaders next to the executable (works for
-    # multi-config generators like Visual Studio as well).
-    add_custom_command(TARGET ${target} POST_BUILD
+    # Mirror compiled shaders next to the executable.
+    #
+    # THIS HANGS OFF THE SHADER TARGET, NOT THE EXECUTABLE, and the difference
+    # is the single most expensive build bug this project has had. As a
+    # POST_BUILD on ${target}, the copy ran only when the EXECUTABLE was
+    # relinked. Edit a shader and nothing else: glslang recompiles the .spv
+    # into ${out_dir}, the link step has nothing to do, the copy never runs,
+    # and the game loads the PREVIOUS shader out of bin/Shaders. The build
+    # succeeds. Nothing warns. Every capture is of the old code, and the
+    # obvious conclusion — "my change did nothing, the theory must be wrong" —
+    # is exactly backwards.
+    #
+    # A custom target is always considered out of date, so this copy runs on
+    # every build. Four small files; correctness is not negotiable against
+    # that.
+    add_custom_command(TARGET ${target}_Shaders POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                $<TARGET_FILE_DIR:${target}>/Shaders
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 ${out_dir} $<TARGET_FILE_DIR:${target}>/Shaders
         COMMENT "Copying shaders next to $<TARGET_FILE_NAME:${target}>"

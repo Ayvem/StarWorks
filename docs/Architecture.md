@@ -1170,5 +1170,1613 @@ uses, the arithmetic that has now caught its fifth HUD overflow
 column) — and that label lost its parentheses, because the 5x7 charset never
 had `(` and had been silently rendering spaces in their place since F9.
 
+### F14 — the whole solar system, and the ring that was invisible (done)
+
+**Eighteen new bodies from one table and one loop.** Mercury, Venus, Jupiter with
+the four Galilean moons, Saturn with Enceladus, Rhea and Titan, Uranus with Titania
+and Oberon, Neptune with Triton, and Mars's two captured rocks — real radii, real GM,
+real semi-major axes, eccentricities and inclinations, real SOI radii computed as
+`a·(μ/μp)^(2/5)`. The scene builder gained no eighteen copy-pasted blocks: a
+`PlanetDef`/`MoonDef` table and one loop, because eighteen hand-built bodies is
+eighteen chances to typo a mantissa. Two rules in the table are worth naming. **A
+moon's spin is computed, not typed**: every one is tidally locked, so its rate is
+`sqrt(μp/a³)` from its own orbit and cannot disagree with it. And **Phobos and
+Deimos are scenery on rails**: their SOI radii come out at 7 km and 3 km — INSIDE
+their own rock — so they get no gravity, no ground, and no pretense; a docking-scale
+visit is a milestone of its own. Uranus rolls on its side (97.8°), Venus spins
+backwards (axis flipped), Triton orbits backwards (i = 157°) — the one moon in the
+sky that rises where the others set.
+
+**Eleven new landable worlds through one parameterised preset.** The terrain system
+keys its presets by style id in two places that must not drift — `Planet/Terrain.hpp`
+and its GLSL mirror — so eleven new worlds did not get twenty-two hand-copied
+parameter blocks: one `presetSmallWorld(seed, amplitude, frequency, ...)` helper in
+each language, eleven one-line calls, and the parity harness extended from three
+worlds to fourteen. `PARITY OK`, elevation delta 0.000000 m on every one. The
+palettes are families: young ice (Europa's rust lineae, Enceladus's south-polar
+stripes, Triton's dark streaks — the family trait is cracks, thin lanes where
+|fbm−0.5| pinches to zero), old ice-rock (Ganymede's grooves, Callisto darkest,
+Oberon reddened), Io's sulfur with SO₂ frost and eruption floors, Titan's dune belts,
+Mercury's baked lunar bones. Deposits follow the geology: the ice moons are
+propellant country, Io is metal with not a gram of water, Mercury hides its ice in
+the polar craters at bias 0.98.
+
+**The gas worlds are a second shading family, not a terrain.** Styles ≥ 20 skip the
+heightfield entirely: latitude bands warped by low-frequency turbulence, per-planet
+ramps, the Great Red Spot fixed in Jupiter's body frame (longitude distance via
+`cos(lon−lon₀)` — no `mod()`, whose negative behaviour differs between GLSL and C),
+Neptune's methane streaks, Venus's featureless chevrons — a rocky planet whose
+visible surface is nonetheless a cloud deck nobody sees through, and whose ground is
+deliberately a later milestone. The same function exists twice, C++ and GLSL,
+because beyond close orbit the vertex-coloured LODs are all anyone sees.
+
+**Saturn's rings were invisible on the first run, and the reason is a material.**
+The annulus (1.24 R to 2.27 R, radial-noise bands, an alpha gap for the Cassini
+division and a thin one for Encke, tilt BAKED into the vertices) rendered as
+nothing — because every transparent `MeshComponent` was routed to the atmosphere
+shell material, and a fresnel limb evaluated on a flat annulus is a ring-shaped
+nothing. `MeshComponent::kLitTransparent` now says what the cloud-deck flag already
+said: the material is part of the mesh's identity, not a guess made at draw time.
+
+**And the map taught the far-plane lesson.** Framing Neptune needs a zoom ceiling of
+1.3e13 m; the map camera's far plane was 2e12; past it the entire universe clipped
+to an empty screen with one beacon label in it. A zoom ceiling and a far plane are
+the same number written in two places — they now agree (far 3e13), and the whole
+system fits on one screen, markers, rings and all. Boot pays for the new worlds:
+BUILDING THE SYSTEM colours five LODs for fourteen relief worlds (~40 s single-core
+under llvmpipe, far less on real hardware); parallelising the LOD builds across the
+thread pool is the obvious next cut and is listed below.
+
+### F14b — creative mode: the fuel stays in the tanks (done)
+
+**One flag, chosen where a mode belongs and applied where the fuel burns.** The
+title screen's root page gained a row under NEW GAME — `MODE - SURVIVAL` /
+`MODE - CREATIVE - NO FUEL BURN` — that decides what the NEXT new game is.
+Mid-session the row only reports: the mode is part of the save, and flipping a
+survival world to creative from the pause menu is the kind of decision a save file
+should not have made behind it.
+
+The mechanics are three small pieces with one idea each. `ThrustSystem` carries
+`setInfiniteFuel` — a flag on the SYSTEM, not per-entity state, because the mode
+belongs to the session, and the host owns it in multiplayer for the same reason it
+owns everything else. The skip sits exactly at the burn (`fuelNeeded > 0 &&
+!m_infiniteFuel`): full thrust, nothing leaves the tanks — deliberately not a
+"refill afterwards", which would jiggle the vessel's mass through the assembly pass
+every tick. And the game keeps a pointer to the system it registered
+(`m_thrustSystem`, the `m_aerodynamics` pattern) so `applyCreativeMode()` can reach
+it at wiring time, at NEW GAME, and after a load.
+
+**The save carries it: version 10.** One byte appended to the session block; v9
+saves load as survival by definition (they predate the mode), and the loader accepts
+both. The HUD stops pretending: `FUEL INF - CREATIVE` instead of a kilogram count
+that cannot fall — and the low-fuel warning cannot go red over a number that means
+nothing. Verified end to end on the real binary: toggle, `New game (CREATIVE)` in
+the log, the HUD line, F5 (v10 on disk, flag byte set), F9, still creative.
+
+### F14c — the map camera learns to visit (done)
+
+**Tab, in the map, cycles the body the camera orbits.** The default is unchanged
+and stays the natural one — AUTO follows the controlled craft's SOI primary, the
+smallest body whose gravity owns you — but planning an arrival is done from the
+OTHER end: drag a node for a Jupiter transfer and the encounter markers land on a
+pixel three screens from home. Tab now walks AUTO → Sol → Terra → Luna → … →
+Triton → AUTO (Shift+Tab backwards), and the map camera rides the chosen body
+wherever the craft is. This is a camera, not a frame of physics: nothing about the
+craft, the prediction or the node changes — only where the eye stands.
+
+**And the zoom follows the body, which is what makes the cycle real.** The first
+build cycled correctly and LOOKED broken: a height tuned for Terra (6e7 m) is
+inside Sol (radius 7e8 m) and inside Jupiter, so Tab appeared to skip the giants —
+the camera was standing in their interiors. Arriving on a body now reframes to at
+least four of its radii, and the zoom floor is per-body (1.5 radii of whatever the
+camera orbits) instead of one global constant that three bodies in the system are
+bigger than.
+
+Three small rules keep it honest. The focus is VIEW state, not save state: a new
+game and a load both reset it to AUTO, because an index into a rebuilt celestial
+table would point at whatever now lives there. In flight Tab still toggles chase
+and free camera — the same key, owned by whichever view is up, never both. And the
+map's mode line says what the camera is doing (`MAP  FOCUS AUTO TERRA - TAB
+CYCLES`, or the picked body's name), because a control that exists in one view
+only is a control nobody finds.
+
+### F14d — planets stop shouting from orbit (done)
+
+**The mid-range band looked crumpled into ten-kilometre mountains, and the number
+says why.** Three relief pipelines light the ground, by distance: the terrain patch
+up close, the per-fragment procedural path under 1.6 R (normal exaggeration
+**x5.5**, tilt capped at 45°), and the baked vertex normals of the LOD spheres
+everywhere else — still carrying M22's **x220**, tuned when they were the only
+relief in the game, with no cap at all. Forty times louder than the path it hands
+over to: from orbit the planet read as foil, then ironed itself smooth on approach
+exactly at the 1.6 R line.
+
+The vertex exaggeration is now 22 on the closest LOD (its gradients are sampled
+over a ~25 km arc, already smoothed, so a little more than 5.5 compensates), 9 on
+the next, and the tilt is capped at 45° like the shader's `kMaxNormalTilt` — the
+saturated-everywhere look WAS the missing cap. Albedo relief (snow lines, rock,
+altitude tints) is untouched: from space a mountain range should read as colour
+and, at the terminator, a whisper of shading — not as geometry the size of the
+atmosphere. One constant per LOD in `makeSphereLodSet` if taste says otherwise.
+
+### F15 — the Endurance, and learning to fly it (done)
+
+**The ring ship from Interstellar, and the rule it proves: a famous silhouette is
+just a blueprint this engine can already express.** Ten `.swpart` files — EN-1
+habitat, EN-2 propulsion, EN-3 command, EN-4 connecting tunnel, EN-5 Ranger, EN-6
+Lander, EN-7 cargo pod, EN-8 cryogenic bay, EN-9 core docking hub, EN-10 core
+spoke, stable ids 200–209 — and not one of them knows it is part of a ring. Each
+is authored like every part before it: composed primitives, nodes on the collider
+surface, authored hitboxes, honest masses. The SHIP is `buildEndurance()` in
+GameScene: a 35-part programmatic blueprint pushed through the very same
+`instantiateBlueprint` the hangar uses, so every module arrives as a real part
+entity with a real `HullComponent` — you can walk into the Endurance, not through
+it — joined by real breakable joints.
+
+**The first pass was built from memory and it was wrong in the way memory usually
+is: confidently, in the shape of a different ship.** Reading the design notes
+instead of recalling them gave the real parts list: twelve modules of five kinds
+(four PROPULSION, three plasma engines apiece for twelve nozzles in all; four
+detachable CARGO pods, which are meant to come off and be the ground base; two
+HABITATS wearing photovoltaic arrays; one CRYO bay; one COMMAND module with the
+cupola), strung on twelve short TUNNELS, because the modules do not touch. Inside
+sits the core docking hub — six berths, the "mounts six support craft at one
+time" the design claims — carried on six spokes. The ring is what you recognise;
+the core is what you dock with.
+
+The trigonometry is one paragraph and it now checks itself twice. Module centres
+sit on the apothem a = 29.4 m of a regular dodecagon, so the outer faces land at
+32.0 m and the ring measures the film's 64 m across; each polygon vertex is
+exactly a·tan(15°) = 7.88 m along the tangent from its module's centre, leaving
+1.68 m of half-tunnel; and the hub's 3.4 m skin plus a whole 23.6 m spoke lands on
+the inner faces at 27.0 m to the centimetre. `buildEndurance` compares the first
+against the tunnel actually shipped, and `EnduranceCatalogueDescribesAFlyableRing`
+asserts all of it against the shipped catalogue — widen a module in Part Studio
+and a test says so instead of twelve joints quietly opening. **Nodes are resolved
+BY NAME**, never by index: a blueprint that says "node 2" re-plumbs itself the day
+somebody inserts a port, and one that says "dock" fails loudly.
+
+**VESSEL FRAME: the ring axis is Z and the nose is −Z**, because −Z is where this
+engine's thrust points and the Endurance is meant to be flown. That single choice
+is why the twelve nozzles, authored on each propulsion module's own aft face, all
+fire out the ship's tail without a special case.
+
+**And it is a ship, from the first frame of a new world.** The root carries
+`ShipComponent`, controls, SAS and an `AeroStateComponent`, so `P` boards it like
+any other vessel and the bubble converts it to a real dynamic body the moment it
+becomes the focus. It flies on what the catalogue says: four propulsion modules of
+22 kN at 4,200 s — plasma, not chemical — for 88 kN over roughly 500 t, and 60 t
+of propellant in those same modules, which is a little under 4 km/s of budget.
+Power is the habitats: 400 MJ of batteries apiece and 120 kW of photovoltaics
+between them, `Battery`-typed because `SolarChargeSystem` only pays a vessel that
+carries one. **AeroForge solved a table for all ten parts** — the boxes come out
+at Cd ≈ 1.20 head-on and the tunnel and hub at 0.80 side-on, which are the
+textbook numbers for a box and a cylinder, and the Ranger is classified WING with
+Cl 1.73 at 15°, which is what a lifting body should be.
+
+Fuelling is explicit, and that is a rule showing its work: `instantiateBlueprint`
+fills only parts whose TYPE is `FuelTank`, which is what makes a tank a tank. The
+Endurance has none — its propellant lives in its engines and its joules in its
+habitats — so it is fuelled after assembly, exactly the way the starting outpost's
+battery bank is charged.
+
+**It spins at the film's 5.6 rpm, and stops when you take the controls.**
+`RailsSpinSystem` gives anything carrying both a `SpinComponent` and an
+`OnRailsComponent` an ANALYTIC rotation, angle = rate × present, for the reason
+the day cycle is analytic: under warp the Physics lane drops the backlog it cannot
+afford, and an integrated spin falls behind the orbit it is riding, then reloads at
+an angle it never passed through. The axis is read as *where the craft's own +Z is
+held in the world*, with the base derived by the shortest arc — a closed form has
+no attitude to build on, and deriving it means a ring can be parked in any plane
+without a component to store it. Rate zero means "not spinning", never "snap
+back". Because 5.6 rpm is also 0.59 rad/s of roll — a ship nobody can fly and a
+camera nobody can watch — boarding de-spins the ring, the way its crew does before
+every manoeuvre in the film, and it stays stopped: restarting it is a crew action
+this game does not have yet, and pretending otherwise would mean a ship that
+silently starts rolling the moment you look away.
+
+Parked, it rides an `OnRailsComponent` around Saturn: a = 4.0e8 m — 6.9 Saturn
+radii, clear of the rings, inside Rhea — with `dynamicMass` summed from the
+catalogue so the hand-off wakes it at the mass `VesselAssemblySystem` immediately
+recomputes from its parts. `Tools/endurance_preview/render_endurance.py` is the
+CPU twin of the blueprint math — same constants, same two joint checks — for a
+GPU-less look at the assembly. **224/224 tests, both build types.**
+
+### F16 — physics warp to x100, because ion engines are slow (done)
+
+**A plasma engine pushing five hundred tonnes at 88 kN is 0.18 m/s².** That is
+four real hours of burning for a 2.5 km/s plane change, and rails warp cannot
+help with any of it: above physics warp the integrator is switched off and the
+world goes analytic, and an analytic orbit has no engines. The Endurance arrived
+flyable and immediately proved that the interesting half of flying it was
+unreachable.
+
+**The x5 ceiling was never a stability limit, and reading the lane is what showed
+it.** `SimulationLane` integrates a FIXED step — 1/50 s — at every time scale;
+`timeScale` changes how many steps run per rendered frame, never how long one
+step is. So the integrator at x100 does precisely the arithmetic it does at x1, a
+hundred times over: same truncation error per step, same contact solver, same
+everything. What x5 actually encoded was `maxTicksPerFrame = 16`, and sixteen
+50 Hz ticks at 60 FPS is x19 and no more. The old comment said "integration at
+50 Hz stays stable to x5" and had quietly turned a budget into a law.
+
+So the budget became a knob. `setMaxTicksPerFrame` is raised to what the selected
+rung needs (x100 at 60 FPS wants 84; the cap is 128 with slack) and dropped back
+to sixteen the moment the rung does — a big budget is only wanted while somebody
+is spending it, because at x1 it is also the bound on how much simulation a
+single hitch frame may burn. Nothing here can desynchronise: strict catch-up
+already holds the master clock to what the lane consumes, so a budget the machine
+cannot afford makes the world run *slower*, never wrong.
+
+**The altitude ladder was answering a question nobody had asked it.** Its whole
+subject is how far an ANALYTIC jump may throw a craft between two rendered frames
+— which is why a million times real time is refused near a planet and allowed in
+the deep. None of that applies to physics warp, which takes its usual 1/50 s
+steps and therefore cannot skip an SOI boundary, miss a contact or outrun the
+terrain. The ladder now caps rails warp only and never pulls the ceiling below
+`kMaxPhysicsWarp`; that single line is what unstuck a burn in low orbit from x10.
+The exception is air: `kMaxAtmosphericWarp` holds x10 inside an atmosphere, and
+that limit is human rather than numerical — a winged vehicle at x100 covers a
+kilometre between two of your heartbeats and no reflex closes that loop.
+
+**And the HUD now prints what the hardware paid.** `achievedTimeScale()` is the
+clamped master-clock advance over the frame, smoothed across about a second; the
+warp line shows it beside the request whenever it falls more than 10% short, so
+`WARP X100-X47` says "this box gives you 47 of the 100 you asked for" where
+silence used to say "warp is broken". Three tests pin the lot: that every dt
+handed to a system is the lane's own step at x1, x5 and x100; that raising the
+budget on an unchanged lane takes it from 4 ticks a frame to the 50 that x100
+actually needs; and that the achieved figure converges on x8 when the budget is
+short and on x100 when it is not.
+
+For the Endurance that is a full tank — 60 t of propellant, ~5 km/s — burned in
+under five real minutes, with every newton of it integrated.
+
+### F17 — the gas giants stop looking like paint, and warp stops locking (done)
+
+**A frame from ten thousand kilometres over Saturn showed a flat grey-brown ball
+covered in a regular lattice of dark ellipses.** Both halves of that were the same
+bug, and the fix was to stop asking a noise lookup to be a band.
+
+`gasGiantAlbedo` built its banding by reading a 3-D value noise along a line —
+`fbm3(vec3(0.37, latitude * bands, 0.71))`. From orbit that *is* banding. From ten
+thousand kilometres you are inside a single lattice cell, so the planet renders as
+one flat colour with the cell lattice showing faintly through it: exactly the
+reported frame. The band profile is now PERIODIC — a zone, a belt, a zone, from a
+`sin()` — because a sine has the same amplitude whether you can see a hemisphere
+or a hundred kilometres of it. Its phase is bent by turbulence sampled **six times
+finer in latitude than in longitude**, which is the whole trick: zonal winds
+stretch eddies along the flow, and anisotropic noise turns round blobs into
+ribbons. Two further octave bands of churn are added and each is faded out by the
+fragment FOOTPRINT once a pixel covers more of the planet than the detail is wide
+— the same discipline the ground path uses, so nothing here can alias from orbit,
+and the vertex-coloured LODs get a footprint of 0.03 rad (the angle between two
+LOD0 vertices) which switches every churn octave off.
+
+The palettes were repainted at the same time, and measured rather than eyeballed:
+rendering the CPU twin at the reported altitude and taking percentiles of the
+result, Jupiter's luminance spread across the frame went from **28 levels out of
+255 to 60**, Saturn's from **16 to 39**, on a tone curve whose white point at 4.0
+compresses a 2:1 albedo ratio into about 13% of output range. That curve is why
+the old numbers looked like mud: the contrast has to be in the material because
+the grade will not give it back.
+
+**Then a frame of the WHOLE disc showed the rest of it: a beach ball.** Evenly
+spaced stripes of identical width and identical darkness, ruled edge to edge — and
+a single sine wave cannot draw anything else. The band profile is now a FIELD:
+five octaves of noise in latitude alone, so its cells *are* bands at every scale,
+from the six major belts down to the sixteenth of a belt the fifth octave draws.
+No two are the same width. A second, slower field decides how deep each belt runs,
+which is the difference between banded and striped; a `smoothstep` with a
+per-planet edge width turns the field into plateaus, because a raw fbm is a
+gradient and reads as haze; and every one of these planets gets its bright
+EQUATORIAL ZONE, which is what makes the banding read as a system with an axis
+rather than as wallpaper. Measured over two thousand latitudes, Jupiter's albedo
+now spans 0.32–1.01 against a belt colour of 0.27 — the belts reach their paint.
+
+**And the disc got LIMB DARKENING, which is the difference between a sphere and a
+painted ball.** On a rock the disc really is nearly uniform: you see the same dirt
+at the centre and at the edge. On a gas giant you do not — near the limb the line
+of sight enters the cloud deck at a grazing angle and never reaches as deep, so it
+gathers less scattered light. Every photograph of Jupiter has that dark rim, and
+without it the banding sat on the disc like a decal. A power law on the facing
+cosine in `Mesh.frag` (the cheap stand-in for the Minnaert law, indistinguishable
+from it at the angles a planet is ever seen at), mirrored into the preview tool's
+harness so the tool keeps telling the truth about what the game draws.
+
+**And a second bug fell out of reading the atmosphere code: `atmospherePreset` had
+two branches, Mars and Terra.** Every gas giant in the game was wearing Earth's
+blue Rayleigh sky. Jupiter and Saturn now get hydrogen — a third of air's
+scattering cross-section, far less blue-weighted — under a warm ammonia Mie haze
+that gilds the limb; Uranus and Neptune get the blue that is really methane
+ABSORPTION eating the red; Venus gets an all-Mie ivory deck. The layer over a gas
+giant is deliberately thin (120 km): what the renderer is drawing IS the cloud
+deck, so a deep column would only extinguish the thing it is meant to sit on.
+Tried at 320 km with Saturn's real 59 km scale height first — it dimmed the disc
+by a fifth and bought nothing. The two twins of `gasGiantAlbedo` were checked
+mechanically afterwards: **118 numeric constants, same values, same order.**
+
+**The warp lock was the other half of the report, and it was asking the wrong
+question.** `warpPermitted` refused anything that was not standing on the ground
+or in a closed orbit clearing the atmosphere. Sound intent — rails cannot express
+decay — but as a standing condition it fires on transients: nudge a burn and the
+orbit is briefly open, the ladder slams to the physics ceiling and STAYS there,
+which is how a craft 10 357 km over Saturn with a periapsis 6 000 km clear of the
+air ended up pinned at x5 with nothing on screen to explain it.
+
+The ordinary ceiling is now a question about WHERE YOU ARE and nothing else, and
+it is self-enforcing in a way the trajectory test never was: re-evaluated every
+frame, it walks a falling craft down the rungs as it descends — through the
+physics band and into the atmosphere's **x5** — instead of refusing it once, from
+high up, on a prediction. What the old gate protected against is what descending
+now does by itself. The step down sits exactly at the top of the atmosphere,
+because entering the air is the one boundary a pilot can feel; and above it the
+ladder is written in **body radii**, because the same number has to mean the same
+thing at Terra and at Saturn, which is nine times wider — in kilometres, "deep
+space" would have begun while you were still skimming Saturn's cloud tops. Every
+gravity source votes and the nearest one wins, judged in its own terms: its air,
+its radius. The reported frame is worth x1000 now.
+
+`warpPermitted` survives, scoped to the one warp that still deserves it: the
+multiplayer SYNC, which skips whatever hours separate two clocks and is the only
+warp that bypasses the altitude ladder. **228/228 tests, both build types,
+`PARITY OK`** — including a new case that pins the ceiling at the atmosphere on
+two worlds whose atmospheres differ thirtyfold, reproduces the reported frame, and
+checks the ladder is monotonic in altitude, which is the property the whole
+self-enforcing argument rests on.
+
+### F18 — continents, measured against the only planet we have a photograph of (done)
+
+**The land mask was a single call to fBm thresholded at sea level, and a plain
+fBm carries the same structure at every scale.** What that produced was not
+confetti, which is what I first said: it was the opposite. **53.4% of the globe
+was land** — one sprawling continent with inland seas, a world with lakes rather
+than a world with an ocean.
+
+The mask is now two fields. A LOW-frequency one of three octaves pushed toward
+plateaus and basins by a smoothstep — the plate, whose gradient at the shoreline
+is STEEP, which is what makes the second field behave: finer noise then displaces
+the coast by tens of kilometres instead of punching holes through the middle of a
+continent.
+
+**Every constant in it was found by search, not by eye.** `pip install
+global-land-mask` bundles Earth's real land/sea raster; `Tools/earth_reference/
+continent_stats.py` measures it on an equal-area grid and measures the procedural
+field the same way, giving three numbers to aim at: 28.9% land, largest landmass
+54.3% of it, top five 95.8%. 360 parameter combinations were scored against them.
+The shipped field measures **26.5% land with its largest continent at 54.1%**,
+in four masses. What it still lacks is Earth's fringe of small islands, which
+hold 4% of the land — the reason our top-five figure is 100% and Earth's is 96%.
+
+**And the diagnosis that cost two sessions.** The pale patches all over the ocean
+that started this were never land: they are the CLOUD DECK. The preview tool's
+header said "no clouds" and had said so since M28 added them, so three successive
+hypotheses were tested against an instrument that was lying about what it drew.
+What finally settled it was rendering the land mask ALONE as a flat map, outside
+the shader — it was clean. The comment is fixed, and it now says what it cost.
+
+**Three tests rebased, none of them softened.** Determinism went from "more than
+150 of 200 samples differ" to `differences == landInEither`: 101 samples fall on
+land in one world or the other and all 101 differ, while the other 99 agree
+because both read exactly 0 — they are at sea, and a quarter of a planet being
+ocean is not a failure of decorrelation. `TerrainV2PreservesEveryCoastline`
+pinned a contract F18 breaks on purpose and is retired, replaced by
+`TerrainIsShapedLikeAPlanetAndNotLikeConfetti`, which walks twelve great circles
+and counts shoreline crossings: 8 at worst, where a shredded coast gives dozens
+whatever its land fraction. And the mesh-versus-collider probe was re-surveyed —
+its old site is open ocean now, and the first replacement went to the other
+extreme (143 m of relief in 400 m, which no mesh follows); the final one is
+ordinary hill country, 817 m up with 34 m of relief, which is the case the
+resolution contract is actually about.
+
+### F19 — the moons get craters, the air gets a twilight, the rings get a shadow (done)
+
+**THE MOONS.** Twelve worlds rendered as grey speckled balls; they are now
+dominated by impact craters across six size classes, from 140 km walled plains
+down to 700 m pits, each with a darker floor, a bright rim and an ejecta blanket,
+plus ray systems from the youngest impacts. Two sites per lattice cell rather
+than one, because one site of mean radius covers only 6% of the ground and five
+classes of that is dots on a smooth ball; two takes a class to 19% and six
+classes to saturation, which is what a highland is. The field's mean was measured
+at +0.0248 over four million samples and is compensated, so a body does not
+change brightness as classes fade out with distance. Per-body character followed:
+Callisto saturated wall to wall, Europa smooth young ice with almost none, Io
+with **no craters at all** because it resurfaces itself, Enceladus's tiger
+stripes, Ganymede's grooves.
+
+**THE AIR.** Five things were keeping the limb flat, four of them physics the
+model had left out. The TANGENT-HEIGHT sun path: past the terminator the ray to
+the sun does not climb out of the air, it dives through it and comes back up on
+the far side, so it is filtered at the tangent height and crosses that air twice
+— the old code clamped the airmass at its horizon value, so light stopped
+reddening exactly where a real twilight starts. OZONE, which absorbs and does not
+scatter: invisible looking up (0.028 of an optical depth), worth 1.0 along a
+horizontal path at 25 km, and the reason deep twilight is violet rather than
+brown. A bounded MULTIPLE-SCATTERING gain, 3.3x on the limb and 1.3x at nadir,
+which is the shape the real thing has. NIGHTGLOW, integrated analytically because
+a 20 km shell falls between two samples of any march that can afford to exist.
+And an ENERGY-CONSERVING segment integral: a rectangle rule cannot know the slab
+it integrates is opaque, and a limb ray is eighteen optical depths of opaque —
+the old march came out 30% bright on the rim's brightest pixel, and eight steps
+now land within one grey level of a hundred and twenty-eight.
+
+The shell's blend was wrong in a way only the nightglow exposed: it took its
+alpha from `1 - transmittance`, which counts the same factor twice and hands
+alpha near zero to a band that EMITS and has no extinction of its own. Above
+about 72 km the airglow was being discarded outright. Coverage now comes from the
+graded colour and the colour is pre-divided by it.
+
+**THE RINGS.** `ringOpacity(r)` is now the ring — edges, Cassini, Encke, ringlets
+— written once and mirrored exactly (worst delta over 200 001 radii: 0.000e+00),
+called BOTH by the mesh that draws the annulus and by the planet's shading to
+work out how much sunlight a ring radius takes from the cloud tops below it. A
+shadow cast by different gaps than the ones you can see is worse than no shadow.
+The band of ring shadow lying across Saturn is in every photograph of the planet
+and in almost no game; it costs one ray-plane intersection in the body frame,
+where the equator IS the ring plane. Grazing light crosses more ring material
+exactly as it crosses more air, so the shadow is darkest when the sun is lowest
+over the plane. The annulus went from 40 radial steps to 160 — radial is where
+all of a ring system's structure lives — and the C, B and A rings no longer share
+one colour.
+
+That shadow shipped WRONG and the bug is worth keeping written down, because it
+is a units mistake wearing the costume of a physics one. Grazing light really
+does cross more ring, so the first version multiplied the ring's opacity by the
+slant factor `1 / |sun.y|` and subtracted the result from one. But an opacity is
+already `1 - exp(-tau)` — it is a fraction, it saturates at one, and it has no
+business being multiplied by anything. At a slant of twelve an opacity of 0.9
+becomes 10.8, and `1 - 10.8` clamps to the floor: half of Saturn's disc went flat
+black behind a perfectly straight edge, visible from the Endurance's orbit as a
+bite taken out of the planet. The fix is to go back to the quantity that IS
+linear in path length — the optical depth `tau = -log(1 - opacity)` — scale THAT,
+and come back out through `exp(-tau * slant)`. The slant is capped at 3 and the
+result floored at 0.18: the sun is never in the ring plane for long, and the
+alternative to a cap is a silhouette. Anything that scales with distance
+travelled scales in log space; opacity, alpha and coverage never do.
+
+**THE AURORA (F20).** It was blocked on a mesh, not on optics: the atmosphere
+shell was drawn at 83 km, and a layer above the mesh has no fragment to be
+drawn into. Raising it to 350 km costs 8% more sky at the same distance and
+buys both the nightglow at its real altitude and the curtains. What is drawn is
+an OVAL, not a cap, tilted 4.5 degrees toward midnight off a magnetic axis
+tilted 11 degrees off the spin axis — one displacement, and the ring sits at
+magnetic latitude 67 at midnight and 76 at noon, keeps facing the night with
+nothing telling it where the night is, and needs no time input. The curtain
+pattern is a function of DIRECTION ONLY, which is the whole trick: feed the
+same value to samples at 100 km and at 300 km and a twelve-step march draws a
+vertical sheet for free. Green (557.7 nm) is quenched below 90 km and out of
+oxygen above 185; red (630.0 nm) needs 110 seconds to radiate, so it is
+hopeless below 200 km and easy above it — which is why a strong display is
+green with a red crown and never the other way round.
+
+The radiance is NOT physical and the first version's was. An IBC III display
+puts the green thread at a linear 0.06 seen from orbit; that measured out at
+sRGB 93 green over a night side at 58, a grey-green fog twenty levels above the
+ground it was lighting. Nothing was wrong with the number — the fault is
+downstream and unfixable from the shader. The grade lifts blacks to sRGB 37 so
+shadows breathe and desaturates by a fifth for film; both are right for a lit
+frame and both are poison for a faint one, because an additive lift eats chroma
+in proportion to how dark the subject is. So the amplitude is set from the
+OUTPUT: 4.5x, landing the brightest thread near linear 1.0 and roughly
+(135, 250, 153) after the grade. That is a long exposure rather than an eye,
+which is the only aurora anyone has actually seen. Twelve march steps and
+forty-eight produce the SAME image to the byte — the banding on an oblique pass
+is the ring seen edge-on, not the quadrature, and that was checked rather than
+assumed.
+
+## Milestone 33 — the night the renderer got a mirror
+
+**THE TOOL FIRST, AND IT PAID FOR ITSELF IN AN HOUR.** `--capture <path>` writes
+the last frame of a `--frames N` run to a PNG, straight off the swapchain, with
+a forty-line deflate-stored PNG writer that needs no zlib. Together with
+`--cpu` (llvmpipe), `xvfb-run` and the `SW_SHOT=BODY@RADII` camera, a build can
+now be POINTED AT A PLANET AND PHOTOGRAPHED, headless, from a shell script.
+
+That matters because the CPU preview — the instrument this project had been
+judging planets with for four milestones — ray-casts the FRAGMENT path and
+nothing else. It cannot see which pipeline an object took, whether it was
+shaded per-vertex or per-fragment, how a blend resolved, what a mesh's
+silhouette does, or what the tessellation leaks into the shading. Every bug
+below was invisible to it, and every one of them was in the shipped frame. The
+preview was right and the game was wrong, for months, and nothing in the loop
+could tell the difference.
+
+**THE BUILD WAS LYING.** The shader mirror step was a POST_BUILD on the
+executable, so it only ran when the executable was relinked. Edit a shader and
+nothing else: glslang recompiles the SPIR-V into the build directory, the link
+step has nothing to do, the copy never runs, and the game loads the PREVIOUS
+shader out of `bin/Shaders`. The build succeeds. Nothing warns. The obvious
+conclusion — "my change did nothing, so the theory must be wrong" — is exactly
+backwards, and it cost a diagnostic that read as a disproof. The copy hangs off
+the shader target now, which is always out of date, so it always runs.
+
+**EVERY OUTER PLANET WAS UNLIT.** `vSunDirBody` was computed as
+`transpose(rotation * radius) * (sunPosition - worldPosition)` and normalized in
+the fragment shader, on the reasoning that the length is irrelevant. The
+mathematics agrees; f32 does not. Saturn is 1.43e12 m from the sun and 5.82e7 m
+in radius, so the product is 8e19 — and `normalize` SQUARES its argument first.
+6.9e39 is past the f32 ceiling of 3.4e38, so the length was infinity, the
+direction NaN, and every lambert term on the planet zero. Jupiter, Saturn,
+Uranus and Neptune were drawn with nothing but the 2% cold ambient. That is why
+they looked like grey balls no matter what the surface shader did, and it is
+why the player kept reporting it. Terra survived on luck: 6.37e6 x 1.5e11
+squares to 9e35, one part in four hundred under the ceiling. Normalize before
+the matrix and every intermediate stays near 1.
+
+**THE EXPENSIVE PATH WAS OFF WHERE IT WAS CHEAP.** The per-fragment planet
+shading was gated on `distance < 1.6 radii` — 93 000 km on Saturn — with the
+reasoning that it should only run where its sharpness shows. Backwards: a
+fragment shader costs per PIXEL, and a planet's pixel count falls as the square
+of the distance. At two radii it runs on a third of the screen, at seven on two
+per cent of it. The gate was turning the good path off exactly where it was
+free, and handing the body to the vertex path, whose cost is fixed and whose
+quality is a LOD sphere's worth of quads. There was nothing left to trade.
+
+**THE MESH WAS LEAKING INTO THE SHADING, THREE WAYS.** A latitude-longitude
+grid, four grey levels deep, lay over every gas giant. It was blamed on the
+mesh, then the derivative, then the noise's interpolant, then the dither, then
+the churn octaves — six hypotheses, each measured and each wrong — before a
+high-pass of a headless capture and a term-by-term bisection found the three
+real culprits:
+
+- `fwidth(normalize(modelPosition))` as the LOD footprint. It asks the
+  RASTERISER how fast the body direction changes, and the rasteriser answers
+  with a number that has the tessellation in it. Replaced with the analytic
+  footprint — pixel angle times distance over radius times cos incidence — the
+  same formula the CPU preview has always used, which is precisely why the
+  preview never showed the bug;
+- the shading DIRECTION itself, taken from the interpolated mesh position,
+  which lies on the flat facet rather than the sphere. Replaced with a ray-
+  sphere intersection in body space from a `flat` camera position: one
+  quadratic, no derivatives, and the mesh goes back to being a silhouette and a
+  depth value;
+- and the one that was actually most of it: the AERIAL-PERSPECTIVE MARCH IS
+  CLIPPED BY THE DISTANCE TO THE FRAGMENT, and that distance was the
+  interpolated one. The facet sits up to a sagitta inside the true surface —
+  eleven kilometres on Saturn — and steps from facet to facet. A six-step march
+  is sensitive to where it is cut off at the percent level. Three quarters of
+  the whole artefact was that one number.
+
+A gas giant's visible surface IS the top of its own atmosphere, so the march
+does not belong there at all now; rocky worlds keep it, where the column
+between the ground and orbit is real and is the blue.
+
+**THE SKY IS TRANSLUCENT.** The star dome was drawn OPAQUE, with brightness in
+its RGB and alpha pinned at 1. The grade lifts blacks to sRGB 37 against a sky
+of 13, so the dimmest thing an opaque dome can draw is a light grey — there is
+no FAINT in it — and every quad is therefore a step. Twenty-four thousand grey
+squares is not a galaxy, it is static, and that is what the player saw. Blended,
+with brightness on the alpha and hue alone in the RGB, a mote can be worth one
+grey level. The blobs are soft (a centre vertex at full opacity, a rim at zero,
+four triangles) because a quad has four corners and one colour and cannot fade
+out at its own edge. The day fade falls out of the same arithmetic for free: the
+instance tint multiplies the whole alpha and opacity is `alpha - 1`, so a
+brightening sky erases the faint stars first and Sirius last.
+
+Two things had to move for that to work. A dome the camera sits INSIDE has its
+bounding centre at the camera, so the back-to-front key sorted it nearest and it
+painted over the atmosphere; it now declares its radius as its sort distance.
+And the emissive convention uses the INTERPOLATED alpha as its material flag,
+which a soft star's rim has to cross — so every blob came out as its own
+wireframe outline, the rim ring taking the lit path while the middle took the
+emissive one. The dome has its own route off the `flat` instance tint now. A
+flag and a value should not share a channel.
+
+**THE GRADE'S FLOOR WAS PAINTING A HALO.** The atmosphere shell takes its alpha
+FROM its own graded colour, and every term of the grade has a floor: the black
+lift adds 0.016 and the contrast pivot another 0.008. `gradeCinematic(0)` is
+therefore 0.024, twelve times the 0.002 the vacuum test compared against — so a
+ray through empty space painted a pale grey at 1% alpha. With the shell at 83 km
+that was a thin rim nobody questioned; F20 raised it to 350 km for the aurorae
+and it became a hard-edged grey disc half again Terra's radius, in every
+orbital screenshot. Vacuum is tested on the RADIANCE now, before the grade, and
+anything painting over an already-graded frame uses `gradeCinematicCore`, which
+has no lift: an image-wide decision belongs to the image, not to each surface
+in it.
+
+**AND THE SHADOWS WERE PICKED BY ARRAY ORDER.** The eclipse test takes eight
+occluder spheres and the game filled them with the first eight celestial bodies
+in the index — Sol, Terra, Luna, Phobos, Deimos, Mars, Mercury, Venus. The cut
+fell before Saturn, every frame, so the one body in the game with a ring system
+was the one body that could not cast a shadow: its rings ran straight through
+its own shadow cone as if the planet were not there. They are ranked by ANGULAR
+SIZE now — (distance / radius) squared, smallest first — because a shadow
+matters when the thing casting it is big in the sky, and Luna at 400 000 km
+beats Jupiter at five astronomical units on both counts.
+
+Putting Saturn in the list immediately drew a hard vertical cut down the middle
+of its disc, and that was correct behaviour from the wrong premise: a body was
+eclipsing ITSELF. Its own night side belongs to the lambert term, which has a
+deliberately soft terminator standing in for scattering and bounce; the eclipse
+test has no such thing and goes from lit to black across a penumbra measured in
+miss distance. Anything within four thousandths of a radius of a sphere's
+surface is ON it — 25 km on Terra, above the highest ground and below any orbit
+— and skips that sphere.
+
+**THE RINGS ARE A SLAB, NOT A SURFACE.** They were lit with a lambert on a
+vertex normal, which gets wrong the one thing everybody knows about Saturn's
+rings: that they look completely different from the two sides. Lit from the
+front the dense B ring is the brightest thing in the system; lit from behind it
+is the DARKEST, because dense is exactly what light cannot get through. So the
+material is now single scattering through a plane-parallel slab of optical
+depth tau — Chandrasekhar's case, four exponentials — with an opposition surge
+at zero phase (every particle hides its own shadow; worth 45% over a couple of
+degrees) and a forward-scattering peak on the backlit side, which is the
+sunbeam through the C ring. The radius comes from the model position, so every
+ringlet `ringOpacity` knows about is drawn at PIXEL resolution instead of at the
+mesh's 160 radial steps, and the mesh goes back to being geometry.
+
+Coverage is `1 - exp(-tau / mu)`, not the opacity: a slab seen at a grazing
+angle is thicker along the line of sight, which is why a ring system closes up
+into a solid band as it turns edge-on. And the planet's shadow falls across the
+annulus from the same occluder spheres the surfaces use, with Saturnshine — a
+warm inverse-square fill off the lit disc a radius away — keeping the shadowed
+part from being a hole cut in the frame.
+
+**THE SUN WAS AUTHORED AS A COLOUR WHEN IT IS A BRIGHTNESS.** It measured
+sRGB 190 against a background star at 140 — thirty-six per cent brighter than a
+speck — and the reason is one line of arithmetic: the grade maps a radiance of
+1.0 to 0.43 and only reaches white at 4.0, so a disc authored at (1, 0.99, 0.94)
+could not come out brighter than 176 no matter what was done to it. The
+photosphere now carries a radiance of EIGHTEEN and the glare's core THIRTY-FOUR,
+four and eight times the white point, so both clip — and the margin is the
+point, because it keeps the white region's edge in the same place as the sun's
+apparent size changes from Mercury to Neptune instead of the whole disc fading
+as it shrinks.
+
+The glare is three layers with a power-law profile in twenty radial rings, not
+one linear ramp between a centre vertex and a rim: light spread by an optic
+falls off steeply and then trails, and a straight line does neither. Three
+things had to be got right and each was wrong first:
+
+- ONE COLOUR PER LAYER AND THE FALLOFF IN THE ALPHA. Both were in the colour to
+  begin with, and the sun came out as a flat cream BALL with a hard edge — a
+  src-alpha blend is not an add, so a layer with high alpha REPLACES what is
+  behind it, and a faint outer glare at high alpha is just an opaque disc that
+  happens to be dim;
+- the layers are ROUTED TO THE SOFT-EMISSIVE BRANCH, the one the star dome uses,
+  because the plain emissive convention flags itself with the interpolated
+  alpha and a glare must reach zero opacity at its rim — which is alpha exactly
+  1.0, the wrong side of the test. Everything below it fell through to the LIT
+  path and was shaded as an ordinary grey surface, so each layer drew a solid
+  RING at its own edge. The sun had two of them around it, and the same bug had
+  already turned every star into a wireframe quad a milestone earlier;
+- and a FLOOR ON THE ANGULAR SIZE. From Saturn the sun is a tenth of a degree
+  across, the core disc lands inside one pixel, and the rasteriser covers that
+  pixel only partially — so the brightest object in the solar system came out
+  DIMMER from the outer planets than from Terra, which is backwards twice over
+  at magnitude -23. Every optic has a point spread function with a width of its
+  own; below it a source stops shrinking and only fades, which is why a star is
+  a disc in every photograph ever taken.
+
+The last of the missing brightness was the sun's own LENS FLARE. Ghosts are
+off-axis reflections between lens elements: the further the source sits from the
+optical centre, the further they walk across the frame, and at zero field angle
+they land ON it. Here that meant a 16%-alpha amber disc painted over the sun,
+pulling its clipped white core from 255 down to 243 — the star was dimming
+itself with its own glare. The chain now fades out as the source approaches the
+axis, which is both what optics does and what looks right.
+
+**IS IT THE RIGHT SIZE? TWO CHECKS, BECAUSE IT IS TWO QUESTIONS.** An apparent
+diameter is a radius over a distance, and either can be wrong without the other
+noticing. `Tools/solar_scale/check_scale.py` parses the radii and semi-major
+axes OUT OF THE SHIPPED SOURCE — `GameInternal.hpp` for the planets, the
+`MoonDef` rows in `GameScene.cpp` for the moons — and diffs them against NASA's
+fact sheets; a checker carrying its own copy of the data checks nothing but the
+person who typed it twice. Twenty-two bodies, two discrepancies: Phobos was
+11.1 km against a measured 11.267 (1.5% small) and the Sun carried the older
+6.9634e8 rather than the IAU 2015 nominal 6.957e8 (0.09% large). Both corrected.
+Everything else is exact: the Sun is 0.5334 degrees from Terra against a real
+0.5329, Luna 0.5267 against 0.5267, Io 0.5934 from Jupiter's cloud tops.
+
+`check_render_size.py` asks the other question — does the ENGINE draw them that
+size — by parking the camera a known number of body radii out, photographing
+the real frame and measuring the disc. Ten shots, all inside tolerance: the Sun
+0.12%, Luna 0.16%, Jupiter 0.12%, Mercury 0.19%. The prediction is
+`tan(asin(R/d)) / tan(fov/2) * height/2`, and the `asin` matters: the silhouette
+is the TANGENT cone, not the cone through the equator, and the two differ by a
+fifth from low orbit.
+
+Two things had to be got right for that measurement to mean anything. A body
+with air does not end at its ground, so the test is a BRACKET — at least the
+solid body, at most the envelope its air is drawn in — which turned Mars's
+apparent 2.6% oversize and Terra's 2.9% into two correct results, both being
+the thickness of their own atmospheres. And the search window is the middle
+forty rows of the frame, because the first version searched half the height and
+found the NAVBALL: two measurements came back as exactly 202 pixels because
+that is how wide the navball is, and one of them PASSED, Terra at eight radii
+being 196 pixels across. A measurement that can accidentally be right is not a
+measurement.
+
+The Sun is measured with `SW_NO_GLARE=1`. Its glare is a deliberate optical
+overlay three body radii wide with a floor on its angular size, so with it on
+there is nothing to measure but the overlay — and the floor itself came down
+from 0.0055 rad to 0.0022 (under two pixels of radius) once this check existed
+to say what it was costing: at the old value the Sun's glare from Saturn was
+eleven times the true disc, which is the kind of lie somebody measures.
+
+**"MET TOI AU NIVEAU DE SATURNE ET ESSAYE DE TROUVER LE SOLEIL."** He was right,
+and the floor above had only made the peak pixel correct. `SW_SHOT=SOL@2040`
+parks the camera at Saturn's distance and photographs the frame; measured
+against the brightest background star in the SAME frame, radius by radius:
+
+| px from centre | 0 | 4 | 6 | 8 | 15 | 26 | 40 |
+|---|---|---|---|---|---|---|---|
+| sun, before | 255 | 145 | 83 | 62 | 41 | 18 | 18 |
+| a background star | 170 | 137 | 115 | 82 | 59 | 43 | 18 |
+
+The centre pixel was already clipped to white and the sun was still the SMALLER
+and FAINTER object from two pixels out — it died at twenty-five pixels while an
+ordinary star was still going at forty. That is why it read as a pinprick: what
+makes a source look bright is not its peak, which an 8-bit frame caps for
+everything, but how far out it stays above its neighbours. Three findings:
+
+- THE EXPONENT BELONGED TO THE FAR WING. The glare's world radius grows as
+  `d^(1-2/n)` for a point spread function going as `theta^-n`, and the first
+  pass used n = 3.45 — a lens's CORE PSF. What you see around a source eight
+  orders of magnitude past full scale is its VEILING GLARE, the scatter off
+  every surface in the barrel, and that wing falls closer to `theta^-10`. At
+  n = 10 the exponent is 0.80 and the glare goes 133 pixels at Terra, 85 at
+  Saturn, 66 at Neptune instead of collapsing to 25. Distance still reads, and
+  it reads through the disc underneath, which shrinks honestly as 1/d.
+- THE OUTER LAYER NEEDED A TAIL, NOT A BUMP. The skirt term was hard-coded at
+  `0.045/(1+30t^2)`, which is a thousandth of its peak a third of the way out.
+  It is now per-layer, and the aureole carries a near-`1/t^2` wing that holds
+  the glow up to its own rim.
+- AND THE BLEND HAPPENS IN LINEAR LIGHT. The swapchain is `B8G8R8A8_SRGB`, so
+  the hardware un-encodes both sides before mixing: an alpha of 0.25 puts a
+  quarter of the layer's LIGHT on screen, not a quarter of its sRGB value,
+  which is a much larger number once re-encoded. Modelled the naive way these
+  profiles predicted 116 where the renderer measured 170 — so the first tail I
+  tuned was fitted to a curve already half again too bright, and the sun came
+  out as a smooth cream BALL with an edge on it. Forty percent, invisible from
+  inside the shader, and the fix was to put the model through
+  srgb->linear, mix, linear->srgb before believing it.
+
+Measured after: 255 / 255 / 229 / 205 / 173 / 102 / 79, dying at seventy-eight.
+Two to three times the star at every radius and twice as wide, which is what
+magnitude -23 against -1.5 should look like when the exposure is fixed. The
+ladder across the system is monotonic — Mercury reaches past 140 pixels, Terra
+105, Jupiter 80, Saturn 78, Neptune 62 — and `check_render_size.py` still
+reports ten shots, zero discrepancies, because it photographs the photosphere
+with `SW_NO_GLARE=1` and none of this touches the body.
+
+## Milestone 34 — twelve light-years, and the origin that moves with you
+
+**"AJOUTE LES ETOILES PROCHES AINSI QUE LEURS PLANETES (TAILLE ET DISTANCES
+REELLES) ET AJOUTE WARP X100M ET X1B QUI NE PEUVENT S'ACTIVER QUE QUAND ON SORT
+DE LA SOI DU SOLEIL. LES SYSTEMES SOLAIRES NE SE DEPLACENT PAS."**
+
+Twenty-four systems, thirty-six stars, twenty-five confirmed planets, and two
+new rungs on the warp ladder. Four pieces, and only the first is data.
+
+**THE CATALOGUE** (`Engine/Source/Space/StarCatalogue.{hpp,cpp}`) is every
+system inside twelve light-years, with J2000 right ascension and declination,
+modern parallaxes, interferometric radii where they exist, and the planets that
+are actually confirmed as of 2026. It lives in the ENGINE rather than the game
+because the part that can be wrong is not the numbers, it is the rule that
+turns them into a frame: right ascension is an angle on the equator of a planet
+this simulation does not privilege, and the world runs on the ecliptic with +Y
+north. `equatorialToGame` is a rotation by the obliquity and a relabelling of
+axes, and a sign error anywhere in it produces a sky that is perfectly
+convincing and rotated 47 degrees, or mirrored. So it is tested against
+arithmetic: the vernal equinox must come out as exactly +X, the ecliptic pole
+at RA 18h / Dec +66.56 as exactly +Y, the solstice point with exactly zero Y,
+and the cross product of the first two must be the NORTH pole and not the
+south. Then the data is tested for self-consistency — every catalogued distance
+against the length of its own vector, every planet outside its own star, every
+hard-coded host index against the star name it was written for.
+
+The check that turned out to matter most is that **Proxima and Alpha Centauri
+land a fifth of a light-year apart**. Their catalogue entries differ by 0.098 ly
+in distance and 2.2 degrees on the sky, and only a correct three-dimensional
+placement turns those two numbers into the 0.21 ly the pair really is. A
+mirrored or mis-rotated sky passes every distance test — distances from the
+origin are rotation-invariant — and fails that one.
+
+Two more rules are derived rather than tabulated, and both are labelled guesses
+in the source. Nobody has photographed any of these worlds; what is known is a
+mass, a period and a star. `equilibriumTemperature` gives 255 K for Terra by
+construction, and `styleForWorld` maps mass and temperature onto the surface
+presets the solar system already has, with the BANDS ANCHORED TO THE SOLAR
+SYSTEM'S OWN BODIES — Mercury 440 K, Mars 210, Callisto 134, Europa 102, Triton
+38 — so that fed the solar system's numbers the rule hands back the solar
+system. That is tested too. The result is a neighbourhood with the variety it
+really has: baked rock at Barnard, rust at Proxima b and GJ 887 d, cracked ice
+further out, ice giants at Lalande 21185 c and GJ 15 A c.
+
+**THE FLOATING ORIGIN** is not a convenience, it is the only way the numbers
+fit. A double carries about sixteen digits, so at Proxima's 4.0e16 metres the
+gap between two representable positions is EIGHT METRES: a craft in orbit there
+would jitter by its own length, a landing would be a coin flip, and the terrain
+— which subtracts two nearby world positions to find a patch origin — would
+dissolve. The world's origin is therefore a star, and it moves; `rebaseOrigin`
+shifts every absolute position in the game by the difference, and the same
+craft is then at 1e7 metres where the gap is a NANOMETRE.
+
+What makes it cheap is that the renderer was already camera-relative:
+everything reaching the GPU is a difference, so a shift the camera shares is
+invisible. What makes it dangerous is the handful of caches that hold an
+absolute position ACROSS frames, and finding all of them was the work. Four
+places: every `TransformComponent` and — easy to forget — every
+`PreviousTransformComponent`, because missing the second does not look like a
+missing shift, it looks like one frame of motion blur four light-years long;
+all four cameras; the free camera's own private copy of the eye, which would
+silently undo the shift the next time a movement key was pressed; and the
+reentry-plasma particles, the one non-ECS array in the game integrated in
+absolute space. The origin hands over at the MIDPOINT between two stars, not at
+a sphere of influence, because between two systems there is no containing
+system for light-years at a stretch and holding the origin at the star you left
+would let a craft reach the eight-metre regime during the cruise.
+
+**SYSTEM STREAMING.** All thirty-six stars exist for the whole session — you
+have to be able to see where you are going, and a star four light-years away
+costs one transform and one distance computation a tick. Their PLANETS are
+built the frame the craft enters the star's sphere of influence, and are never
+destroyed: the mesh registry is append-only, so a system that loaded, unloaded
+and reloaded would leak eight GPU meshes a visit, and four entities in the
+per-tick loops is much the cheaper of the two. Sol is never streamed at all —
+the colony is on it.
+
+**THE WARP RUNGS.** Two new ones, x100M and x1B, and three things stood in the
+way. `Simulation::setTimeScale` hard-clamped to 1e7 (the comment above the
+clamp warned about exactly this bug class — a button that works and does
+nothing — which is how it was found). `warpText` had no branch for billions and
+would have printed "X1000M", unreadable next to the rung below it. And the
+gate: the altitude ladder tops out at 1e7 and knows nothing about stars, so
+outside them it has to be OVERRULED rather than consulted, which is what
+`phys::maxWarpForSpace` does — inside any star's sphere of influence it can
+only lower the ceiling, outside every one of them it can only raise it. The
+asymmetry is the whole rule. `containingSystem` answers the question, and it
+asks about the ABSOLUTE position, because the origin travels with the ship.
+
+Why the rungs must exist: Proxima is 4.0e16 metres away, and at ten million a
+crossing is a fortnight of real sitting. At a billion it is seven minutes. Why
+they must be gated: above physics warp a rung says how far an ANALYTIC jump may
+throw a craft between two rendered frames, and at x1e9 a frame is half a year
+of orbit — a craft would cross Neptune's entire sphere of influence inside one
+of them and arrive with a conic that never noticed. Between the stars there is
+nothing to notice.
+
+**AND THEN THREE THINGS BROKE, EACH FOUND BY MEASUREMENT.**
+
+The far plane was 1.0e13 metres — Neptune's orbit and a bit — so every star in
+the catalogue was BEHIND IT and clipped away. Flying to Sirius meant flying
+toward an empty patch of sky that stayed empty until the moment of arrival.
+Reverse-Z is what makes 1.5e17 free: depth is stored with the near plane at 1.0
+and the far at 0.0 in an f32 buffer, so precision is set by the near plane and
+moving the far one out by four orders of magnitude costs a fraction of a bit.
+
+"Is this the sun" was `entity == m_solEntity` in three places, and there are
+thirty-six suns now. The light direction, the photosphere radiance and the
+glare layers were all written against that one comparison. The photosphere is
+now per star: eighteen is Sol's surface radiance and a photosphere goes as the
+FOURTH POWER of its temperature, so Sirius B's 25 000 K is fifty-six times
+Sol's per square metre and Proxima's 2992 K is a fourteenth of it — which is
+also why the component carries surface brightness and not luminosity. Sirius B
+is a thirty-thousandth of Sol's OUTPUT and fifty-six times brighter per unit
+area, because the whole star is the size of Terra; drawn by luminosity it would
+be a dim ember instead of the blue-white pinprick it is.
+
+The third one was the good one. Proxima b came out as a salt-and-pepper mess,
+and measured against Mars at the same distance and the same surface style it
+carried **fourteen times the high-frequency noise** — 88 against 6.3 on a
+Laplacian. Two hypotheses died first: the atmosphere (removing it made the
+noise WORSE, 122) and the new far plane (reverting it changed nothing at all,
+121.72 both ways, to the hundredth). What broke it was that the pixels were
+BINARY — every one of them either (127,103,86) or (43,44,47), the planet's own
+day side and its own night side interleaved. A per-pixel binary lit/unlit test
+is a shadow test, and the shadow occluder list excluded `m_solEntity` by
+handle. Proxima was not Sol, so Proxima was casting a shadow on Proxima b: the
+cone's apex sits inside the source that is also the light, and the test comes
+out lit or unlit essentially at random. Excluding everything with a
+`StarVisualComponent` took it to 4.8, cleaner than Mars.
+
+**WHAT IS NOT DONE.** Multiplayer beacons still put an absolute position on the
+wire with no origin tag, so two players on different origins would read each
+other light-years out; the replication encoder's sixteen-snapshot delta history
+is not invalidated on a shift either. Both are noted rather than fixed —
+interstellar multiplayer is a milestone of its own. The exoplanet air columns
+are a first-order guess (a twelfth of the column for the scale height, Terra's
+sea-level density scaled by surface gravity) because nobody has measured one.
+And the surface styles are, as the source says, a rule applied to a mass and a
+temperature — not a photograph of anything.
+
+### F28b — the three things that were wrong about leaving
+
+**"LA VITESSE X100M DOIT ETRE AUTORISE A PLUS DE 5 MILLIARDS DE KILOMETRES.
+QUAND JE PLACE UNE NODE QUI SORT DE LA SOI DU SOLEIL IL Y A UNE QUANTITE
+SUBSTANTIELLE DE LAG. RAJOUTER UN NOUVEL OUTIL POUR LES VOYAGES ENTRE
+SYSTEME."**
+
+**THE MIDDLE RUNG WAS ON THE WRONG BOUNDARY, by four orders of magnitude.**
+Gating x100M on leaving the star's sphere of influence sounded right and was
+not: Sol's SOI is two light-years, and a craft is past Neptune with nothing
+left to encounter after five billion kilometres. That is where an analytic jump
+between two rendered frames stops being able to skip a planet, so that is where
+the rung belongs. `maxWarpForSpace` now takes the distance to the star as well
+as the SOI test, and the asymmetry it already had grew a middle term: under 5e12
+metres the in-system ceiling stands, past it x100M opens, outside the star
+entirely x1B. The altitude ladder still wins wherever it binds — a craft landed
+on a Kuiper object six billion kilometres out is in the ladder's territory and
+must not be handed x100M because of where the SUN is.
+
+**THE LAG WAS 341 MILLISECONDS PER PREDICTION, four times a second.** He was
+right that it was the trajectory. Measured on an escape from Terra's orbit with
+eight planets in the index:
+
+| | ms per call |
+|---|---|
+| before | 341 |
+| range cap alone | 138 |
+| range cap + anomaly walk | **8.4** |
+
+Two separate mistakes, and the first fix only found the second. A hyperbolic
+escape from the outermost body has no sphere of influence to leave and no
+revolution to close, so the scan ran to the twenty-year horizon: a line reaching
+a hundred billion kilometres, then split into thousands of screen-space boxes by
+the map, because every chord of it spans four orders of magnitude of camera
+distance. Capping the plan at ten billion kilometres — past every planet, two
+orders of magnitude short of the nearest star — stopped it at the right PLACE
+and took less than a third off the cost, because the scan still had to WALK
+there one step at a time.
+
+The step is the second mistake. It is a fraction of the orbit's own time scale,
+which is the right idea for a closed orbit and meaningless for an open one: for
+a solar escape it is about an hour, against an arc eight years long. Seventy
+thousand samples, eight child bodies probed at each. Spacing the samples evenly
+in HYPERBOLIC ANOMALY instead puts them where the geometry changes — dense at
+periapsis, spreading out as the arc straightens — so four thousand of them cover
+the whole escape and still cannot step over a planet's sphere of influence. The
+bound is a closed form: r = a(1 - e cosh H) inverts, and M = e sinh H - H is
+linear in time. It applies to every hyperbolic segment, so a Terra flyby got
+seventeen times cheaper too, and `SpacingSamplesByAnomalyStillCatchesTheSoiExit`
+pins the exit radius to a part in ten thousand so the saving cannot quietly
+become a truncation.
+
+**AND THE NEW INSTRUMENT.** Between the stars there is no orbit to read. A conic
+drawn around a star you have already escaped is a straight line to within the
+width of the screen, and the map's whole vocabulary — periapsis, encounter,
+closest approach — has nothing to say about a four-light-year crossing. Select
+a star, escape the one you are at, and the HUD shows the heading error instead:
+
+    INTERSTELLAR PROXIMA CENTAURI  4.246 LY
+    DEV X +46.59  Y -24.12  Z +0.00 DEG   (TOT 52.47)
+    CLOSING 73109 M/S  ETA 17.4 YR
+
+The three numbers are ONE ROTATION written down three ways, not three separate
+angles. Asking "how far off am I about X" three times over gives numbers that do
+not compose — correct each in turn and you arrive somewhere else, because
+rotations do not commute. The rotation that takes the current heading onto the
+required one has a single axis and a single angle, and its components about the
+three axes vanish together and each carries the direction to turn. Green inside
+a degree, amber inside ten, red beyond: a crossing is four light-years long, so
+one degree at departure is seven hundred astronomical units of miss at arrival,
+and the colour is most of the instrument.
+
+The trigger is the two-body ENERGY against the local star, not the shape of the
+drawn plan — the plan now stops at ten billion kilometres, so a bound orbit with
+an apoapsis past that looks exactly like an escape on screen. Energy cannot be
+fooled that way: it is positive if and only if the craft never comes back.
+
+## Milestone 35 — parts that move, and a way to make them move
+
+**"IL FAUT QUE CERTAINES PIECES PUISSENT ETRE ACTIVEES PENDANT LE VOL OU AIENT
+DES ANIMATIONS... POUR CELA IL FAUT AJOUTER AU LOGICIEL DE DEVELOPPEMENT DES
+PIECES UN MOYEN DE DEVELOPPER DES ANIMATIONS."**
+
+**THE BLOCKER WAS THE MESH.** A part was ONE welded mesh: every shape's pose
+baked into its vertices, uploaded once at boot, shared by every instance of that
+part id. There were no sub-parts, no named groups, no per-shape draw calls — and
+`DrawItem` carries one mesh, one matrix, one tint, with nowhere to put a bone.
+So the feature is a SPLITTING and not a skinning pass: shapes belong to an
+animation group, each group gets its own mesh, and a group is drawn with one
+extra matrix in front of the part's own. Nothing about the vertex format, the
+draw item or the shader had to learn what an animation is, and a part that
+animates nothing gets exactly what it always got.
+
+**TWO POSES, NOT A TIMELINE.** A shape carries its rest pose in the fields it
+always had and its deployed pose in three new ones. That is the whole format,
+and it is what makes the authoring possible: an animation can be posed by MOVING
+THE THING, which is the entirety of Part Studio's existing vocabulary. Push the
+phase slider to 1 and the same G and R that have always moved a shape now write
+the DEPLOYED pose instead, with the panel swinging in the viewport as it is
+dragged. Keyframes would have bought sequences nobody asked for at the price of
+a tool nobody would enjoy using.
+
+**BUT TWO POSES INTERPOLATED THE OBVIOUS WAY IS A TELESCOPE, NOT A HINGE.**
+Slerp the rotation and lerp the position and both ENDS are right while the
+middle cuts the corner: a panel swinging ninety degrees about a mount at its
+root shrinks toward the hub at mid-travel and springs back out. For a 2 m panel
+that is 0.6 m of travel in the wrong direction, and it is the first thing anyone
+would notice.
+
+Chasles' theorem says every rigid motion is a rotation about some axis through
+some point plus a slide along that axis, so the hinge is RECOVERED from the two
+poses rather than authored: the axis and angle come out of the quaternion
+difference, and the pivot solves `(I - R) c = t` in the plane perpendicular to
+the axis, where `(I - R)` is invertible for any angle short of a full turn. The
+pivot is only determined perpendicular to the axis — sliding it along the hinge
+changes nobody's path — so the minimum-norm solution is taken, which is the
+point a person would put their finger on if asked where the hinge was. A motion
+with no rotation at all (a landing gear sliding out) has no pivot and no plane
+to solve in, and takes a separate branch that is a straight line.
+
+`AHingeIsRecoveredFromThePosesItProduced` sets up a hinge whose answer is known
+by construction and checks the property that matters: the RADIUS is constant
+along the whole travel. A lerp gives 1.414 at the midpoint against a true 2.0.
+
+**THE PILOT'S MENU.** Right-click a part in flight and a small panel opens over
+it with one row per thing that part can be told to do — OPEN / CLOSE on a solar
+array, TURN ON / TURN OFF on an engine. The label is the verb for where it is
+GOING, not for where it is: "CLOSE" on an open panel is the button you press to
+close it, and a label reading "OPEN" while the panel is open would be a status
+light wearing a button's clothes.
+
+The right button already turns the camera and had to keep doing that, so the
+menu opens on RELEASE and only when the mouse barely moved in between. Anything
+else makes looking around open menus.
+
+**WHAT A STOWED PART DOES NOT DO** is the line between an animation and a
+decoration. Each animation declares what it GATES — power, thrust or nothing —
+and a folded wing makes no power while a shut-down engine makes no thrust. Half
+open is half of it, deliberately: a panel caught mid-travel really is presenting
+half its area, and a rule that waited for the phase to reach exactly 1 would put
+the whole effect in the last instant of a four-second deployment. The default
+when nothing gates is 1 and not 0 — getting that backwards would have switched
+off every engine in the game the day animations were added, which is what the
+test on it exists to say.
+
+**ONE PLACE WHERE THE HOUSE RULE IS BROKEN, ON PURPOSE.** Everything else in
+this codebase that moves with time — spin, conveyors, orbits — is a closed form
+of the clock, so that warp and save/load are exact. An animation cannot be: its
+start time is whenever the pilot clicked, which is not a quantity the world
+knows. So the phase is INTEGRATED, and under warp it simply snaps — which is
+also what a pilot would see, since three seconds at x1000 is three milliseconds.
+Both the phase and its target are stored and saved, so a panel caught halfway
+through opening reloads halfway through opening and closes again from where it
+is rather than snapping shut.
+
+**AND THE SHIPPED PARTS USE IT.** SP-2 Solar Wing folds alongside the hull and
+swings out over four seconds, gating its 4 kW. V-400 Vector gained two: an
+ON/OFF toggle gating thrust, and a throttle-driven one that takes the nozzle's
+glow cone from 0.3 emissive to 1.0 — the one animation that does not move at
+all. That glow cone had been sitting in the asset since the part was drawn,
+glowing identically whether the engine was firing or not.
+
+`SW_SHOT=SHIP@<metres>` and Part Studio's `--part / --phase / --capture` were
+added for the same reason `--capture` and `SW_SHOT` were: a rendering path
+nobody can photograph is a rendering path nobody has checked. The first three
+attempts at a ship capture came back as the inside of a terrain patch, because
+the shot camera's offset is computed from the SUN's direction and on a launch
+pad at dawn that points along the ground.
+
+### F29b — the ladder measured in kilometres, not in spheres of influence
+
+**"CHANGER LE WARP X1B POUR QU'IL SOIT A 50 MILLIARDS DE KILOMETRES ET AJOUTER
+UN X10B POUR 1000 MILLIARDS (LA SOI EST BIEN TROP GRANDE POUR ETRE UTILISEE
+COMME LIMITE)."**
+
+He is right, and by more than it looks. Sol's sphere of influence is a shade
+under two light-years — 1.9e16 metres — because what bounds a star's
+gravitational reach is the Galaxy on one side and its nearest neighbour on the
+other. Gating the fastest rung on leaving it meant the rung unlocked forty per
+cent of the way to Proxima: after the part of the journey that needed it.
+
+The gate is now distance from the star and nothing else, in three bands, each
+one an order of magnitude of warp against roughly an order of magnitude of
+distance:
+
+| from the star | rung | what is out there |
+|---|---|---|
+| 5 billion km | x100M | past Neptune's 4.5, in the Kuiper belt |
+| 50 billion km | x1B | ten times the outermost orbit |
+| 1000 billion km | x10B | a tenth of a light-year, nothing at all |
+
+The property that makes each one safe is the same one every time: how far an
+ANALYTIC jump may throw a craft between two rendered frames, against what there
+is out there to hit or be captured by. And the ladder **walks itself back down
+on arrival** — a craft falling toward Proxima crosses the same three radii in
+reverse and loses a rung at each, so it cannot arrive at x10B and cross a whole
+planetary system inside one frame. That is not a safety check bolted on, it is
+the same rule read from the other end.
+
+Two details worth keeping. The altitude ladder still wins wherever it binds, so
+a craft landed on a Kuiper object six billion kilometres out is not handed
+x100M because of where the SUN is. And the refusal message asks
+`warpRadiusForRate` what the rung it just took away actually needed, rather
+than naming a distance in a string — there are three bands now and there will
+be no fourth whose message quietly says the old number.
+
+The sphere of influence has not gone away; it just does a different job. It is
+what decides which system's planets are loaded, and the test that every pair of
+systems has clear space between them now says so.
+
+Photographing this needed two more debug hooks, for the reason `--capture` and
+`SW_SHOT` existed in the first place: `SW_WARP=<rung>` asks for a rung and lets
+the ladder refuse it, because the clamp only runs when something has been
+requested and a capture has no keyboard. The first three attempts came back
+reading "WARP X100" at every distance and looked like a broken gate — the game
+starts on foot, and on foot the ladder is capped at x100 whatever the star
+says, so it was the pilot who was standing outside rather than the rule that
+was wrong.
+
+### F29c — the quick click that never fired
+
+**"LE CLIQUE DROIT POUR INTERAGIR AVEC LES PIECES NE MARCHE PAS. IL FAUT QU'UN
+CLIQUE RAPIDE SOIT L'INTERACTION ET RESTER APPUYER POUR UNE ROTATION DE LA
+CAMERA COMME ACTUELLEMENT."**
+
+The rule was **six pixels of travel and no time bound at all**, written inline
+in the HUD, and it never fired once. Six pixels is inside the slop of an
+ordinary click on an ordinary mouse: every tap was read as a drag, so a feature
+that was entirely written looked as though it had not been.
+
+The test that separates the two jobs is now `Input::isQuickClick(held, travel)`,
+in the engine, and it takes **both** numbers because neither alone is enough — a
+slow careful drag covers almost no distance, and a fast flick covers a lot in
+very little time. A quarter of a second and forty pixels: longer than any tap,
+shorter than the briefest deliberate look-around; a shaky hand rather than a
+drag. Holding the button turns the camera exactly as before.
+
+Two things came out of chasing this that are worth more than the fix.
+
+**A MISS AND A DEAD FEATURE LOOKED IDENTICAL.** A click that found nothing left
+the screen exactly as it was, which is indistinguishable from a click that was
+never registered — so the first report could have been either. The menu now says
+`NOTHING TO OPERATE THERE` for a second and a half, which turns silence into
+information.
+
+**AND THE PICK WAS TOO EXACT TO USE.** A ray against the collider boxes is
+correct and, for a solar wing seen edge-on from twenty metres, correct means a
+target two pixels wide. There is now a second pass: a part whose CENTRE falls
+within its own on-screen radius of the cursor counts as clicked, scored beyond
+every true hit so a real hit always wins and a near miss on the only operable
+thing in view still does something.
+
+What was checked and what was not: `isQuickClick` is pinned by a test that
+includes the exact case the old rule rejected (a ten-pixel wobble on a tenth of
+a second). The in-flight menu itself is still unphotographed — the ship-framing
+capture camera lands inside the terrain patch at the launch site, which is its
+own bug and not this one.
+
+### F29d — one ray, and whatever is in its way
+
+**"LE CLICK EST POSSIBLE MAIS EXTREMEMENT DIFFICILE. CE QU'IL FAUT FAIRE C'EST
+UN RAYTRACING DE LA CAMERA VERS LE CLICK ET SI UNE PARTIE DE VAISSEAU CLIQUABLE
+EST ENTRE ALORS ELLE S'ACTIVE."**
+
+That is the right design and it is what the code does now. What it did before
+was an exact ray against the part's COLLIDER boxes, and that is wrong twice
+over.
+
+**Wrong once because the colliders are at the REST pose.** A solar wing drawn
+swung out has its collider still folded against the hull, so clicking the panel
+you can see misses it and clicking empty space beside the tank hits it. Half of
+the animation — the half the pilot actually spends looking at the deployed
+panel — was the half that could not be clicked.
+
+**Wrong twice because exact is the wrong ambition.** A wing seen edge-on from
+twenty metres is two pixels of collider. A switch that demands two pixels is a
+switch nobody can work, however correct the arithmetic behind it.
+
+It is now one ray against the part's BOUNDING SPHERE, which already had to
+cover the deployed pose for culling, and the nearest entry along the ray wins —
+so a part in front of another shadows it exactly as it looks like it should.
+At twenty metres a 1.5 m part is four degrees of tolerance instead of a
+twentieth of one. `rayEntersSphere` is in the engine with the reasoning next to
+it, and the test pins the tolerance IN DEGREES, because degrees are what a hand
+has to hit: three degrees off must still hit, five must miss, a part astern
+must never hit, and a part the eye is inside is at zero rather than behind.
+
+The previous attempt at forgiveness — an exact test first, a screen-space near
+miss as a fallback — was worse than either half alone: it scored every near
+miss beyond every exact hit, so an exact hit on a part you were NOT pointing at
+always beat the near miss on the one you were.
+
+### F29e — the ship the pilot is actually in
+
+**"CELA NE MARCHE TOUJOURS PAS NI POUR LE MOTEUR NI POUR LE PANNEAU SOLAIRE."**
+
+Three rounds of fixing the click had produced three defensible corrections and
+no working menu, so the fourth round started with a measurement instead of an
+argument. `SW_PICKPROBE=1` writes what the pick can see straight to a file —
+straight to a file, because a capture run aborts at teardown and loses whatever
+is still sitting in the log's buffer. It came back with one line:
+
+    35 part entities, 0 with animations, 0 with live state
+
+Nothing was broken. The animations had been authored on the CATALOGUE parts —
+the SP-2 wing and the V-400 engine, the ones a player meets in the hangar — and
+the Endurance the game starts you in is built from none of them. Its habitat and
+propulsion modules are their own definitions, and both had an empty `animations`
+list. The pick correctly refuses parts with nothing to operate, so every part
+within reach of the cursor was correctly ignored, and a feature that worked
+perfectly could not be reached from inside the game.
+
+So the modules got the hardware the pilot was reaching for. The EN-1 habitat
+carries two folding arrays, four and a half metres by ten, stowed flat on its
+roof and floor and hinged at the outer edge so they stand off radially when
+deployed; the animation gates the module's own sixty kilowatts, so a stowed
+array really does stop charging. The EN-2 propulsion module gets a hand switch
+that gates its thrust and a second, throttle-driven animation on the three
+nozzle discs — which were authored at 0.9 emissive, permanently lit, an engine
+that looked like it was burning while it was shut down. They now sit at 0.06 and
+run to 1.0 with the throttle, and the throttle animation is gated by the hand
+switch as well, so a shut-down engine's nozzles stay dark however far the
+throttle is pushed.
+
+**AND THEN THE SAME MEASUREMENT FOUND THE SECOND BUG.** With animated parts
+finally on the ring, the probe reported `aimedPick 'nothing'` — a ray aimed
+straight down the line to a part, missing that part. The pick tested the
+SIMULATED transform. Physics runs at 50 Hz and the screen does not, so every
+mesh is drawn at the lane's alpha mix of the last two ticks, and the chase
+camera has always used that mix too. In Saturn orbit at nine and a half
+kilometres a second one physics step is a hundred and ninety metres: the sphere
+the click tested against sat up to a hundred and ninety metres away from the
+pixels the pilot was aiming at, drifting in and out of alignment sixty times a
+second. A click that landed was a coincidence — which is exactly what "possible
+but extremely difficult" describes, and it means the earlier report had TWO
+causes and the first three fixes had only ever addressed one of them.
+
+The menu's anchor had the same fault with a louder symptom: it could compute the
+part as being behind a camera that was looking straight at it, and a part behind
+the camera closes the menu. That is why a capture of the panel came back with
+the menu missing altogether on one frame and pinned to the screen edge on the
+next.
+
+`renderPosition` is now the single answer to "where is this drawn", and the
+pick, the menu anchor and the capture camera all ask it. Anything that has to
+agree with what the pilot can SEE must ask it too.
+
+What is checked: `TheEnduranceModulesArePartsThePilotCanOperate` loads the
+shipped catalogue and asserts the property whose absence caused all of this —
+that the ship the game starts you in has parts the menu can open, with a gate on
+one side and moving geometry on the other. It also pins that no nozzle is
+authored bright at rest and that every animated shape's deployed pose is inside
+the bounding sphere the click tests. The gate arithmetic itself was already
+pinned; the phases were then measured live, with the engine on and off against a
+held throttle, and read 1.00/1.00, 0.00/0.00 and 1.00/0.00 exactly as the design
+says they should.
+
+What was NOT done: the deployed arrays have no collider, so a walker can pass
+through one. That is the same rule the SP-2 wing has followed since animations
+were added — colliders are authored at the rest pose — and it is the honest
+remaining edge of the whole feature.
+
+### F29f — the button that armed building number 500
+
+**"LE MENU S'OUVRE BIEN MAIS CLIQUER SUR LES BOUTONS NE CHANGE RIEN."**
+
+Every clickable rectangle on the HUD carries a NUMBER, and the number says what
+pressing it means. The ranges are open-ended upward — "400 and above arms a
+building", "100 and above takes a part in hand" — because each panel wants room
+to grow, and a chain of `if (id >= N)` tests is then only correct if it is
+written in descending order of N.
+
+It was not. The part menu's rows are 900 and up, and its branch had been
+appended at the BOTTOM of the chain, below `if (button.id >= 400)`. Nine hundred
+is above four hundred, so every press of OPEN or TURN OFF was read as "arm
+building number 500", set `m_heldBuilding` to a definition that does not exist,
+and returned. The menu appeared, the rows highlighted under the cursor, the
+click was consumed — and the panel never moved. A dead button that looks alive.
+
+The dispatcher's own comments warn about this hazard twice, in the code that
+then got it wrong: *"tested before everything else because the ranges below are
+open-ended upward and would otherwise swallow these"*, and *"610+id would
+happily swallow 900"*. Being warned twice in the same function and doing it
+anyway is what decided the shape of the fix.
+
+The routing is no longer expressed as the order of a hundred and forty lines of
+side effects. `sw::ui::routeHudClick` is a pure function that maps an id, plus
+the two pieces of context two panels genuinely share a range over, to a
+`HudAction`; the dispatcher switches on what it returns and owns only the side
+effects. It sits beside `HudOrder.hpp`, which exists for the same reason and
+about the same surface: a HUD rule that is invisible in review and glaring on
+screen belongs in a pure function a test can hold.
+
+Three things fell out of writing it down. **900+ is shared** between the
+assembly catalogue's rows and the part menu, and the separator is whether the
+machine configuration panel is open — which was already true and already
+load-bearing, and had never been stated. **The part menu's range is now
+BOUNDED** at the four animations a part can carry, so the ids between it and the
+multiplayer panel keep falling through exactly where they did rather than being
+eaten by a range that grew to fill the gap. And **the map's veto moved into the
+table**: the map owns only its own buttons, so a hangar id pressed there must do
+nothing rather than the nearest thing below it.
+
+`HudRoutingIsOrderedByDescendingRange` walks every range's lower bound and
+asserts it routes to its own owner; every case in it fails against the old
+ordering. `SW_PARTMENU` now presses the id the menu actually registers instead
+of calling `togglePartAnimation` directly — the capture that "proved" the
+animation worked had been stepping over the exact line that was broken, which
+is the more useful lesson of the two.
+
+### F29g — the button that had already been thrown away
+
+**"LES BOUTONS NE MARCHENT TOUJOURS PAS."**
+
+The routing was fixed and provably correct, and pressing id 900 by hand drove
+the animation. The button still did nothing, because by the time the click was
+handled there was no button.
+
+`m_hudButtons` was emptied by whichever collector happened to run FIRST on each
+screen, and everything after it appended. On the flight HUD that collector is
+`collectSasButtons` — and the part menu is collected three lines ABOVE it, on
+purpose, so that a menu opened over the SAS row takes the click. So every frame
+the menu pushed its rows and the SAS collector, running next, cleared them away.
+The comment directly above the call spells out the intended precedence: *"BEFORE
+the navball and the SAS row, so a menu opened over them takes the click.
+m_hudButtons is scanned in order and the first rect under the cursor wins."* The
+reasoning is right. It was defeated by a collector three lines later that did not
+know it was the one holding the contract.
+
+Opening the table is now its own named act. `hudBeginButtons()` clears, once,
+before anything is collected, and asserts if it is called twice in a frame;
+`hudSeizeButtons()` is the separate, deliberate case — a modal taking the screen
+over, where discarding what is behind it IS the point. Every collector appends.
+The two have different names because confusing them is precisely the bug.
+
+**AND THE REAL LESSON IS ABOUT THE TEST, NOT THE BUG.** `SW_PARTMENU` called
+`togglePartAnimation` directly. When the routing turned out to be broken it was
+changed to synthesise a `HudButton` and route that. Both versions manufactured
+their own input, and both therefore stepped over the step that was actually
+broken — first the routing, then the table. Three captures in a row "proved" a
+feature that could not be used. A hook that fabricates the input it is supposed
+to be testing proves only that the code after the fabrication runs.
+
+It now SEARCHES the table the click handler reads, presses the row it finds
+there, and writes `BUTTON 900 IS NOT IN THE TABLE: 3 buttons, ids 1 2 3` when it
+does not — because "the button is missing" and "the button did nothing" look
+identical from outside and have nothing in common. It reads `pressed button 900
+of 4`, and the module's animation goes `[0 0.73->0.00]` while its neighbour
+holds at `1.00`.
+
+What is checked and what is not: the one-clear rule is held by a debug assert
+rather than a unit test, because it is a property of the order in which four
+collectors run inside a render pass and there is no seam to test it through. A
+direct `m_hudButtons.clear()` added anywhere would still bypass it. Making the
+table a type that can only be opened once would close that, and is not done.
+
+### F30 — two suns, and thirty-six stars that look like what they are
+
+**"QUAND NOUS SOMMES DANS UN SYSTEME BINAIRE SEULE 1 ETOILE SUR LES DEUX A LES
+EFFETS STYLE SOLEIL. VERIFIE CHAQUE ETOILE: LES NAINES ROUGES PETITES ET ROUGES,
+LES ETOILES BLEUES BLEUES."**
+
+Three separate faults, and the catalogue was not one of them. Every radius and
+effective temperature in it is interferometric or asteroseismic and every one
+checks out; what was wrong was the rendering of them, in three places.
+
+**ONE SUN PER SKY.** The three-layer glare and the photosphere disc were drawn
+for `dominantStar` — the brightest from the camera — and everything else went
+down the billboard path, whose angular size is capped at `flux^0.2` so a star
+four light-years away stays a point. Alpha Centauri B is twenty-three
+astronomical units from A, half Sol's output, apparent magnitude about -19 from
+a world orbiting A. It got the four-light-year treatment.
+
+The treatment is a function now (`collectStarVisual`) and it runs for every
+star that qualifies. **The test is a RATIO, and the ratio is the whole design:**
+an absolute brightness cut would POP — fly out of a system and the companion
+would cross the threshold and change from a glare to a billboard in one frame —
+whereas both members of a pair dim together as you leave, so their ratio is
+constant and they keep their glare together all the way out. Measured against
+the catalogue: Alpha Cen B from A's habitable zone lands at 6.3e-4, and Alpha
+Cen A seen from Proxima b at 1.3e-8, eight orders below the cut. A hundredth of
+a percent separates them and nothing sits near it. The lens flare stays on the
+dominant star alone: ghosts are an artefact of one optical axis, and a second
+chain lands on top of the first.
+
+**THE COLOUR LADDER WAS ONE MISSING CONVERSION.** It held sRGB-ENCODED values
+and they were used as linear multipliers. At 2800 K it carried 0.68 in green
+where the linear Planckian locus says 0.444 — and 0.68 *is* 0.444 gamma-encoded,
+to three decimals, at every rung. So every star in the game was pulled toward
+white by exactly the amount sRGB encoding lifts a mid-tone. That is the whole
+of "a red dwarf comes out pale peach and Sirius comes out white".
+
+Recomputed from Planck's law through the CIE 1931 observer into linear sRGB, and
+**anchored at Sol**: divided by the locus at 5772 K before renormalising.
+Normalising each temperature against itself says what a 3000 K body looks like
+to nobody in particular; dividing by the Sun first says what it looks like NEXT
+TO THE SUN, which is the comparison the words *red dwarf* and *blue giant* were
+coined from and the adaptation state of the only eye that will ever read the
+screen. It also pins Sol at exactly (1,1,1), so twenty milestones of
+solar-system tuning are untouched. Barnard's Star went from (1.00, 0.73, 0.52)
+to (1.00, 0.59, 0.25); Sirius B from (0.67, 0.76, 1.00) to (0.31, 0.48, 1.00).
+The dome's six class colours are the same function read at each class's
+temperature, because a dome corrected while the catalogue was not would put
+Sirius in a sky whose neighbours obey different physics.
+
+**AND THE GLARE WAS DRAWING EVERY STAR THROUGH A SUNSET.** With the ladder
+fixed the red dwarfs read correctly and Sirius still came out white. The three
+glare meshes carried Sol's warm ramp baked into their vertices — (1, 0.98,
+0.95), (1, 0.80, 0.52), (1, 0.68, 0.38) — and the star's hue was multiplied on
+top. For Sol that is a no-op. For Sirius it is (0.51, 0.66, 1.00) times (1,
+0.68, 0.38), which is **orange**.
+
+The meshes are neutral now and the ramp moved into the tint, where it is a
+TEMPERATURE FACTOR rather than a colour: each layer is drawn as the blackbody of
+a cooler star — 0.97 of its temperature at the core, 0.745 at the halo, 0.627 at
+the aureole. Those three numbers are not free, they are what reproduces Sol's
+hand-tuned ramp when fed 5772 K (to within four hundredths in blue). So the Sun
+is unchanged and every other star reddens outward FROM ITS OWN COLOUR. Measured
+in the far wing at seventy pixels: Sirius (0.48, 0.61, 1.00), Procyon (0.55,
+0.65, 1.00), Sol (0.86, 0.86, 1.00), Barnard (1.00, 0.76, 0.48), Wolf 359
+(1.00, 0.73, 0.44) — monotone in temperature, which it was not before.
+
+**What is checked.** `EveryStarsSizeAndColourAgreeWithItsSpectralClass` walks
+all thirty-six against the designation each record already carries: every M
+dwarf small AND red, both white dwarfs Earth-sized and hot, every A star
+blue-white and larger than the Sun, every brown dwarf planet-sized and barely
+glowing — and it counts the families it matched, because a walk that matched
+nothing would pass every assertion in it.
+`TheColourLadderPutsEveryStarWhereItsNameSaysItIs` pins the ladder monotone in
+temperature over the whole range, the brightest channel at exactly 1, Sol
+neutral, and nothing green below 1200 K — that last one for WISE 0855, which at
+276 K came out (1.00, 0.90, 0.00) before the floor went in, a bright
+yellow-green for an object that emits no visible light at all.
+
+**New instruments.** `SW_STARPROBE=1` writes the whole table — radius,
+temperature, luminosity, hue, and the word the eye would use — plus which stars
+are suns from where the camera is and the irradiance ratio that decided each.
+`SW_SHOT=SUNS@<metres>` frames a pair: neither existing mode could photograph a
+binary, since a body shot needs a name in the celestial index and a ship shot
+points at the craft parked beside one of the two. It stands off the midpoint
+along the perpendicular to the line joining them, which is the one direction
+that puts both in frame and separated.
+
+**Two things worth knowing.** The probes now run ABOVE the jump latch in
+`applyDebugJump`: `SW_JUMP` sets `m_debugJumped` on its first frame and every
+later call returns immediately, so a probe waiting thirty frames for the camera
+to settle was never reached in any run that also jumped — which is every run
+where the question is about another star. And `SW_BOARD` does not combine with
+`SW_JUMP`: the Endurance is on rails, so the teleport is undone by
+`RailsSystem` on the next tick and the origin follows it back to Sol. Jump
+without boarding.
+
+### F31 — the clock that ran out of digits
+
+**"JE ME SUIS POSE SUR PROXIMA CENTAURI B ET LE SOL S'EST MIS A VIBRER, AUSSI
+BIEN SUR CETTE PLANETE QUE SUR TERRA."**
+
+Both halves of that sentence are the diagnosis, and the second half is the
+one that names the cause. A fault that follows you back to Terra is not a
+fault of Proxima b; it is something GLOBAL that the trip changed. Only one
+thing does: the clock.
+
+Everything analytic here — every planet's position, every rail, every planet's
+rotation — is a function of ABSOLUTE simulated time, evaluated fresh each tick.
+A crossing to Proxima Centauri is 4.0e16 m, and at the hundred-odd km/s a ship
+makes that is about **3e11 seconds** of simulated time, whatever warp rung you
+spend it at — warp changes how long you wait, not how much time passes. A
+double at 3e11 has a step of 61 microseconds. Terra covers **1.8 m** in 61
+microseconds.
+
+So every tick's time was snapped to a grid 1.8 m wide. Not drift — drift is
+invisible, the whole world moves together — but NOISE, a different rounding
+every tick, and the walker's own position is integrated rather than slaved to
+the planet, so it bobs against ground that is jumping under it. Measured on the
+shipped orbit, per-tick position noise:
+
+| simulated time | what it is | Terra | Proxima b |
+|---|---|---:|---:|
+| 0 | a fresh session | 0.000 m | 0.000 m |
+| 1e10 s | three centuries | 0.10 m | 0.16 m |
+| 3.3e11 s | **one crossing** | **2.18 m** | **2.90 m** |
+| 3.3e12 s | ten crossings | 34.8 m | 54.9 m |
+
+**REDUCING THE MEAN ANOMALY IS NOT THE FIX**, and measuring that first is what
+kept the afternoon honest. `M = M0 + n*(t - epoch)` reaches 6.6e4 radians at one
+crossing, whose own ulp is worth 2.2 m, so wrapping it modulo the period looks
+like the answer. It takes 2.18 m to 1.82 m. The error is in the TIME, not in
+the anomaly, and no amount of care downstream can recover a digit the clock
+never had.
+
+**So the clock carries exact integer seconds plus a fraction in [0, 1).** The
+whole part is exact to 2^53 seconds — two hundred and eighty-five million
+years — and the fraction keeps its full seventeen digits however large the
+whole part grows. `Simulation` accumulates with a carry instead of `+=`;
+`SimulationLane::presentSecondsSplit` subtracts the lane's residue in the
+fraction with a borrow; `kepler::evaluateSplit` reduces the elapsed interval
+modulo the period using the exact whole part, so what reaches the multiply is a
+small number carrying the fraction's full precision. The same treatment for the
+two spin systems, where the period is the rotation rather than the orbit.
+
+It reaches the four things that POSITION the world every tick — celestial
+motion, rails, celestial spin, rails spin — and `CelestialIndex::stateAtSplit`
+carries it down the whole parent chain, because Luna's position is Terra's plus
+its own and a moon evaluated exactly on top of a parent evaluated sloppily
+inherits the parent's noise. The map, the HUD and the trajectory predictor keep
+the plain single-double path: a millimetre is not a picture anybody can see, and
+sixty-odd call sites did not need touching.
+
+Measured after: **0.00054 m at one crossing and 0.00055 m at ten** — flat
+instead of growing, four orders of magnitude better. In the shipping engine,
+with `SW_CLOCK` winding the clock before the scene is built, the primary's
+per-frame step jitter reads **0.000000 m** at every clock value tested.
+
+**Two instruments and one lesson about them.** `SW_CLOCK=<seconds>` winds the
+simulation clock forward, and it has to do so BEFORE `buildScene` — setting it
+from inside the frame loop was tried first and measured twelve kilometres of
+wobble that was pure artefact, the planet rotating out from under a walker
+still carrying the 464 m/s it had at t=0. `SW_GROUNDPROBE=1` then reports the
+per-frame motion of the body under the player. It samples the PLANET and not
+the walker, and that is a correction rather than a convenience: even with the
+clock set before the build, the scene is still PLACED at spin angle zero, so
+the first tick launches the walker on a ballistic hop and what the probe
+reports is the hook. The body's own step has no such artefact and is exactly
+the quantity the split clock protects.
+
+What is NOT fixed: a walker placed by `SW_CLOCK` still hops, because
+`buildScene` positions the outpost at spin angle zero regardless of the clock.
+That is a limitation of the test hook, not of the game — a real session
+advances the clock with the world attached to it — but it means the hook cannot
+be used to photograph a landing at an arbitrary date.
+
+### F32 — the orbit's other four directions
+
+**"AJOUTE DES BOUTONS EN PLUS DE PROGRADE ET RETROGRADE : UN BOUTON RADIAL IN ET
+RADIAL OUT ET UN BOUTON NORMAL IN ET NORMAL OUT."**
+
+Four more hold modes, and the reason they are worth four more buttons is that
+none of them is reachable by pointing at prograde and waiting. **A plane change
+is flown NORMAL** — perpendicular to the orbit — and it is the one burn where
+prograde is exactly the wrong answer. **A radial burn rotates the line of
+apsides without changing the period**, which is how a periapsis is moved to
+where you want it rather than to wherever the last burn left it. Both are
+standard vocabulary; both were previously flyable only by hand, against a
+navball that did not even draw the marker.
+
+**ONE FUNCTION, TWO CONSUMERS.** `phys::orbitalFrame` returns prograde, normal
+and radial-out from a position and a velocity, and both the autopilot and the
+navball call it. That is not tidiness: every one of these vectors is a cross
+product whose sign is a coin flip until the convention is written down, and a
+sign flipped in one of two copies is a plane change that turns the orbit the
+wrong way with a marker sitting exactly where the nose already points — a
+failure with nothing anywhere that says so. Normal is r x v, radial-out is
+prograde x normal, and the function returns FALSE when r x v vanishes (straight
+up, straight down, hovering) so the caller holds rather than points at a
+normalised zero.
+
+They are built from the **same velocity prograde is**, honouring the `V` frame
+toggle, so all six markers move together or none of them do. An autopilot
+holding a normal computed in one frame while the navball drew it in the other
+would be F6's landing bug again with a different vector.
+
+**Eight buttons, two rows.** The velocity holds keep the row they have always
+been on, so a hand that knows where PGD is still finds it; the orbit's other
+four go above them, together, because they are one family. Four characters is
+the label budget — the glyph advance is 6/7 of the text height, so at 0.036 in
+a 0.115-wide button a fifth letter runs off the end — hence `RAD+`/`RAD-` and
+`NML+`/`NML-`, and hence the line above the rows that spells the active mode
+out in full: `+`/`-` for a direction is a convention, and a convention has to be
+written somewhere the player can see it. `T` walks all nine states.
+
+**And the navball got the four markers**, because four buttons without them is
+half an instrument: cyan for radial, violet for normal, filled for the `+`
+sense and hollow for the `-`, matching prograde-filled / retrograde-hollow.
+
+Two things the capture found that reasoning had not. The mode line was first
+placed BELOW the rows at 0.980 and came back with its descenders sheared off by
+the screen edge — it lives above them now. And **the 5x7 charset has no
+parentheses**, which it never has: `ORB FRAME (V)` has been rendering as `ORB
+FRAME  V` with two blanks since the day it was written. Both lines now use a
+colon, which exists.
+
+`SW_SAS=<mode>` engages an autopilot mode from a capture. It is what produced
+the picture that closes this: holding RADIAL OUT, the cyan diamond sits exactly
+on the craft reference at the centre of the ball — the button, the mode, the
+controller and the marker all agreeing about one direction.
+
 ### Milestone 32+ — candidates (remaining)
+Parallelise the LOD sphere builds across the thread pool (fourteen relief worlds
+serialised on one core is most of the boot bar). Land on Venus (a ground under the
+style-24 deck). The other half of the ring shadow — the
+planet's own shadow falling ACROSS the annulus, which is what makes a ring look
+like it is orbiting something rather than painted on — plus the forward-
+scattering surge that lights a backlit ring from behind. A per-fragment ring
+material (they still ride the ordinary lit path on vertex colours). Albedo
+contrast on Mars, which is a uniform rust at the moment where the real one has
+Syrtis. And the last one per cent of the gas-giant ripple: three quarters of it
+was the aerial-perspective clip, and what is left has not been localised.
 F4 exploitation UI, part fabrication and real conveyor transport. A rename field for designs (the character path exists now). Fuel and crew as build inputs rather than pad stock. Also: impact-driven joint breakage (fields ready), per-Mach aero tables (the format has room; the runtime call site would not change), reentry heating driven by the same dynamic pressure, control surfaces that deflect, placeholder cleanup. Multiplayer next steps: interest management (per-client relevance by distance and attachment), drawing other players' craft from the mirror world, the rest of the stamped-event vocabulary (staging, construction, resource transfer), and client-side interpolation between snapshots.

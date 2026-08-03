@@ -15,7 +15,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <utility>
 
 namespace sw
 {
@@ -29,6 +32,123 @@ namespace sw
         f32 millisecondsSince(ProfileClock::time_point start)
         {
             return std::chrono::duration<f32, std::milli>(ProfileClock::now() - start).count();
+        }
+
+        // ---- a PNG writer that owes nothing to anybody -----------------------
+        // Deflate has a STORED block type: a length, its complement, and the
+        // bytes. It compresses nothing and it is a legal deflate stream, which
+        // makes a valid PNG out of forty lines and no dependency. A capture is
+        // written once and looked at once; the four megabytes are the cheapest
+        // thing in this file.
+        u32 crc32Of(const u8* data, usize length, u32 crc)
+        {
+            static u32 table[256];
+            static bool ready = false;
+            if (!ready)
+            {
+                for (u32 n = 0; n < 256; ++n)
+                {
+                    u32 c = n;
+                    for (int k = 0; k < 8; ++k)
+                    {
+                        c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+                    }
+                    table[n] = c;
+                }
+                ready = true;
+            }
+            for (usize i = 0; i < length; ++i)
+            {
+                crc = table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+            }
+            return crc;
+        }
+
+        void pushBigEndian(std::vector<u8>& out, u32 value)
+        {
+            out.push_back(static_cast<u8>(value >> 24));
+            out.push_back(static_cast<u8>(value >> 16));
+            out.push_back(static_cast<u8>(value >> 8));
+            out.push_back(static_cast<u8>(value));
+        }
+
+        void pushChunk(std::vector<u8>& out, const char tag[4],
+                       const std::vector<u8>& payload)
+        {
+            pushBigEndian(out, static_cast<u32>(payload.size()));
+            const usize start = out.size();
+            out.insert(out.end(), tag, tag + 4);
+            out.insert(out.end(), payload.begin(), payload.end());
+            const u32 crc = crc32Of(out.data() + start, out.size() - start, 0xFFFFFFFFu);
+            pushBigEndian(out, crc ^ 0xFFFFFFFFu);
+        }
+
+        /// `bgra` is width*height*4 bytes, B G R A, top row first — which is
+        /// what the swapchain hands back.
+        bool writePng(const std::string& path, u32 width, u32 height,
+                      const std::vector<u8>& bgra)
+        {
+            std::vector<u8> raw;
+            raw.reserve(static_cast<usize>(height) * (width * 3 + 1));
+            for (u32 y = 0; y < height; ++y)
+            {
+                raw.push_back(0); // filter: none
+                const u8* row = bgra.data() + static_cast<usize>(y) * width * 4;
+                for (u32 x = 0; x < width; ++x)
+                {
+                    raw.push_back(row[x * 4 + 2]);
+                    raw.push_back(row[x * 4 + 1]);
+                    raw.push_back(row[x * 4 + 0]);
+                }
+            }
+
+            std::vector<u8> zlibStream;
+            zlibStream.push_back(0x78);
+            zlibStream.push_back(0x01);
+            usize offset = 0;
+            while (offset < raw.size())
+            {
+                const usize block = std::min<usize>(65535, raw.size() - offset);
+                const bool last = (offset + block) >= raw.size();
+                zlibStream.push_back(last ? 1 : 0);
+                zlibStream.push_back(static_cast<u8>(block & 0xFFu));
+                zlibStream.push_back(static_cast<u8>((block >> 8) & 0xFFu));
+                zlibStream.push_back(static_cast<u8>(~block & 0xFFu));
+                zlibStream.push_back(static_cast<u8>((~block >> 8) & 0xFFu));
+                zlibStream.insert(zlibStream.end(), raw.begin() + static_cast<std::ptrdiff_t>(offset),
+                                  raw.begin() + static_cast<std::ptrdiff_t>(offset + block));
+                offset += block;
+            }
+            u32 a = 1;
+            u32 b = 0;
+            for (const u8 byte : raw)
+            {
+                a = (a + byte) % 65521u;
+                b = (b + a) % 65521u;
+            }
+            pushBigEndian(zlibStream, (b << 16) | a);
+
+            std::vector<u8> png{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+            std::vector<u8> header;
+            pushBigEndian(header, width);
+            pushBigEndian(header, height);
+            header.push_back(8); // bit depth
+            header.push_back(2); // colour type: truecolour
+            header.push_back(0);
+            header.push_back(0);
+            header.push_back(0);
+            pushChunk(png, "IHDR", header);
+            pushChunk(png, "IDAT", zlibStream);
+            pushChunk(png, "IEND", {});
+
+            std::FILE* file = std::fopen(path.c_str(), "wb");
+            if (file == nullptr)
+            {
+                return false;
+            }
+            const usize written = std::fwrite(png.data(), 1, png.size(), file);
+            std::fclose(file);
+            return written == png.size();
         }
     } // namespace
 
@@ -204,6 +324,11 @@ namespace sw
         }
     }
 
+    void Renderer::requestCapture(std::string path)
+    {
+        m_capturePath = std::move(path);
+    }
+
     void Renderer::waitIdle() const
     {
         if (m_device)
@@ -262,11 +387,14 @@ namespace sw
         std::sort(m_visibleIndices.begin(), m_visibleIndices.end(),
                   [&items](u32 a, u32 b) { return items[a].mesh < items[b].mesh; });
         // Transparents sort BACK-TO-FRONT (correct blending), never by mesh.
+        const auto sortKey = [&items](u32 index) {
+            const DrawItem& item = items[index];
+            return (item.sortDistanceSquared >= 0.0f)
+                       ? item.sortDistanceSquared
+                       : glm::dot(item.boundsCenter, item.boundsCenter);
+        };
         std::sort(m_transparentIndices.begin(), m_transparentIndices.end(),
-                  [&items](u32 a, u32 b) {
-                      return glm::dot(items[a].boundsCenter, items[a].boundsCenter) >
-                             glm::dot(items[b].boundsCenter, items[b].boundsCenter);
-                  });
+                  [&sortKey](u32 a, u32 b) { return sortKey(a) > sortKey(b); });
         // THE HUD DRAWS IN THE ORDER IT WAS SUBMITTED, by layer. This used
         // to be a plain sort by mesh pointer — "their draw order has no
         // meaning" — and it cost a blank, flickering build menu: a panel and
@@ -405,8 +533,12 @@ namespace sw
         }
         uniforms.fogColorDensity = Vec4(m_fogColor, m_fogDensity);
         uniforms.skyAmbient = Vec4(m_skyAmbient, 0.0f);
+        const f32 viewportHeight =
+            std::max(static_cast<f32>(m_swapchain->extent().height), 1.0f);
+        const f32 pixelAngle =
+            2.0f * std::tan(camera.verticalFov() * 0.5f) / viewportHeight;
         uniforms.qualityTime =
-            Vec4(m_quality, m_timeSeconds, m_atmosphereStyle, 0.0f);
+            Vec4(m_quality, m_timeSeconds, m_atmosphereStyle, pixelAngle);
         uniforms.atmosphereBody = Vec4(m_atmosphereCentre, m_atmosphereRadius);
         std::memcpy(frame.cameraUbo.mappedData(), &uniforms, sizeof(uniforms));
 
@@ -461,6 +593,22 @@ namespace sw
         {
             SW_LOG_ERROR(kLogCat, "vkQueuePresentKHR failed: {}",
                          vulkan::toString(presentResult));
+        }
+
+        if (!m_capturePath.empty())
+        {
+            // Everything, drained: the frame we want to read is the one that
+            // was just submitted, and nothing else may be touching the image.
+            waitIdle();
+            const VkExtent2D captureExtent = m_swapchain->extent();
+            const std::vector<u8> pixels = m_memory->readImageToHost(
+                m_swapchain->image(imageIndex), captureExtent,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            const bool ok = writePng(m_capturePath, captureExtent.width,
+                                     captureExtent.height, pixels);
+            SW_LOG_INFO(kLogCat, "capture {} -> '{}' ({}x{})", ok ? "written" : "FAILED",
+                        m_capturePath, captureExtent.width, captureExtent.height);
+            m_capturePath.clear();
         }
 
         m_currentFrame = (m_currentFrame + 1) % kFramesInFlight;

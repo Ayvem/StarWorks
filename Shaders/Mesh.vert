@@ -51,6 +51,11 @@ layout(location = 5) out vec3 vModelPosition;   // planet body-frame direction
 layout(location = 6) out vec3 vSunDirBody;
 layout(location = 7) flat out float vBodyRadius;
 layout(location = 8) out vec3 vViewDirBody;
+/// THE CAMERA, IN BODY UNITS (unit-sphere space, so 1.0 is the surface).
+/// `flat`, because it is the same for every fragment of one planet and must
+/// not be interpolated: the fragment shader intersects the view ray with the
+/// TRUE sphere from here, instead of trusting the interpolated mesh position.
+layout(location = 9) flat out vec3 vCameraPosBody;
 
 void main()
 {
@@ -71,11 +76,33 @@ void main()
     vModelPosition = inPosition;
 
     // Uniform scale is the engine convention, so mat3(model) is rotation *
-    // radius: its transpose maps a world direction back into the body frame
-    // (the length is irrelevant, the fragment normalizes).
+    // radius, and its transpose maps a world direction back into the body
+    // frame.
+    //
+    // NORMALIZE BEFORE THE MATRIX, NOT AFTER. "The length is irrelevant, the
+    // fragment normalizes" was true of the mathematics and false of f32.
+    // Saturn is 1.43e12 m from the sun and 5.82e7 m in radius, so the old
+    // product came out at 8e19 — and normalize() squares its argument first.
+    // 6.9e39 is past the f32 ceiling of 3.4e38, so the length was INFINITY,
+    // the direction was NaN, and every lambert term on the planet evaluated
+    // to zero.
+    //
+    // The effect was not subtle and it was not local: EVERY OUTER PLANET IN
+    // THE GAME WAS UNLIT. Jupiter, Saturn, Uranus and Neptune were drawn with
+    // nothing but the 2% cold ambient, which is exactly why they looked like
+    // grey balls no matter what the surface shader did. Terra survived on
+    // luck — 6.37e6 x 1.5e11 squares to 9e35, one part in four hundred under
+    // the ceiling.
+    //
+    // Normalizing first keeps every intermediate near 1.
     const mat3 rotationScale = mat3(model);
-    vSunDirBody = transpose(rotationScale) *
-                  (uCamera.sunPosition.xyz - worldPosition.xyz);
-    vViewDirBody = transpose(rotationScale) * (-worldPosition.xyz);
     vBodyRadius = length(rotationScale[0]);
+    const mat3 rotation = rotationScale / max(vBodyRadius, 1.0e-6);
+    vSunDirBody = transpose(rotation) *
+                  normalize(uCamera.sunPosition.xyz - worldPosition.xyz);
+    vViewDirBody = transpose(rotation) * normalize(-worldPosition.xyz);
+    // model[3] is the body's centre in camera-relative space, so its negative
+    // is the camera seen from the body. In body axes and body radii.
+    vCameraPosBody =
+        (transpose(rotation) * (-model[3].xyz)) / max(vBodyRadius, 1.0e-6);
 }

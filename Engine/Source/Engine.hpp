@@ -57,6 +57,7 @@
 #include "Simulation/Simulation.hpp"
 #include "Space/CelestialIndex.hpp"
 #include "Space/CelestialSystems.hpp"
+#include "Space/StarCatalogue.hpp"
 #include "Space/SpaceComponents.hpp"
 #include "Space/TrajectoryPrediction.hpp"
 #include "UI/HudFont.hpp"

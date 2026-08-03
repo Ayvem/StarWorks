@@ -114,9 +114,22 @@ int main()
 {
     struct Case { const char* name; sw::planet::TerrainComponent terrain; int style; };
     const Case cases[] = {
-        {"Terra", sw::planet::presetTerra(), 0},
-        {"Luna",  sw::planet::presetLuna(),  1},
-        {"Mars",  sw::planet::presetMars(),  2},
+        {"Terra",     sw::planet::presetTerra(),        0},
+        {"Luna",      sw::planet::presetLuna(),         1},
+        {"Mars",      sw::planet::presetMars(),         2},
+        // The landable solar system (styles 3-13): every preset that
+        // collision can sample must match the shader that draws it.
+        {"Mercury",   sw::planet::terrainPreset(3),     3},
+        {"Io",        sw::planet::terrainPreset(4),     4},
+        {"Europa",    sw::planet::terrainPreset(5),     5},
+        {"Ganymede",  sw::planet::terrainPreset(6),     6},
+        {"Callisto",  sw::planet::terrainPreset(7),     7},
+        {"Titan",     sw::planet::terrainPreset(8),     8},
+        {"Enceladus", sw::planet::terrainPreset(9),     9},
+        {"Rhea",      sw::planet::terrainPreset(10),   10},
+        {"Titania",   sw::planet::terrainPreset(11),   11},
+        {"Oberon",    sw::planet::terrainPreset(12),   12},
+        {"Triton",    sw::planet::terrainPreset(13),   13},
     };
     constexpr int kSamples = 20000;
     int failures = 0;
@@ -166,7 +179,11 @@ def main() -> int:
 
     workdir = tempfile.mkdtemp(prefix="sw_parity_")
     cpp = os.path.join(workdir, "parity.cpp")
-    exe = os.path.join(workdir, "parity")
+    # THE SUFFIX IS NOT COSMETIC ON WINDOWS. g++ writes "parity.exe" whatever
+    # you pass to -o, so a harness that then launches "parity" compiles
+    # perfectly and dies with a file-not-found — which reads as a broken
+    # parity check rather than a missing four characters.
+    exe = os.path.join(workdir, "parity" + (".exe" if os.name == "nt" else ""))
     with open(cpp, "w", encoding="utf-8") as handle:
         handle.write(program)
 

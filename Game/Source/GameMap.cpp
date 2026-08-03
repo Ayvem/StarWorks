@@ -357,35 +357,45 @@ namespace game
         }
     }
 
-    void StarWorksGame::collectDrawItems(const sw::Camera& activeCamera, bool mapView)
+    // ------------------------------------------------------------------------
+    // A SUN, DRAWN AS ONE.
+    //
+    // This used to be inline in collectDrawItems and it ran for exactly one
+    // star: whichever was brightest from the camera. In a binary that is a
+    // visible lie. Alpha Centauri B is a K1 dwarf twenty-three astronomical
+    // units from A — from a world orbiting A it is the second sun in the sky,
+    // half Sol's output, apparent magnitude around -19 — and it was drawn as
+    // ONE flat billboard capped at flux^0.2, the same treatment given to a
+    // star four light-years away. Two suns, one of them a dot.
+    //
+    // So the whole treatment is a function now, and collectDrawItems calls it
+    // for every star that qualifies. What follows is unchanged except that it
+    // reads `star` instead of the dominant one, and that the lens flare is
+    // gated: ghosts are an artefact of ONE optical axis, and a second chain
+    // from a second source lands on top of the first.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::collectStarVisual(sw::ecs::Entity star,
+                                          const sw::Camera& activeCamera, bool mapView,
+                                          bool withFlare)
     {
-        m_drawItems.clear();
-        m_drawItems.reserve(m_world.aliveCount() + 512);
-
-        // Static star dome: CAMERA-CENTERED (no translation), so the stars
-        // are parallax-free — an infinitely distant, never-changing sky to
-        // orient by. One emissive mesh, one draw call.
+        const auto* sunVisual = m_world.tryGetComponent<StarVisualComponent>(star);
+        if (const auto* sol = m_world.tryGetComponent<TransformComponent>(star);
+            sol != nullptr && sunVisual != nullptr)
         {
-            sw::DrawItem stars{};
-            stars.mesh = &m_meshes[m_starfieldMeshIndex];
-            stars.transform = glm::scale(sw::Mat4{1.0f}, sw::Vec3{kStarDomeRadius});
-            stars.boundsCenter = {0.0f, 0.0f, 0.0f};
-            stars.boundsRadius = kStarDomeRadius;
-            // Daylight washes the stars out: the emissive opacity is
-            // (vertexAlpha * tintAlpha - 1), so tint 2.0 = full night sky
-            // and tint 1.0 = fully invisible at noon on the pad.
-            const sw::f32 nightFactor = 1.0f - 0.96f * m_skyDayFactor;
-            stars.tint = {1.0f, 1.0f, 1.0f, 1.0f + nightFactor};
-            m_drawItems.push_back(stars);
-        }
-
-        // The sun's soft glow: two emissive radial-falloff discs, always
-        // facing the camera, drawn in the transparent pass.
-        if (const auto* sol = m_world.tryGetComponent<TransformComponent>(m_solEntity))
-        {
+            // THE LOCAL SUN'S OWN SCALE. Every length below used to be written
+            // in units of kSolRadius and every distance against Terra's orbit,
+            // which is right for exactly one star out of thirty-six. A star's
+            // own "one AU" is where it delivers Terra's irradiance — sqrt(L)
+            // astronomical units — and its own radius is its own radius, so
+            // Proxima's glare is a thousandth the size of Sirius's for the
+            // same reason its habitable zone is.
+            const auto& sunStar = sw::space::stars()[sunVisual->catalogueIndex];
+            const sw::f32 starRadius = static_cast<sw::f32>(sunStar.radius);
+            const sw::f32 starAu = static_cast<sw::f32>(
+                kTerraSma * std::sqrt(std::max(sunStar.luminosity, 1.0e-9)));
             const sw::Vec3 toSol = sw::Vec3(sol->position - activeCamera.position());
             const sw::f32 distance = glm::length(toSol);
-            if (distance > static_cast<sw::f32>(kSolRadius) * 3.0f)
+            if (distance > starRadius * 3.0f)
             {
                 const sw::Vec3 z = -toSol / distance; // disc normal, toward camera
                 const sw::Vec3 reference =
@@ -395,31 +405,151 @@ namespace game
                 const sw::Mat4 basis{sw::Vec4(x, 0.0f), sw::Vec4(yAxis, 0.0f),
                                      sw::Vec4(z, 0.0f), sw::Vec4(toSol, 1.0f)};
 
-                auto pushGlow = [&](sw::u32 meshIndex, sw::f32 radiusFactor) {
-                    const sw::f32 radius =
-                        static_cast<sw::f32>(kSolRadius) * radiusFactor;
+                // THE THREE LAYERS SHARE A CENTRE, so they share a sort key,
+                // and std::sort is NOT STABLE: with equal keys the order is
+                // whatever the algorithm felt like, which meant the faint
+                // aureole was as likely as not to be painted OVER the clipped
+                // white core. That is why the sun measured 240 instead of 255
+                // with a radiance of twenty-six behind it — a fifth of its
+                // brightness was being thrown away by a tie-break.
+                //
+                // A hair of separation in the key, largest first, and the
+                // order is the one the physics asks for.
+                // THE GLARE FOLLOWS THE SOURCE'S BRIGHTNESS, NOT ITS SIZE,
+                // and getting that backwards is why the sun was invisible from
+                // the outer system. Tied to the disc, the whole thing shrank
+                // as 1/d — so from Saturn the sun measured sRGB 195 while a
+                // BACKGROUND STAR in the same frame reached 234. The sun from
+                // Saturn is magnitude -23. Sirius is -1.5. We were drawing a
+                // source two hundred and fifty million times brighter as the
+                // dimmer of the two.
+                //
+                // What sets the visible extent of glare is where its profile
+                // falls below the eye's threshold. For a point spread function
+                // going as theta^-n, that radius scales as I^(1/n), and the
+                // irradiance I goes as 1/d^2 — so the ANGULAR extent shrinks
+                // only as d^(-2/n), and the world-space radius therefore GROWS
+                // as d^(1-2/n).
+                //
+                // THE EXPONENT BELONGS TO THE FAR WING, not to the core, and
+                // the first pass used the wrong one. A lens's core PSF falls
+                // as theta^-3.5 and its VEILING GLARE — the scatter off every
+                // surface in the barrel, which is what you actually see around
+                // a source eight orders of magnitude past full scale — falls
+                // as roughly theta^-10. At n = 10 the world radius grows as
+                // d^0.8, and the sun's glare shrinks from 133 pixels at Terra
+                // to 85 at Saturn and 66 at Neptune instead of collapsing to
+                // 25. Distance still reads, and it reads through the disc
+                // underneath, which is the honest cue and shrinks as 1/d.
+                //
+                // Clamped at 1 because inside Terra's orbit the disc itself is
+                // growing faster than the glare and the layers must not fall
+                // inside it: near the sun the glare is a multiple of the body,
+                // far away it is a multiple of its brightness.
+                const sw::f32 glareSpread =
+                    std::max(1.0f, std::pow(distance / starAu, 0.80f));
+                auto pushGlow = [&](sw::u32 meshIndex, sw::f32 radiusFactor,
+                                    sw::f32 minAngularRadius, sw::f32 sortBias,
+                                    sw::f32 temperatureFactor) {
+                    // A FLOOR ON THE ANGULAR SIZE, because glare does not
+                    // shrink to nothing with the source. From Saturn the sun
+                    // is a tenth of a degree across and the core disc lands
+                    // inside one pixel, which the rasteriser then covers
+                    // PARTIALLY — so the brightest object in the solar system
+                    // came out at sRGB 184 from the outer planets, dimmer than
+                    // it is from Terra. That is backwards twice over: it is
+                    // still magnitude -23 out there.
+                    //
+                    // Every optic, and every eye, has a point spread function
+                    // with a width of its own. Below it a source stops getting
+                    // smaller and starts only getting fainter, which is why a
+                    // star is a disc in every photograph ever taken.
+                    //
+                    // THE FLOOR IS AS SMALL AS THE PROBLEM ALLOWS: 0.0022 rad
+                    // is under two pixels of radius at 900 lines, which is
+                    // exactly enough to stop the partial-coverage dimming and
+                    // no more. It was five times that at first and it showed —
+                    // from Saturn the sun's glare was eleven times the true
+                    // disc, which is a lie of the kind somebody measures.
+                    const sw::f32 radius = std::max(
+                        starRadius * radiusFactor * glareSpread,
+                        distance * minAngularRadius);
                     sw::DrawItem glow{};
                     glow.mesh = &m_meshes[meshIndex];
                     glow.transform =
                         basis * glm::scale(sw::Mat4{1.0f}, sw::Vec3{radius});
                     glow.boundsCenter = toSol;
                     glow.boundsRadius = radius;
-                    glow.tint = {1.0f, 1.0f, 1.0f, 1.0f};
+                    // ROUTED TO THE SOFT-EMISSIVE BRANCH (2.45), not to the
+                    // plain emissive one, and it is the same trap the star
+                    // dome fell into: that branch uses the INTERPOLATED alpha
+                    // as its material flag, and a glare has to reach zero
+                    // opacity at its rim — which is alpha exactly 1.0, the
+                    // wrong side of the test. Everything below the threshold
+                    // fell through to the LIT path and was shaded as an
+                    // ordinary grey surface, so each layer drew a solid RING
+                    // at its own edge. The sun had two of them around it.
+                    // THE GLARE REDDENS OUTWARD FROM THE STAR'S OWN COLOUR.
+                    //
+                    // Each layer is the blackbody of a COOLER star than this
+                    // one — 0.97 of its temperature at the core, 0.75 at the
+                    // halo, 0.63 at the aureole. Those three numbers are not
+                    // free: they are what reproduces Sol's hand-tuned warm
+                    // ramp, (1, 0.98, 0.95) / (1, 0.80, 0.52) / (1, 0.68,
+                    // 0.38), when fed Sol's 5772 K. So the sun is unchanged to
+                    // within four hundredths in blue, and every other star
+                    // gets the same PHYSICS instead of the same COLOUR:
+                    // Sirius's core comes out blue and its aureole white,
+                    // Barnard's core deep orange and its aureole ember.
+                    //
+                    // The alternative — one warm ramp for everyone, which is
+                    // what this was — multiplied Sirius's (0.51, 0.66, 1.00)
+                    // by the aureole's (1, 0.68, 0.38) and produced ORANGE.
+                    const sw::Vec3 layerHue = blackbodyColor(
+                        static_cast<sw::f32>(sunStar.temperature) * temperatureFactor);
+                    glow.tint = {layerHue.r, layerHue.g, layerHue.b, 2.45f};
                     glow.transparent = true;
+                    glow.sortDistanceSquared = distance * distance * sortBias;
                     m_drawItems.push_back(glow);
                 };
-                pushGlow(m_sunHaloMeshIndex, 7.5f);
-                pushGlow(m_sunCoreMeshIndex, 2.1f);
+                // OUTSIDE IN: the transparent pass sorts by distance and
+                // these three are at the same one, so submission order is
+                // what decides, and a bright core painted before a faint
+                // aureole would be dimmed by it.
+                //
+                // The aureole is 37 solar radii — ten degrees of sky seen
+                // from Terra. That sounds enormous and it is exactly right:
+                // stand outside and the glare around the sun reaches a third
+                // of the way to the horizon. Anything smaller reads as a
+                // lamp rather than as a star you are standing near.
+                if (!m_debugNoGlare)
+                {
+                pushGlow(m_sunAureoleMeshIndex, 36.8f, 0.0130f, 1.003f, 0.627f);
+                pushGlow(m_sunHaloMeshIndex, 13.0f, 0.0046f, 1.002f, 0.745f);
+                pushGlow(m_sunCoreMeshIndex, 3.46f, 0.0062f, 1.001f, 0.971f);
+                }
 
                 // ---- LENS FLARE: screen-space ghosts along the sun axis ------
                 // Only when the sun is on screen and not behind a planet.
-                if (!mapView)
+                if (!mapView && withFlare)
                 {
-                    bool occluded = false;
+                    // NOT A BINARY OCCLUSION TEST. A flare is a bloom inside
+                    // the lens, and it does not switch off the instant the
+                    // sun's centre crosses a planet's limb — it dims as the
+                    // disc eats the source. A hard test also leaves the chain
+                    // at full strength while the sun sits half a degree off
+                    // Saturn's edge, which drops three coloured discs on a
+                    // planet's night side at full brightness.
+                    //
+                    // Faded from 0.9 to 1.7 body radii of miss distance: gone
+                    // well before the sun is actually behind anything, back at
+                    // full strength once it is clear of the limb.
+                    sw::f32 flareVisibility = 1.0f;
                     for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
                     {
                         const auto& body = m_celestialIndex.body(i);
-                        if (body.entity == m_solEntity)
+                        if (m_world.tryGetComponent<StarVisualComponent>(
+                                body.entity) != nullptr)
                         {
                             continue;
                         }
@@ -435,11 +565,11 @@ namespace game
                             {
                                 const sw::f32 miss =
                                     glm::length(center - lightDir * along);
-                                if (miss < static_cast<sw::f32>(body.bodyRadius))
-                                {
-                                    occluded = true;
-                                    break;
-                                }
+                                const auto radius = static_cast<sw::f32>(body.bodyRadius);
+                                flareVisibility = std::min(
+                                    flareVisibility,
+                                    sw::math::smoothstepf(radius * 0.9f, radius * 1.7f,
+                                                          miss));
                             }
                         }
                     }
@@ -452,7 +582,7 @@ namespace game
                     // space as stray colored circles).
                     const bool sunInFront =
                         clip.w > 0.0f && glm::dot(activeCamera.forward(), z) < 0.0f;
-                    if (!occluded && sunInFront)
+                    if (flareVisibility > 0.01f && sunInFront)
                     {
                         const sw::Vec2 sunNdc{clip.x / clip.w, clip.y / clip.w};
                         if (std::abs(sunNdc.x) < 0.98f && std::abs(sunNdc.y) < 0.98f)
@@ -461,6 +591,18 @@ namespace game
                             // through the center (anamorphic-ish chain).
                             const sw::f32 edgeFade =
                                 glm::clamp(1.05f - glm::length(sunNdc), 0.0f, 1.0f);
+                            // ...AND THE CHAIN VANISHES ON AXIS. Ghosts are
+                            // off-axis reflections between lens elements: the
+                            // further the source is from the optical centre,
+                            // the further they walk across the frame. At zero
+                            // field angle they land ON the source and stop
+                            // being separable from it — which in this
+                            // renderer meant a 16%-alpha amber disc painted
+                            // over the sun itself, pulling its clipped white
+                            // core down from 255 to 243. The star was dimming
+                            // itself with its own flare.
+                            const sw::f32 axisFade = sw::math::smoothstepf(
+                                0.06f, 0.32f, glm::length(sunNdc));
                             struct FlareGhost
                             {
                                 sw::f32 t;      // position along sun->center axis
@@ -490,7 +632,7 @@ namespace game
                                 item.screenSpace = true;
                                 item.tint = {ghost.color.r, ghost.color.g,
                                              ghost.color.b,
-                                             ghost.alpha * edgeFade};
+                                             ghost.alpha * edgeFade * axisFade * flareVisibility};
                                 m_drawItems.push_back(item);
                             }
                         }
@@ -498,6 +640,60 @@ namespace game
                 }
             }
         }
+    }
+
+    void StarWorksGame::collectDrawItems(const sw::Camera& activeCamera, bool mapView)
+    {
+        m_drawItems.clear();
+        m_drawItems.reserve(m_world.aliveCount() + 512);
+
+        // Static star dome: CAMERA-CENTERED (no translation), so the stars
+        // are parallax-free — an infinitely distant, never-changing sky to
+        // orient by. One emissive mesh, one draw call.
+        {
+            sw::DrawItem stars{};
+            stars.mesh = &m_meshes[m_starfieldMeshIndex];
+            stars.transform = glm::scale(sw::Mat4{1.0f}, sw::Vec3{kStarDomeRadius});
+            stars.boundsCenter = {0.0f, 0.0f, 0.0f};
+            stars.boundsRadius = kStarDomeRadius;
+            // F21: TRANSLUCENT, and everything about the sky follows from it.
+            // The opaque pipeline could not draw anything fainter than the
+            // grade's black lift, which made the Milky Way a field of grey
+            // squares; blended, a mote can be worth one grey level. See
+            // buildStarfieldMesh.
+            stars.transparent = true;
+            // ...and a dome the camera sits INSIDE has its bounding centre at
+            // the camera, so the default back-to-front key would sort it
+            // nearest and paint it over the atmosphere. Its radius is the
+            // honest distance to its surface.
+            stars.sortDistanceSquared = kStarDomeRadius * kStarDomeRadius;
+            // Daylight washes the stars out, and the arithmetic does it in the
+            // right order for free: opacity is (vertexAlpha * tintAlpha - 1)
+            // and the vertex carries 1 + brightness, so multiplying by a
+            // sinking tint drives the FAINT stars to zero first and the
+            // brightest last. That is what dawn looks like.
+            // ...and the fade travels on the INSTANCE tint alpha, which is
+            // flat, in the band (2.25, 2.45] that Mesh.frag routes to the star
+            // dome. It cannot travel on the vertex alpha: that one has to
+            // reach exactly 1.0 at a soft star's rim, and a threshold sitting
+            // on 1.0 turned every blob into its own wireframe outline.
+            const sw::f32 nightFactor = 1.0f - 0.96f * m_skyDayFactor;
+            stars.tint = {1.0f, 1.0f, 1.0f, 2.25f + 0.20f * nightFactor};
+            m_drawItems.push_back(stars);
+        }
+
+        // The sun's soft glow: two emissive radial-falloff discs, always
+        // facing the camera, drawn in the transparent pass.
+        //
+        // EVERY SUN IN THIS SKY, not just the brightest one — see
+        // collectStarVisual and sunsHere.
+        m_sunsHere.clear();
+        collectSunsHere(activeCamera.position(), m_sunsHere);
+        for (const sw::ecs::Entity sun : m_sunsHere)
+        {
+            collectStarVisual(sun, activeCamera, mapView, sun == m_lightStar);
+        }
+        collectDistantStars(activeCamera);
 
         const sw::f32 alpha = m_physicsLane->alpha();
         const sw::f64 alpha64 = static_cast<sw::f64>(alpha);
@@ -535,9 +731,14 @@ namespace game
                 if (item.transparent)
                 {
                     // Shell materials in Mesh.frag: 3.0 = atmosphere (fresnel
-                    // limb), 3.2 = cloud deck (per-fragment weather).
+                    // limb), 3.2 = cloud deck (per-fragment weather); rings
+                    // keep tint 1.0 — ordinary lit blending on their own
+                    // vertex colours (the shell material would fresnel an
+                    // annulus into nothing).
                     const sw::f32 shell =
-                        (mesh.transparent == MeshComponent::kCloudDeck) ? 3.2f : 3.0f;
+                        (mesh.transparent == MeshComponent::kCloudDeck)      ? 3.2f
+                        : (mesh.transparent == MeshComponent::kLitTransparent) ? 2.1f
+                                                                               : 3.0f;
                     item.tint = {1.0f, 1.0f, 1.0f, shell};
                 }
 
@@ -560,6 +761,15 @@ namespace game
                     item.tint = {glow.r, glow.g, glow.b, heat > 0.55f ? 2.0f : 1.0f};
                 }
                 m_drawItems.push_back(item);
+                // ...and then whatever this part has that MOVES, each group as
+                // its own item with the hinge in front of the part's matrix.
+                if (const auto* animated =
+                        m_world.tryGetComponent<sw::parts::PartComponent>(entity))
+                {
+                    collectAnimatedGroups(entity, *animated, model, relative,
+                                          bounds.localRadius * transform.uniformScale,
+                                          item.tint);
+                }
             });
 
         m_world.forEach<TransformComponent, PreviousTransformComponent, BoundsComponent,
@@ -575,26 +785,55 @@ namespace game
                 const sw::u32 level = selectLodLevel(distance, worldRadius);
                 sw::DrawItem item{&m_meshes[lod.meshIndex[level]], model, relative,
                                   bounds.localRadius * transform.uniformScale};
-                // CLOSE ORBIT (M23): per-vertex colors blur when the globe
-                // fills the screen — hand the surface to the PER-FRAGMENT
-                // procedural path (tint alpha 3.6 + style/10 routes it in
-                // Mesh.frag; the shader samples the exact same fbm as the
-                // CPU terrain, so coastlines stay collision-true).
-                // The threshold used to be 4 radii — 25,000 km on Terra, from
-                // where the globe is a small disc that the vertex path draws
-                // just as well for a fraction of the cost. At 1.6 radii the
-                // expensive path only runs when the planet actually fills a
-                // meaningful part of the screen, which is the only place its
-                // sharpness is visible.
-                if (lod.surfaceStyle >= 0 && distance < worldRadius * 1.6)
+                // PER-FRAGMENT, ALWAYS (F22). This used to be gated on
+                // `distance < worldRadius * 1.6` — 93 000 km on Saturn — and
+                // the reasoning was that the expensive path should only run
+                // where its sharpness shows. The reasoning was backwards, and
+                // it cost the game its worst-looking screenshot.
+                //
+                // A fragment shader's cost is per PIXEL, and a planet's pixel
+                // count falls as the square of the distance. At two radii the
+                // procedural path runs on a third of the screen; at seven it
+                // runs on two per cent of it. The gate was therefore turning
+                // the expensive path off exactly where it was cheap — and
+                // handing the body to the VERTEX path, whose cost is fixed
+                // and whose quality is a LOD sphere's worth of quads. Saturn
+                // from the Endurance's orbit was a grey ball with a visible
+                // wireframe grid across it, for two milestones, in every
+                // screenshot the player took.
+                //
+                // There is nothing left to trade: the per-fragment path is
+                // both cheaper AND better everywhere the old one was used.
+                if (lod.surfaceStyle >= 0)
                 {
                     item.tint = {1.0f, 1.0f, 1.0f,
                                  3.6f + 0.1f * static_cast<sw::f32>(lod.surfaceStyle)};
                 }
-                if (entity == m_solEntity)
+                if (const auto* star =
+                        m_world.tryGetComponent<StarVisualComponent>(entity))
                 {
-                    // The star is self-lit (emissive tint convention).
-                    item.tint = {1.0f, 0.96f, 0.82f, 2.0f};
+                    // THE PHOTOSPHERE, and the alpha routes it to its own
+                    // branch in Mesh.frag (2.04, inside the emissive band but
+                    // above the markers' plain 2.0) so it can have limb
+                    // darkening and a warm edge.
+                    //
+                    // The RGB is a radiance, not a colour. The grade puts 1.0
+                    // at 0.43 and only reaches white at 4.0, so the old tint
+                    // could not draw anything brighter than sRGB 176 — the sun
+                    // measured 190 against a background star at 140. Eighteen
+                    // clips it to white with room to spare, which is what a
+                    // star does to any camera pointed at it.
+                    //
+                    // AND IT IS PER STAR NOW. Eighteen is Sol's surface, and a
+                    // photosphere's brightness goes as the fourth power of its
+                    // temperature: Sirius B's 25 000 K is fifty-six times
+                    // Sol's per square metre, Proxima's 2992 K is a fourteenth
+                    // of it. The colour is the blackbody hue at that same
+                    // temperature, so a red dwarf is red and a white dwarf is
+                    // blue-white without a single hand-picked value.
+                    item.tint = {18.0f * star->radiance * star->color.r,
+                                 17.4f * star->radiance * star->color.g,
+                                 16.2f * star->radiance * star->color.b, 2.04f};
                 }
                 m_drawItems.push_back(item);
             });
@@ -730,7 +969,7 @@ namespace game
         // still be clickable through the backdrop.
         if (m_shell == Shell::Menu)
         {
-            m_hudButtons.clear();
+            hudSeizeButtons();
             collectShellHud();
         }
     }

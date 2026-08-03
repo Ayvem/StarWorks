@@ -1,0 +1,232 @@
+{
+  "id": 204,
+  "type": "Structural",
+  "name": "EN-5 Ranger",
+  "dryMassKg": 12000,
+  "costCredits": 92000,
+  "volumeM3": 70,
+  "crashToleranceMps": 14,
+  "breakingForceN": 3000000,
+  "dragCoefficientArea": 9,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "sphere",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.3, 0.85, 6.2],
+      "color": [0.8, 0.81, 0.84],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 28,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "sphere",
+      "position": [0, -0.3, 0.2],
+      "rotationDeg": [0, 0, 0],
+      "size": [2.1, 0.55, 5.6],
+      "color": [0.17, 0.17, 0.19],
+      "emissive": 0,
+      "specular": 0.25,
+      "gloss": 0.45,
+      "segments": 28,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [2.15, -0.05, 2.4],
+      "rotationDeg": [0, 0, 16],
+      "size": [1.45, 0.16, 2.3],
+      "color": [0.76, 0.77, 0.8],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-2.15, -0.05, 2.4],
+      "rotationDeg": [0, 0, -16],
+      "size": [1.45, 0.16, 2.3],
+      "color": [0.76, 0.77, 0.8],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [3.42, 0.32, 3.0],
+      "rotationDeg": [0, 0, 16],
+      "size": [0.09, 0.6, 1.4],
+      "color": [0.5, 0.51, 0.55],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-3.42, 0.32, 3.0],
+      "rotationDeg": [0, 0, -16],
+      "size": [0.09, 0.6, 1.4],
+      "color": [0.5, 0.51, 0.55],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "sphere",
+      "position": [0, 0.5, -3.5],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.95, 0.42, 1.75],
+      "color": [0.13, 0.18, 0.27],
+      "emissive": 0.35,
+      "specular": 0.7,
+      "gloss": 0.92,
+      "segments": 26,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0, 0.8, 1.2],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.45, 0.14, 3.2],
+      "color": [0.62, 0.63, 0.66],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cone",
+      "position": [1.05, 0, 6.05],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.42, 0.55, 0.6],
+      "color": [0.22, 0.22, 0.24],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.72,
+      "segments": 22,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cone",
+      "position": [-1.05, 0, 6.05],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.42, 0.55, 0.6],
+      "color": [0.22, 0.22, 0.24],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.72,
+      "segments": 22,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [1.05, 0, 6.62],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.5, 0.04, 0],
+      "color": [0.35, 0.6, 1.0],
+      "emissive": 0.75,
+      "specular": 0.2,
+      "gloss": 0.4,
+      "segments": 22,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [-1.05, 0, 6.62],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.5, 0.04, 0],
+      "color": [0.35, 0.6, 1.0],
+      "emissive": 0.75,
+      "specular": 0.2,
+      "gloss": 0.4,
+      "segments": 22,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [1.75, 0.35, -1.6],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.28, 0.2, 0.45],
+      "color": [0.45, 0.46, 0.5],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-1.75, 0.35, -1.6],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.28, 0.2, 0.45],
+      "color": [0.45, 0.46, 0.5],
+      "emissive": 0,
+      "specular": 0.4,
+      "gloss": 0.68,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, -0.82, 0],
+      "rotationDeg": [90, 0, 0],
+      "size": [0.85, 0.04, 0.62],
+      "color": [0.45, 0.46, 0.5],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 22,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "dock",
+      "position": [0, -0.85, 0],
+      "direction": [0, -1, 0],
+      "type": "stack",
+      "size": 0.9
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [2.3, 0.85, 6.2]
+    },
+    {
+      "center": [0, 0, 2.4],
+      "halfExtents": [3.5, 0.45, 2.3]
+    }
+  ]
+}

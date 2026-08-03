@@ -8,6 +8,8 @@
 #include "GameInternal.hpp"
 #include "Systems.hpp"
 
+#include <UI/HudRoute.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -334,8 +336,44 @@ namespace game
             });
     }
 
+    // ------------------------------------------------------------------------
+    // ONE CLEAR PER FRAME, AND IT IS THIS ONE.
+    //
+    // The button table used to be emptied by whichever collector happened to
+    // run first on each screen, and every collector after it appended. That
+    // contract held right up until a collector was added AHEAD of the one
+    // doing the clearing: the in-flight part menu pushed its rows, and
+    // collectSasButtons — three lines later — threw them away. The menu
+    // opened, the rows lit under the cursor, and there was no button left to
+    // press by the time the click was handled.
+    //
+    // So opening the table is now its own named act, done once, before
+    // anything is collected. A collector that clears is a collector that
+    // decides what the collectors before it were allowed to do, and no
+    // collector should have that power by accident.
+    // ------------------------------------------------------------------------
+    void StarWorksGame::hudBeginButtons()
+    {
+        SW_ASSERT(!m_hudButtonsOpen,
+                  "The HUD button table was opened twice in one frame: a "
+                  "collector is clearing buttons another collector added");
+        m_hudButtonsOpen = true;
+        m_hudButtons.clear();
+    }
+
+    void StarWorksGame::hudSeizeButtons()
+    {
+        // THE MENU TAKING THE SCREEN OVER, which is the one case where
+        // throwing away what is already collected is the point: nothing
+        // behind a modal may stay clickable through it. Deliberately a
+        // different name from hudBeginButtons so the two can never be
+        // confused for one another again.
+        m_hudButtons.clear();
+    }
+
     void StarWorksGame::collectHud()
     {
+        hudBeginButtons();
         constexpr sw::f32 kLine = 0.052f;
         constexpr sw::f32 kX = -0.98f;
         sw::f32 y = -0.97f;
@@ -344,8 +382,34 @@ namespace game
 
         // ---- mode ----------------------------------------------------------------
         const char* mode = m_mapView ? "MAP" : (m_evaMode ? "EVA" : "NAV");
-        hudText(std::format("{} {}", mode, m_shipMode || m_mapView ? "" : "CAM LIBRE"), kX,
-                y, kLine, main);
+        if (m_mapView)
+        {
+            // The focus line answers "why is the camera HERE": AUTO names
+            // the SOI primary it is following, a Tab-picked body names
+            // itself. TAB is printed because a control that only exists in
+            // one view is a control nobody finds.
+            const char* focusName = "";
+            const bool picked =
+                m_mapFocusIndex >= 0 &&
+                m_mapFocusIndex < static_cast<sw::i32>(m_celestialIndex.size());
+            if (picked)
+            {
+                focusName =
+                    m_celestialIndex.body(static_cast<sw::usize>(m_mapFocusIndex)).name;
+            }
+            else if (const sw::i32 primary = controlledPrimaryIndex(); primary >= 0)
+            {
+                focusName = m_celestialIndex.body(static_cast<sw::usize>(primary)).name;
+            }
+            hudText(std::format("MAP  FOCUS {}{}  - TAB CYCLES",
+                                picked ? "" : "AUTO ", focusName),
+                    kX, y, kLine, main);
+        }
+        else
+        {
+            hudText(std::format("{} {}", mode, m_shipMode ? "" : "CAM LIBRE"), kX, y,
+                    kLine, main);
+        }
         y += kLine * 1.3f;
 
         // ---- speed & altitude, relative to the current SOI PRIMARY ---------------
@@ -515,9 +579,23 @@ namespace game
         const auto* ship = m_shipEntity.isNull()
                                ? nullptr
                                : m_world.tryGetComponent<ShipComponent>(m_shipEntity);
-        const std::string warpLabel = m_simulation.isPaused()
-                                          ? std::string("0")
-                                          : warpText(kWarpLadder[m_warpIndex]);
+        // WHAT WAS ASKED, AND WHAT ARRIVED. Physics warp is bounded by how
+        // fast this machine can integrate, and the shortfall is by design:
+        // the strict lane holds the master clock to what it consumes rather
+        // than letting the world desynchronise. Silent, that reads as a bug
+        // ("I set x100 and nothing sped up"); printed, it reads as the truth
+        // ("this box gives you x47 of it"). Only shown when it is materially
+        // behind, so the normal case stays one short number.
+        const sw::f32 requestedWarp = kWarpLadder[m_warpIndex];
+        const sw::f32 deliveredWarp = m_simulation.achievedTimeScale();
+        std::string warpLabel = m_simulation.isPaused()
+                                    ? std::string("0")
+                                    : warpText(requestedWarp);
+        if (!m_simulation.isPaused() && requestedWarp > 1.0f &&
+            deliveredWarp < requestedWarp * 0.9f)
+        {
+            warpLabel += std::format("-{}", warpText(std::max(deliveredWarp, 1.0f)));
+        }
         hudText((ship != nullptr && !m_evaMode)
                     ? std::format("THR {:.0f}%  WARP X{}", ship->throttle * 100.0f,
                                   warpLabel)
@@ -568,10 +646,16 @@ namespace game
                 chargeUnits += sw::factory::inventoryCount(
                     inventory, sw::res::Resource::ElectricCharge);
             });
-        const sw::Vec4 fuelColor = (fuelUnits > 3000.0)
+        // Creative: the tanks are not consulted, and pretending to count
+        // them (or warning red about a number that cannot fall) would be a
+        // readout of nothing. The line says what the mode is instead.
+        const sw::Vec4 fuelColor = (m_creativeMode || fuelUnits > 3000.0)
                                        ? dim
                                        : sw::Vec4{1.0f, 0.45f, 0.3f, 0.95f};
-        hudText(std::format("FUEL {:.0f} KG  ELEC {:.0f} KJ", fuelUnits, chargeUnits),
+        hudText(m_creativeMode
+                    ? std::format("FUEL INF - CREATIVE  ELEC {:.0f} KJ", chargeUnits)
+                    : std::format("FUEL {:.0f} KG  ELEC {:.0f} KJ", fuelUnits,
+                                  chargeUnits),
                 kX, y, kLine, fuelColor);
         y += kLine * 1.3f;
 
@@ -607,6 +691,38 @@ namespace game
             hudText(std::format("{} {} T-{:.0f} S", label, eventBody.name,
                                 std::max(eta, 0.0)),
                     kX, y, kLine, color);
+            y += kLine * 1.3f;
+        }
+
+        // ---- INTERSTELLAR GUIDANCE, when there is no orbit left to read -------
+        if (const InterstellarGuidance guidance = interstellarGuidance(); guidance.valid)
+        {
+            // Green inside a degree, amber inside ten, red beyond: a crossing
+            // is four light-years long, so a degree of error at departure is
+            // seven hundred astronomical units of miss at arrival. The colour
+            // is the whole instrument — the numbers say which way to turn, the
+            // colour says whether you are done turning.
+            const sw::Vec4 color = (guidance.totalDegrees < 1.0f)
+                                       ? sw::Vec4{0.4f, 1.0f, 0.55f, 0.95f}
+                                   : (guidance.totalDegrees < 10.0f)
+                                       ? sw::Vec4{1.0f, 0.85f, 0.4f, 0.95f}
+                                       : sw::Vec4{1.0f, 0.45f, 0.35f, 0.95f};
+            hudText(std::format("INTERSTELLAR {}  {:.3f} LY", guidance.systemName,
+                                guidance.distanceMeters / sw::space::kLightYear),
+                    kX, y, kLine, color);
+            y += kLine * 1.3f;
+            hudText(std::format("DEV X {:+.2f}  Y {:+.2f}  Z {:+.2f} DEG  (TOT {:.2f})",
+                                guidance.deviationDegrees.x,
+                                guidance.deviationDegrees.y,
+                                guidance.deviationDegrees.z, guidance.totalDegrees),
+                    kX, y, kLine, color);
+            y += kLine * 1.3f;
+            hudText(guidance.etaSeconds > 0.0
+                        ? std::format("CLOSING {:.0f} M/S  ETA {}",
+                                      guidance.closingSpeedMps,
+                                      formatEta(guidance.etaSeconds))
+                        : std::string("NOT CLOSING - TURN ONTO THE HEADING"),
+                    kX, y, kLine, dim);
             y += kLine * 1.3f;
         }
 
@@ -814,6 +930,10 @@ namespace game
         }
         else if (!m_mapView && !m_editorMode)
         {
+            // BEFORE the navball and the SAS row, so a menu opened over them
+            // takes the click. m_hudButtons is scanned in order and the first
+            // rect under the cursor wins.
+            collectPartMenu(m_mapView ? m_mapCamera : m_camera);
             collectNavball();
             collectSasButtons();
             // ...and the warp-to-node button in the cockpit too: the burn is
@@ -840,8 +960,9 @@ namespace game
 
     void StarWorksGame::collectSasButtons()
     {
-        // First clickable UI: three buttons above the bottom-left corner.
-        m_hudButtons.clear();
+        // Three buttons above the bottom-left corner. APPENDS — the table was
+        // opened by collectHud, and a clear here is what ate the part menu.
+
         constexpr sw::f32 kHeight = 0.062f;
         constexpr sw::f32 kWidth = 0.115f;
         constexpr sw::f32 kGap = 0.018f;
@@ -856,12 +977,40 @@ namespace game
         // still. Every button toggles — clicking the lit one switches the
         // autopilot off — so there is no longer a button whose only job is
         // to mean "none of the others".
-        const char* labels[4] = {"SAS", "PGD", "RTG", "NODE"};
-        const sw::u32 modes[4] = {SasComponent::kStability, SasComponent::kPrograde,
-                                  SasComponent::kRetrograde, SasComponent::kNode};
-        for (sw::u32 slot = 0; slot < 4; ++slot)
+        // TWO ROWS OF FOUR. The velocity holds keep the row they have always
+        // been on, so the hand that already knows where PGD is still finds
+        // it; the orbit's other four directions go ABOVE them, together,
+        // because they are one family and a plane change is not a variation
+        // on prograde.
+        //
+        // Four characters is the label budget: the glyph advance is 6/7 of
+        // the text height, so at 0.036 in a 0.115-wide button a fifth letter
+        // runs off the end. Hence RAD+/RAD- rather than RADIAL OUT/IN — and
+        // hence the line under the row that spells the active mode out in
+        // full, because +/- for a direction is a convention and a convention
+        // has to be written down somewhere the player can see it.
+        struct SasButton
         {
-            const sw::u32 id = modes[slot];
+            const char* label;
+            sw::u32 mode;
+            sw::u32 row; // 0 = upper (orbit frame), 1 = lower (velocity)
+        };
+        const SasButton buttons[8] = {
+            {"RAD+", SasComponent::kRadialOut, 0},
+            {"RAD-", SasComponent::kRadialIn, 0},
+            {"NML+", SasComponent::kNormal, 0},
+            {"NML-", SasComponent::kAntiNormal, 0},
+            {"SAS", SasComponent::kStability, 1},
+            {"PGD", SasComponent::kPrograde, 1},
+            {"RTG", SasComponent::kRetrograde, 1},
+            {"NODE", SasComponent::kNode, 1},
+        };
+        const sw::f32 rowY[2] = {y0 - kHeight - 0.012f, y0};
+        const sw::f32 rowLeft = x0;
+        for (const SasButton& button : buttons)
+        {
+            const sw::u32 id = button.mode;
+            const sw::f32 rowTop = rowY[button.row];
             const sw::f32 x1 = x0 + kWidth;
             const bool available = (id != SasComponent::kNode) || m_nodeActive;
             const bool active = (m_sasMode == id);
@@ -874,23 +1023,24 @@ namespace game
             panel.mesh = &m_meshes[m_navLineMeshIndex]; // unit quad
             panel.transform =
                 glm::translate(sw::Mat4{1.0f},
-                               {(x0 + x1) * 0.5f, y0 + kHeight * 0.5f, 0.0f}) *
+                               {(x0 + x1) * 0.5f, rowTop + kHeight * 0.5f, 0.0f}) *
                 glm::scale(sw::Mat4{1.0f},
                            {kWidth * 0.5f, kHeight * 0.5f, 1.0f});
             panel.screenSpace = true;
             panel.tint = background;
             m_drawItems.push_back(panel);
 
-            hudText(labels[slot], x0 + 0.022f, y0 + 0.015f, 0.036f,
+            hudText(button.label, x0 + 0.022f, rowTop + 0.015f, 0.036f,
                     active      ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f}
                     : available ? sw::Vec4{0.7f, 0.8f, 0.9f, 0.9f}
                                 : sw::Vec4{0.42f, 0.48f, 0.56f, 0.8f});
 
             if (available)
             {
-                m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, id});
+                m_hudButtons.push_back({x0, rowTop, x1, rowTop + kHeight, id});
             }
-            x0 = x1 + kGap;
+            // Four to a row, then back to the left margin.
+            x0 = (button.mode == SasComponent::kAntiNormal) ? rowLeft : x1 + kGap;
         }
 
         // WHICH PROGRADE. Under the row, because the two buttons above it
@@ -898,10 +1048,30 @@ namespace game
         // on the other side of the screen — and on the way down they are
         // tens of degrees apart. `V` swaps it, the same key that swaps the
         // speed readout and the navball markers.
-        hudText(std::format("{} FRAME (V)", m_speedSurfaceRelative ? "SRF" : "ORB"),
-                -0.97f, y0 - 0.045f, 0.032f,
+        // "V:" AND NOT "(V)". The 5x7 charset has no parentheses — it never
+        // has — so this line has been rendering "ORB FRAME  V" with two
+        // blanks where the brackets should be since the day it was written.
+        // A colon exists; brackets do not.
+        hudText(std::format("V: {} FRAME", m_speedSurfaceRelative ? "SRF" : "ORB"),
+                -0.97f, y0 + kHeight + 0.010f, 0.032f,
                 m_speedSurfaceRelative ? sw::Vec4{0.55f, 0.85f, 0.65f, 0.9f}
                                        : sw::Vec4{0.6f, 0.72f, 0.9f, 0.9f});
+
+        // ...AND WHICH MODE IS HOLDING, spelled out, ABOVE the rows. Four
+        // characters on a button cannot say ANTI-NORMAL, and a pilot who has
+        // to remember whether RAD+ is toward the planet or away from it is
+        // reading a convention rather than an instrument.
+        //
+        // Above and not below because below is off the screen: the lower row
+        // ends at 0.932 and the frame line takes what is left before the
+        // 0.98 edge. The first attempt put it at 0.980 and the capture came
+        // back with the descenders sheared off.
+        if (m_sasMode != SasComponent::kOff)
+        {
+            hudText(std::format("T: HOLD {}", sasModeName(m_sasMode)), -0.97f,
+                    rowY[0] - 0.040f, 0.032f,
+                    sw::Vec4{0.62f, 0.92f, 0.70f, 0.95f});
+        }
     }
 
     // The map is where you look at your fleet, so it is where you should be
@@ -909,7 +1079,8 @@ namespace game
     // the same action with a surface you can find without knowing it exists.
     void StarWorksGame::collectMapButtons()
     {
-        m_hudButtons.clear();
+        // Appends: collectHud opened the table.
+
 
         std::vector<sw::ecs::Entity> pilotable;
         m_world.forEach<ShipComponent>([&](sw::ecs::Entity entity, ShipComponent&) {
@@ -990,6 +1161,178 @@ namespace game
         m_hudButtons.push_back({x0, y0, x1, y0 + kHeight, 301u});
     }
 
+    // ------------------------------------------------------------------------
+    // ONE BUTTON, ONE MEANING.
+    //
+    // The routing — which panel a numeric id belongs to — is decided by
+    // `sw::ui::routeHudClick`, a pure function with the reasoning and the
+    // ordering rule next to it, because expressing it as the order of a
+    // hundred and forty lines of side effects is how the part menu's buttons
+    // came to be read as "arm building number 500". Everything below is the
+    // side effect and nothing below decides.
+    //
+    // Returns true if the whole click is finished, false to fall through to
+    // the hangar's 3D pick — the distinction the old chain drew between
+    // `return` and `break`, kept exactly.
+    // ------------------------------------------------------------------------
+    bool StarWorksGame::applyHudClick(const HudButton& button)
+    {
+        const sw::ui::HudRoute route =
+            sw::ui::routeHudClick(button.id, !m_configTarget.isNull(), m_mapView);
+        switch (route.action)
+        {
+        case sw::ui::HudAction::Shell:
+            handleShellClick(route.index);
+            return false;
+        case sw::ui::HudAction::NetSyncTo:
+        {
+            const std::vector<sw::net::PlayerView> roster = netRoster();
+            if (route.index < roster.size())
+            {
+                netSyncTo(roster[route.index].id, roster[route.index].simulatedSeconds);
+            }
+            return false;
+        }
+        case sw::ui::HudAction::NetHost:
+            netHost();
+            return false;
+        case sw::ui::HudAction::NetJoin:
+            netJoin();
+            return false;
+        case sw::ui::HudAction::NetLeave:
+            netLeave();
+            return false;
+        case sw::ui::HudAction::NetAddress:
+            m_netAddressFocused = !m_netAddressFocused;
+            return false;
+        case sw::ui::HudAction::VabSelect:
+        {
+            // A row SELECTS. Ordering is one deliberate press of PRODUCE,
+            // next to the price and the picture — not a side effect of
+            // reading the catalogue.
+            const std::span<const sw::parts::ShipBlueprint> designs =
+                sw::parts::blueprintCatalog();
+            if (route.index < designs.size())
+            {
+                m_vabSelection = static_cast<sw::i32>(route.index);
+            }
+            return true;
+        }
+        case sw::ui::HudAction::VabProduce:
+        {
+            const std::span<const sw::parts::ShipBlueprint> catalogue =
+                sw::parts::blueprintCatalog();
+            if (m_vabSelection >= 0 &&
+                static_cast<sw::usize>(m_vabSelection) < catalogue.size())
+            {
+                orderVehicle(m_configTarget,
+                             catalogue[static_cast<sw::usize>(m_vabSelection)]);
+            }
+            return false;
+        }
+        case sw::ui::HudAction::VabCancel:
+            if (auto* assembly =
+                    m_world.tryGetComponent<sw::factory::AssemblyComponent>(
+                        m_configTarget))
+            {
+                sw::factory::assemblyOrder(*assembly, {}, 0.0, 0.0);
+            }
+            return true;
+        case sw::ui::HudAction::RecipeChoice:
+            applyRecipeChoice(m_configTarget, route.index);
+            return true;
+        case sw::ui::HudAction::RecipeStop:
+            applyRecipeChoice(m_configTarget, 0u); // STOP
+            return true;
+        case sw::ui::HudAction::PowerPriority:
+            if (auto* power =
+                    m_world.tryGetComponent<sw::factory::PowerComponent>(m_configTarget))
+            {
+                power->priority = (power->priority + 1u) % 5u;
+            }
+            return true;
+        case sw::ui::HudAction::PartAnimation:
+            togglePartAnimation(route.index);
+            return true;
+        case sw::ui::HudAction::BuildArm:
+            m_heldBuilding = (m_heldBuilding == route.index) ? 0u : route.index;
+            return true;
+        case sw::ui::HudAction::MapCycleVessel:
+            cyclePilotedVessel();
+            return true;
+        case sw::ui::HudAction::MapWarpToNode:
+            if (m_warpToSeconds > 0.0)
+            {
+                m_warpToSeconds = 0.0;
+                m_warpIndex = 0;
+                SW_LOG_INFO("Game", "Warp to node cancelled");
+            }
+            else if (m_nodeActive)
+            {
+                m_warpToSeconds = m_nodeTime - 60.0;
+                m_simulation.setPaused(false);
+                SW_LOG_INFO("Game", "Warping to T-60 s on the node");
+            }
+            return true;
+        case sw::ui::HudAction::HangarAction:
+            if (route.index == 201 && m_blueprint.size() > 1) // UNDO
+            {
+                // Remove the last placement: the trailing part plus any
+                // trailing symmetry siblings placed with it.
+                const sw::i32 group = m_blueprint.back().symmetryGroup;
+                m_blueprint.pop_back();
+                while (group >= 0 && m_blueprint.size() > 1 &&
+                       m_blueprint.back().symmetryGroup == group)
+                {
+                    m_blueprint.pop_back();
+                }
+            }
+            else if (route.index == 202) { hangarNewBlueprint(); }
+            else if (route.index == 203) { hangarLoadNextVessel(); }
+            else if (route.index == 205) // symmetry cycle
+            {
+                const sw::u32 options[6] = {1, 2, 3, 4, 6, 8};
+                for (sw::usize i = 0; i < 6; ++i)
+                {
+                    if (options[i] == m_symmetryCount)
+                    {
+                        m_symmetryCount = options[(i + 1) % 6];
+                        break;
+                    }
+                }
+            }
+            else if (route.index == 206) { m_showCenters = !m_showCenters; }
+            else if (route.index == 207) { hangarSaveShip(); }
+            return true;
+        case sw::ui::HudAction::PalettePart:
+        {
+            const auto partCatalog = rocketPartPalette();
+            if (route.index < partCatalog.size())
+            {
+                if (!m_blueprintBackup.empty())
+                {
+                    m_blueprint = m_blueprintBackup; // drop a pending grab
+                    m_blueprintBackup.clear();
+                }
+                m_heldDefinition = partCatalog[route.index]->id;
+                m_heldSubtree.clear();
+                m_heldRotation = {1.0f, 0.0f, 0.0f, 0.0f};
+            }
+            return true;
+        }
+        case sw::ui::HudAction::SasMode:
+            // EVERY autopilot button toggles: clicking the lit one puts the
+            // autopilot back to OFF. There is no longer a button that only
+            // means "none of the others" — SAS is a mode.
+            m_sasMode = (m_sasMode == route.index) ? SasComponent::kOff : route.index;
+            SW_LOG_INFO("Game", "SAS mode: {}", sasModeName(m_sasMode));
+            return false;
+        case sw::ui::HudAction::None:
+            break;
+        }
+        return true; // the map: it owns only its own buttons
+    }
+
     void StarWorksGame::handleHudClicks()
     {
         if (!input().wasMouseButtonPressed(sw::MouseButton::Left))
@@ -1010,195 +1353,10 @@ namespace game
             if (ndcX >= button.x0 && ndcX <= button.x1 && ndcY >= button.y0 &&
                 ndcY <= button.y1)
             {
-                // THE SHELL OWNS 2000+, and it is tested before everything
-                // else because while a menu is up nothing behind it is
-                // clickable — the ranges below are open-ended upward and
-                // would otherwise swallow these.
-                if (button.id >= 2000)
+                if (applyHudClick(button))
                 {
-                    handleShellClick(button.id);
-                    break;
-                }
-                // The multiplayer panel owns 1000+, tested first because
-                // every other range below is open-ended upward.
-                if (button.id >= 1100)
-                {
-                    const auto index = static_cast<sw::usize>(button.id - 1100u);
-                    const std::vector<sw::net::PlayerView> roster = netRoster();
-                    if (index < roster.size())
-                    {
-                        netSyncTo(roster[index].id, roster[index].simulatedSeconds);
-                    }
-                    break;
-                }
-                if (button.id == 1000)
-                {
-                    netHost();
-                    break;
-                }
-                if (button.id == 1001)
-                {
-                    netJoin();
-                    break;
-                }
-                if (button.id == 1002)
-                {
-                    netLeave();
-                    break;
-                }
-                if (button.id == 1003)
-                {
-                    m_netAddressFocused = !m_netAddressFocused;
-                    break;
-                }
-                // ---- the machine panel (E) ----------------------------------
-                // Checked FIRST: its ids sit above the build menu's, and it
-                // is the panel actually on screen when they are live.
-                // The VAB's rows sit ABOVE the recipe ids, and are therefore
-                // tested first: a recipe id is an arbitrary small number and
-                // 610+id would happily swallow 900.
-                if (button.id >= 900 && !m_configTarget.isNull())
-                {
-                    const std::span<const sw::parts::ShipBlueprint> designs =
-                        sw::parts::blueprintCatalog();
-                    const sw::usize index = button.id - 900u;
-                    if (index < designs.size())
-                    {
-                        // A row SELECTS. Ordering is one deliberate press of
-                        // PRODUCE, next to the price and the picture — not a
-                        // side effect of reading the catalogue.
-                        m_vabSelection = static_cast<sw::i32>(index);
-                    }
                     return;
                 }
-                if (button.id == 898 && !m_configTarget.isNull())
-                {
-                    const std::span<const sw::parts::ShipBlueprint> catalogue =
-                        sw::parts::blueprintCatalog();
-                    if (m_vabSelection >= 0 &&
-                        static_cast<sw::usize>(m_vabSelection) < catalogue.size())
-                    {
-                        orderVehicle(m_configTarget,
-                                     catalogue[static_cast<sw::usize>(m_vabSelection)]);
-                    }
-                    break;
-                }
-                if (button.id == 899 && !m_configTarget.isNull())
-                {
-                    if (auto* assembly =
-                            m_world.tryGetComponent<sw::factory::AssemblyComponent>(
-                                m_configTarget))
-                    {
-                        sw::factory::assemblyOrder(*assembly, {}, 0.0, 0.0);
-                    }
-                    return;
-                }
-                if (button.id >= 610 && !m_configTarget.isNull())
-                {
-                    applyRecipeChoice(m_configTarget, button.id - 610u);
-                    return;
-                }
-                if (button.id == 600 && !m_configTarget.isNull())
-                {
-                    applyRecipeChoice(m_configTarget, 0u); // STOP
-                    return;
-                }
-                if (button.id == 601 && !m_configTarget.isNull())
-                {
-                    if (auto* power = m_world.tryGetComponent<sw::factory::PowerComponent>(
-                            m_configTarget))
-                    {
-                        power->priority = (power->priority + 1u) % 5u;
-                    }
-                    return;
-                }
-                if (button.id >= 400) // build menu: arm this building
-                {
-                    const sw::u32 definitionId = button.id - 400u;
-                    m_heldBuilding =
-                        (m_heldBuilding == definitionId) ? 0u : definitionId;
-                    return;
-                }
-                if (button.id == 300) // map: fly the next vessel
-                {
-                    cyclePilotedVessel();
-                    return;
-                }
-                if (button.id == 301) // map: warp to one minute before the node
-                {
-                    if (m_warpToSeconds > 0.0)
-                    {
-                        m_warpToSeconds = 0.0;
-                        m_warpIndex = 0;
-                        SW_LOG_INFO("Game", "Warp to node cancelled");
-                    }
-                    else if (m_nodeActive)
-                    {
-                        m_warpToSeconds = m_nodeTime - 60.0;
-                        m_simulation.setPaused(false);
-                        SW_LOG_INFO("Game", "Warping to T-60 s on the node");
-                    }
-                    return;
-                }
-                if (m_mapView)
-                {
-                    return; // the map owns only its own buttons
-                }
-                // ---- hangar actions ------------------------------------------
-                if (button.id >= 200)
-                {
-                    if (button.id == 201 && m_blueprint.size() > 1) // UNDO
-                    {
-                        // Remove the last placement: the trailing part plus
-                        // any trailing symmetry siblings placed with it.
-                        const sw::i32 group = m_blueprint.back().symmetryGroup;
-                        m_blueprint.pop_back();
-                        while (group >= 0 && m_blueprint.size() > 1 &&
-                               m_blueprint.back().symmetryGroup == group)
-                        {
-                            m_blueprint.pop_back();
-                        }
-                    }
-                    else if (button.id == 202) { hangarNewBlueprint(); }
-                    else if (button.id == 203) { hangarLoadNextVessel(); }
-                            else if (button.id == 205) // symmetry cycle
-                    {
-                        const sw::u32 options[6] = {1, 2, 3, 4, 6, 8};
-                        for (sw::usize i = 0; i < 6; ++i)
-                        {
-                            if (options[i] == m_symmetryCount)
-                            {
-                                m_symmetryCount = options[(i + 1) % 6];
-                                break;
-                            }
-                        }
-                    }
-                    else if (button.id == 206) { m_showCenters = !m_showCenters; }
-                    else if (button.id == 207) { hangarSaveShip(); }
-                    return;
-                }
-                if (button.id >= 100) // palette: take the part IN HAND
-                {
-                    const auto partCatalog = rocketPartPalette();
-                    const sw::usize index = button.id - 100;
-                    if (index < partCatalog.size())
-                    {
-                        if (!m_blueprintBackup.empty())
-                        {
-                            m_blueprint = m_blueprintBackup; // drop a pending grab
-                            m_blueprintBackup.clear();
-                        }
-                        m_heldDefinition = partCatalog[index]->id;
-                        m_heldSubtree.clear();
-                        m_heldRotation = {1.0f, 0.0f, 0.0f, 0.0f};
-                    }
-                    return;
-                }
-                // EVERY autopilot button toggles: clicking the lit one puts
-                // the autopilot back to OFF. There is no longer a button
-                // that only means "none of the others" — SAS is a mode.
-                m_sasMode = (m_sasMode == button.id) ? SasComponent::kOff : button.id;
-                SW_LOG_INFO("Game", "SAS mode: {}", sasModeName(m_sasMode));
                 break;
             }
         }
@@ -1393,6 +1551,55 @@ namespace game
                             place * glm::scale(sw::Mat4{1.0f},
                                                sw::Vec3{ballRadius * 0.085f}),
                             {1.0f, 0.5f, 0.25f, 0.95f});
+                }
+            }
+
+            // ---- radial and normal ---------------------------------------
+            //
+            // FOUR MORE MARKERS, because four more buttons without them is
+            // half an instrument: a hold mode you cannot see the target of is
+            // a direction you have to take on faith, and the whole point of a
+            // navball is not having to.
+            //
+            // The basis is the one SasSystem flies, built from the same
+            // velocity and the same primary — normal is r x v, radial-out is
+            // prograde x normal — so the marker and the autopilot cannot
+            // disagree about where a plane change points.
+            sw::Vec3 prograde{};
+            sw::Vec3 normal{};
+            sw::Vec3 radialOut{};
+            if (sw::phys::orbitalFrame(radial, relativeVelocity, prograde, normal,
+                                       radialOut))
+            {
+                struct OrbitMarker
+                {
+                    sw::Vec3 direction;
+                    bool filled; // filled = the + sense, hollow = the -
+                    sw::Vec4 color;
+                };
+                const OrbitMarker markers[4] = {
+                    {radialOut, true, {0.35f, 0.85f, 1.0f, 0.95f}},
+                    {-radialOut, false, {0.35f, 0.85f, 1.0f, 0.95f}},
+                    {normal, true, {0.80f, 0.50f, 1.0f, 0.95f}},
+                    {-normal, false, {0.80f, 0.50f, 1.0f, 0.95f}},
+                };
+                for (const OrbitMarker& marker : markers)
+                {
+                    const sw::Vec3 local = inverseRotation * marker.direction;
+                    if (local.z >= 0.0f)
+                    {
+                        continue; // behind the craft
+                    }
+                    const sw::Mat4 place =
+                        glm::translate(sw::Mat4{1.0f},
+                                       {local.x * ballRadius, -local.y * ballRadius,
+                                        0.0f});
+                    // Smaller than prograde: these four are references, and
+                    // the velocity is still the thing you fly by.
+                    pushNav(marker.filled ? m_navDiamondMeshIndex : m_navRingMeshIndex,
+                            place * glm::scale(sw::Mat4{1.0f},
+                                               sw::Vec3{ballRadius * 0.065f}),
+                            marker.color);
                 }
             }
         }

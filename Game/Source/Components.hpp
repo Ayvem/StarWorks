@@ -46,6 +46,11 @@ namespace game
         /// (Shaders/Clouds.glsl), whose coverage the ground samples for its
         /// shadows. Same size as the old flag — no save migration.
         static constexpr sw::u32 kCloudDeck = 2;
+        /// Blended pass with ORDINARY lit shading (vertex colour and alpha),
+        /// not the atmosphere fresnel shell: Saturn's rings. A ring routed
+        /// through the shell material is an annulus-shaped fresnel limb —
+        /// which is to say, invisible.
+        static constexpr sw::u32 kLitTransparent = 3;
         sw::u32 meshIndex = 0;
         /// Rendered in the blended world pass (atmosphere/cloud shells).
         sw::u32 transparent = kOpaque;
@@ -74,6 +79,26 @@ namespace game
         /// it, with the RCS's own authority and no more, so it settles a
         /// wobble and loses to a real tumble — which is the honest answer.
         static constexpr sw::u32 kStability = 4;
+        /// THE OTHER FOUR DIRECTIONS OF AN ORBIT, and the reason they are
+        /// worth four more buttons is that none of them is reachable by
+        /// pointing at prograde and waiting.
+        ///
+        /// A plane change is flown NORMAL — perpendicular to the orbit — and
+        /// it is the one burn where prograde is exactly the wrong answer. A
+        /// radial burn rotates the line of apsides without changing the
+        /// period, which is how you move a periapsis to where you want it
+        /// rather than where the last burn left it. Both are standard
+        /// vocabulary and both were previously flyable only by hand, against
+        /// a navball that did not even draw the marker.
+        ///
+        /// The signs are the orbital frame's own: RADIAL OUT points away
+        /// from the primary, NORMAL along the angular momentum r x v. See
+        /// SasSystem for the basis and why it is built from the same
+        /// velocity prograde uses.
+        static constexpr sw::u32 kRadialOut = 5;
+        static constexpr sw::u32 kRadialIn = 6;
+        static constexpr sw::u32 kNormal = 7;
+        static constexpr sw::u32 kAntiNormal = 8;
         sw::u32 mode = kOff;
         /// WHICH VELOCITY PROGRADE MEANS, written by the game layer each
         /// frame from the same toggle that drives the HUD's speed readout
@@ -238,6 +263,32 @@ namespace game
     struct MapMarkerComponent
     {
         sw::Vec4 color{1.0f};
+    };
+
+    /// Marks an entity as a STAR — one of the entries in the engine's star
+    /// catalogue — and carries the two numbers the renderer needs that a
+    /// gravity source does not have: how much light it makes and what colour
+    /// that light is.
+    ///
+    /// It exists because "is this the sun" used to be `entity == m_solEntity`,
+    /// and there are now thirty-six suns. The photosphere radiance, the glare
+    /// layers and the direction light comes from were all written against that
+    /// one comparison; every one of them is a per-star question the moment the
+    /// second star is real.
+    ///
+    /// `radiance` is the photosphere's SURFACE brightness relative to Sol's —
+    /// (T/5772)^4 by Stefan-Boltzmann — and not its luminosity. The two are
+    /// wildly different things and swapping them is an easy mistake with a
+    /// convincing result: Sirius B is a thirty-thousandth of Sol's luminosity
+    /// and its surface is FIFTY-SIX TIMES brighter, because the whole star is
+    /// the size of Terra. Drawn by luminosity it would be a dim ember; drawn
+    /// by surface brightness it is the blue-white pinprick it really is.
+    struct StarVisualComponent
+    {
+        sw::u32 catalogueIndex = 0;
+        sw::f32 radiance = 1.0f;    // photosphere surface brightness, Sol = 1
+        sw::f32 luminosity = 1.0f;  // total output, Sol = 1
+        sw::Vec3 color{1.0f, 1.0f, 1.0f}; // blackbody colour at T_eff
     };
 
     static_assert(std::is_trivially_copyable_v<ConveyorComponent>);

@@ -508,7 +508,8 @@ namespace game
     // ------------------------------------------------------------------------
     void StarWorksGame::collectBuildMenu()
     {
-        m_hudButtons.clear();
+        // Appends: collectHud opened the table.
+
 
         std::vector<const sw::parts::PartDefinition*> buildings;
         for (const sw::parts::PartDefinition& definition : sw::parts::catalog())
@@ -704,7 +705,8 @@ namespace game
 
     void StarWorksGame::collectConfigMenu()
     {
-        m_hudButtons.clear();
+        // Appends: collectHud opened the table.
+
 
         const auto* building =
             m_world.tryGetComponent<sw::factory::BuildingComponent>(m_configTarget);

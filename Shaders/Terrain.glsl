@@ -43,13 +43,21 @@ const vec3 kBillowOffset = vec3(2.19, 17.63, 9.41);
 const vec3 kBeltOffset = vec3(31.07, 23.51, 3.89);
 const vec3 kAbyssOffset = vec3(41.23, 7.19, 29.77);
 const vec3 kDetailOffset = vec3(5.13, 61.07, 18.29);
+const vec3 kCoastOffset = vec3(19.87, 43.31, 11.59);
 
 /// The continental mask: the v1 fBm, unchanged — this is what decides land
 /// versus sea, and nothing below may change its sign.
+/// THE CONTINENTS (F18). CPU twin: terrainMask() in Planet/Terrain.hpp.
+/// A plain fBm thresholded at sea level shreds its own coastline, because it
+/// has the same structure at every scale; the plates are a handful of very
+/// low-frequency things and everything finer only decorates their edges.
 float terrainMask(TerrainParams terrain, vec3 dir)
 {
-    return fbm3(dir * terrain.frequency + terrain.noiseOffset, terrain.octaves,
-                terrain.seed);
+    vec3 p = dir * terrain.frequency + terrain.noiseOffset;
+    float plate = fbm3(p * 0.55, 3, terrain.seed);
+    float shaped = smoothstepf(0.38, 0.62, plate);
+    float coast = fbm3(p * 3.4 + kCoastOffset, 4, terrain.seed + 4441u);
+    return shaped * 0.78 + coast * 0.22;
 }
 
 /// Signed land fraction: > 0 inland, 0 at the shoreline, < 0 at sea.
@@ -155,8 +163,76 @@ float terrainElevation(TerrainParams terrain, vec3 dir)
 // Body presets — mirror of presetTerra/presetLuna/presetMars.
 // Style ids: 0 = Terra, 1 = Luna, 2 = Mars.
 // ----------------------------------------------------------------------------
+
+// The solar system's small worlds (styles 3-13), one parameterised family —
+// the EXACT mirror of sw::planet::presetSmallWorld in Planet/Terrain.hpp.
+TerrainParams presetSmallWorld(uint seed, float amplitude, float frequency,
+                               float ridgeWeight, float billowWeight,
+                               float plainsWeight, float warpStrength,
+                               float erosion, float detailWeight,
+                               float detailFrequency, vec3 noiseOffset)
+{
+    TerrainParams t;
+    t.seed = seed;
+    t.octaves = 4;
+    t.frequency = frequency;
+    t.amplitude = amplitude;
+    t.seaLevelFraction = 0.0;
+    t.reliefFrequency = 2.3;
+    t.reliefOctaves = 15;
+    t.ridgeWeight = ridgeWeight;
+    t.billowWeight = billowWeight;
+    t.plainsWeight = plainsWeight;
+    t.warpStrength = warpStrength;
+    t.erosion = erosion;
+    t.terraceStrength = 0.0;
+    t.terraceCount = 5.0;
+    t.beltThreshold = 0.40;
+    t.oceanDepth = 0.0;
+    t.detailWeight = detailWeight;
+    t.detailFrequency = detailFrequency;
+    t.noiseOffset = noiseOffset;
+    return t;
+}
+
 TerrainParams terrainPreset(int style)
 {
+    // Styles 3-13: the landable solar system. Same values as the C++
+    // terrainPreset switch, argument for argument.
+    if (style == 3)
+        return presetSmallWorld(7100u, 7000.0, 3.0, 0.55, 0.72, 0.42, 0.20, 0.20,
+                                0.028, 3600.0, vec3(11.2, 4.4, 7.7));
+    if (style == 4)
+        return presetSmallWorld(4400u, 9000.0, 2.6, 1.30, 0.30, 0.46, 0.50, 0.40,
+                                0.020, 5000.0, vec3(3.1, 9.2, 5.5));
+    if (style == 5)
+        return presetSmallWorld(3550u, 900.0, 2.2, 0.25, 0.55, 0.50, 0.25, 0.10,
+                                0.040, 3000.0, vec3(8.8, 2.2, 6.1));
+    if (style == 6)
+        return presetSmallWorld(6600u, 2500.0, 2.7, 0.85, 0.45, 0.44, 0.30, 0.25,
+                                0.026, 4200.0, vec3(1.9, 6.6, 3.3));
+    if (style == 7)
+        return presetSmallWorld(7700u, 3000.0, 3.1, 0.35, 0.85, 0.40, 0.15, 0.12,
+                                0.030, 3800.0, vec3(9.4, 1.1, 5.9));
+    if (style == 8)
+        return presetSmallWorld(8800u, 1800.0, 2.0, 0.40, 0.50, 0.55, 0.35, 0.45,
+                                0.034, 2600.0, vec3(4.7, 7.3, 2.8));
+    if (style == 9)
+        return presetSmallWorld(9900u, 1200.0, 2.5, 0.45, 0.60, 0.46, 0.22, 0.18,
+                                0.038, 3200.0, vec3(6.2, 3.9, 8.4));
+    if (style == 10)
+        return presetSmallWorld(10100u, 2200.0, 3.0, 0.40, 0.78, 0.42, 0.16, 0.14,
+                                0.030, 3600.0, vec3(2.4, 8.9, 4.6));
+    if (style == 11)
+        return presetSmallWorld(11100u, 2400.0, 2.8, 0.55, 0.65, 0.44, 0.22, 0.20,
+                                0.028, 3900.0, vec3(7.8, 5.1, 1.6));
+    if (style == 12)
+        return presetSmallWorld(12100u, 2600.0, 2.9, 0.45, 0.75, 0.42, 0.18, 0.16,
+                                0.028, 3700.0, vec3(5.3, 2.7, 9.1));
+    if (style == 13)
+        return presetSmallWorld(13100u, 1400.0, 2.6, 0.35, 0.70, 0.52, 0.30, 0.28,
+                                0.036, 3000.0, vec3(8.1, 6.4, 3.7));
+
     TerrainParams t;
     if (style == 1) // Luna
     {
@@ -208,7 +284,7 @@ TerrainParams terrainPreset(int style)
         t.octaves = 5;
         t.frequency = 2.3;
         t.amplitude = 9000.0;
-        t.seaLevelFraction = 0.50;
+        t.seaLevelFraction = 0.46; // F18: 26.6% land, Earth is 28.9%
         t.reliefFrequency = 2.6;
         t.reliefOctaves = 16;
         t.ridgeWeight = 1.35;

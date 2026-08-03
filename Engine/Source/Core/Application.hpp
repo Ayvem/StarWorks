@@ -40,6 +40,9 @@ namespace sw
         /// 2 = HIGH. Drives the per-fragment planet path's octave budget,
         /// terrain self-shadowing and cloud shadows.
         u32 renderQuality = 2;
+        /// If set (with maxFrames), the last frame is written here as a PNG.
+        /// See Renderer::requestCapture for why this exists.
+        std::string capturePath;
     };
 
     class Application

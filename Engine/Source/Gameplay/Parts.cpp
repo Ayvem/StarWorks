@@ -1,5 +1,7 @@
 #include "Gameplay/Parts.hpp"
 
+#include <cstring>
+
 #include "Core/FileSystem.hpp"
 #include "Core/Json.hpp"
 #include "Core/Log.hpp"
@@ -197,6 +199,10 @@ namespace sw::parts
             "box", "cylinder", "cone", "sphere", "tube"};
         // Node type names as they appear in .swpart JSON. Kept lower-case and
         // hyphenated so a hand-edited file reads the way the tool writes it.
+        constexpr std::string_view kAnimationTriggerNames[] = {"toggle", "throttle"};
+        constexpr std::string_view kAnimationVerbNames[] = {"open-close", "on-off",
+                                                           "extend-retract", "deploy-stow"};
+        constexpr std::string_view kAnimationGateNames[] = {"nothing", "power", "thrust"};
         constexpr std::string_view kNodeTypeNames[] = {"stack", "radial", "conveyor-in",
                                                        "conveyor-out", "power"};
 
@@ -426,7 +432,55 @@ namespace sw::parts
                 shape.segments = static_cast<u32>(entry.number("segments", 24.0));
                 shape.visible = entry.boolean("visible", true);
                 shape.collider = entry.boolean("collider", false);
+                // The animation fields are absent from every file written
+                // before they existed, and `find` returning nullptr is what
+                // makes that a non-event in both directions.
+                shape.animation = static_cast<i32>(entry.number("animation", -1.0));
+                shape.endPosition = vec3FromJson(entry.find("endPosition"), shape.position);
+                shape.endRotationDeg =
+                    vec3FromJson(entry.find("endRotationDeg"), shape.rotationDeg);
+                shape.endEmissive = static_cast<f32>(entry.number("endEmissive", -1.0));
                 definition.shapes.push_back(shape);
+            }
+        }
+
+        if (const json::Value* animations = root.find("animations"))
+        {
+            for (const json::Value& entry : animations->asArray())
+            {
+                if (definition.animations.size() >= kMaxPartAnimations)
+                {
+                    SW_LOG_WARN("Parts", "'{}': more than {} animations, ignoring the rest",
+                                path.string(), kMaxPartAnimations);
+                    break;
+                }
+                PartAnimation animation{};
+                const std::string name = entry.string("name");
+                std::strncpy(animation.name, name.c_str(),
+                             PartAnimation::kNameCapacity - 1);
+                (void)enumFromName(kAnimationTriggerNames, entry.string("trigger"),
+                                   animation.trigger);
+                (void)enumFromName(kAnimationVerbNames, entry.string("verbs"),
+                                   animation.verbs);
+                (void)enumFromName(kAnimationGateNames, entry.string("gates"),
+                                   animation.gates);
+                animation.durationSeconds =
+                    static_cast<f32>(entry.number("durationSeconds", 3.0));
+                animation.startsOpen = entry.boolean("startsOpen", false);
+                definition.animations.push_back(animation);
+            }
+        }
+        // A shape pointing at an animation that is not there would be a
+        // silent invisible group, so it is corrected here rather than
+        // discovered later as a panel that never appears.
+        for (PartShape& shape : definition.shapes)
+        {
+            if (shape.animation >= static_cast<i32>(definition.animations.size()))
+            {
+                SW_LOG_WARN("Parts", "'{}': shape references animation {}, which does "
+                                     "not exist; treating it as static",
+                            path.string(), shape.animation);
+                shape.animation = -1;
             }
         }
 
@@ -543,9 +597,48 @@ namespace sw::parts
             entry.set("segments", json::Value(shape.segments));
             entry.set("visible", json::Value(shape.visible));
             entry.set("collider", json::Value(shape.collider));
+            // WRITTEN ONLY WHEN THEY SAY SOMETHING. Thirty-four shipped parts
+            // have no animation, and emitting four dead keys on every shape of
+            // every one of them would put a thousand lines of noise into the
+            // next diff of an unrelated edit.
+            if (shape.animation >= 0)
+            {
+                entry.set("animation", json::Value(static_cast<f64>(shape.animation)));
+                entry.set("endPosition", vec3ToJson(shape.endPosition));
+                entry.set("endRotationDeg", vec3ToJson(shape.endRotationDeg));
+                if (shape.endEmissive >= 0.0f)
+                {
+                    entry.set("endEmissive",
+                              json::Value(static_cast<f64>(shape.endEmissive)));
+                }
+            }
             shapes.push(std::move(entry));
         }
         root.set("shapes", std::move(shapes));
+
+        if (!definition.animations.empty())
+        {
+            json::Value animations = json::Value::makeArray();
+            for (const PartAnimation& animation : definition.animations)
+            {
+                json::Value entry = json::Value::makeObject();
+                entry.set("name", json::Value(std::string(animation.name)));
+                entry.set("trigger",
+                          json::Value(std::string(kAnimationTriggerNames[static_cast<usize>(
+                              animation.trigger)])));
+                entry.set("verbs",
+                          json::Value(std::string(
+                              kAnimationVerbNames[static_cast<usize>(animation.verbs)])));
+                entry.set("gates",
+                          json::Value(std::string(
+                              kAnimationGateNames[static_cast<usize>(animation.gates)])));
+                entry.set("durationSeconds",
+                          json::Value(static_cast<f64>(animation.durationSeconds)));
+                entry.set("startsOpen", json::Value(animation.startsOpen));
+                animations.push(std::move(entry));
+            }
+            root.set("animations", std::move(animations));
+        }
 
         if (definition.prop)
         {
@@ -900,12 +993,28 @@ namespace sw::parts
             vessel->dryMassKg += definition->dryMassKg;
             vessel->totalCostCredits += definition->costCredits;
             vessel->dragCoefficientArea += definition->dragCoefficientArea;
-            vessel->solarChargeRateKw += definition->chargeRateKw;
+            // WHAT A STOWED PART DOES NOT DO. This is the line that separates
+            // an animation from a decoration: a folded solar wing makes no
+            // power and a shut-down engine makes no thrust, and both fall out
+            // of the same one number — the phase of whichever animation the
+            // part's author said gates them.
+            //
+            // Half open is half of it, deliberately. A panel caught mid-travel
+            // really is presenting half its area to the sun, and a rule that
+            // waited for the phase to reach exactly 1 would make the last
+            // instant of a three-second deployment carry all of the effect.
+            const auto* animation =
+                world.tryGetComponent<PartAnimationComponent>(entity);
+            const f64 powerGate = animationGate(*definition, animation,
+                                                AnimationGates::Power);
+            const f64 thrustGate = animationGate(*definition, animation,
+                                                 AnimationGates::Thrust);
+            vessel->solarChargeRateKw += definition->chargeRateKw * powerGate;
             vessel->partCount += 1;
             if (definition->thrustNewtons > 0.0 && definition->specificImpulseS > 0.0)
             {
-                vessel->maxThrustNewtons += definition->thrustNewtons;
-                vessel->maxMassFlowKgps += definition->thrustNewtons /
+                vessel->maxThrustNewtons += definition->thrustNewtons * thrustGate;
+                vessel->maxMassFlowKgps += definition->thrustNewtons * thrustGate /
                                            (definition->specificImpulseS * 9.80665);
             }
 
@@ -1057,5 +1166,131 @@ namespace sw::parts
                     previous.rotation = transform.rotation;
                 }
             });
+    }
+    f64 animationGate(const PartDefinition& definition,
+                      const PartAnimationComponent* state, AnimationGates gate)
+    {
+        // No animation gates this: the part works, as every part did before
+        // animations existed. The default has to be 1 and not 0, or adding the
+        // feature would silently switch off every engine in the game.
+        f64 scale = 1.0;
+        if (state == nullptr)
+        {
+            return scale;
+        }
+        const u32 count =
+            std::min<u32>(state->count, static_cast<u32>(definition.animations.size()));
+        for (u32 i = 0; i < count; ++i)
+        {
+            if (definition.animations[i].gates == gate)
+            {
+                scale = std::min(scale, static_cast<f64>(
+                                            glm::clamp(state->phase[i], 0.0f, 1.0f)));
+            }
+        }
+        return scale;
+    }
+
+    void PartAnimationSystem::update(ecs::World& world, f32 deltaSeconds)
+    {
+        world.forEach<PartComponent, PartAnimationComponent>(
+            [&](ecs::Entity, PartComponent& part, PartAnimationComponent& state) {
+                const PartDefinition* definition = findDefinition(part.definitionId);
+                if (definition == nullptr)
+                {
+                    return;
+                }
+                const u32 count = std::min<u32>(
+                    state.count, static_cast<u32>(definition->animations.size()));
+                for (u32 i = 0; i < count; ++i)
+                {
+                    const PartAnimation& animation = definition->animations[i];
+                    if (animation.trigger == AnimationTrigger::Throttle)
+                    {
+                        // The throttle IS the phase, so a nozzle brightens as
+                        // the engine is opened up. No travel time: the target
+                        // is written straight in by whoever knows the throttle.
+                        state.phase[i] = state.target[i];
+                        continue;
+                    }
+                    const f32 rate =
+                        1.0f / std::max(animation.durationSeconds, 0.05f);
+                    const f32 step = rate * deltaSeconds;
+                    const f32 remaining = state.target[i] - state.phase[i];
+                    state.phase[i] = (std::abs(remaining) <= step)
+                                         ? state.target[i]
+                                         : state.phase[i] + std::copysign(step, remaining);
+                }
+            });
+    }
+
+    // ------------------------------------------------------------------------
+    // CHASLES' THEOREM, or why a hinge is not a lerp
+    // ------------------------------------------------------------------------
+    HingeMotion hingeBetween(const Vec3& positionA, const Quat& rotationA,
+                             const Vec3& positionB, const Quat& rotationB)
+    {
+        HingeMotion hinge{};
+        // The rotation that takes A's orientation to B's.
+        const Quat delta = glm::normalize(rotationB * glm::inverse(rotationA));
+        f32 angle = 2.0f * std::acos(glm::clamp(delta.w, -1.0f, 1.0f));
+        Vec3 axis = Vec3(delta.x, delta.y, delta.z);
+        const f32 axisLength = glm::length(axis);
+        if (!(angle > 1.0e-4f) || !(axisLength > 1.0e-6f))
+        {
+            // No rotation at all: the whole motion is a slide. A landing gear
+            // dropping straight out of a bay is this case, and it must not go
+            // through the pivot solve below — (I - R) is the zero matrix there
+            // and there is no pivot to find.
+            hinge.angleRadians = 0.0f;
+            hinge.axis = Vec3{0.0f, 1.0f, 0.0f};
+            hinge.slide = positionB - positionA;
+            hinge.pivot = positionA;
+            return hinge;
+        }
+        axis /= axisLength;
+        if (angle > 3.14159265f)
+        {
+            // Take the short way round, and take the axis with it.
+            angle = 6.28318531f - angle;
+            axis = -axis;
+        }
+        hinge.axis = axis;
+        hinge.angleRadians = angle;
+
+        // The motion is x -> R*x + t with t = pB - R*pA. A fixed point c
+        // satisfies (I - R) c = t. (I - R) is singular along the axis — every
+        // point on the axis moves only by the slide — so the system is solved
+        // in the PLANE perpendicular to it, where (I - R) is invertible for
+        // any angle that is not a full turn.
+        const Mat3 rotation = glm::mat3_cast(delta);
+        const Vec3 translation = positionB - rotation * positionA;
+        // Split the translation: the part along the axis is the screw's slide
+        // and has no bearing on where the pivot is.
+        const f32 along = glm::dot(translation, axis);
+        hinge.slide = axis * along;
+        const Vec3 planar = translation - hinge.slide;
+        // In the perpendicular plane, (I - R) acting on c has a closed form:
+        // its inverse is (I/2 + cot(angle/2)/2 * [axis]x) restricted there.
+        const f32 half = angle * 0.5f;
+        const f32 cot = std::cos(half) / std::max(std::sin(half), 1.0e-6f);
+        hinge.pivot = 0.5f * planar + 0.5f * cot * glm::cross(axis, planar);
+        return hinge;
+    }
+
+    void poseAlongHinge(const HingeMotion& hinge, const Vec3& positionA,
+                        const Quat& rotationA, f32 phase, Vec3& outPosition,
+                        Quat& outRotation)
+    {
+        const f32 t = glm::clamp(phase, 0.0f, 1.0f);
+        if (!(std::abs(hinge.angleRadians) > 1.0e-4f))
+        {
+            outPosition = positionA + hinge.slide * t;
+            outRotation = rotationA;
+            return;
+        }
+        const Quat step = glm::angleAxis(hinge.angleRadians * t, hinge.axis);
+        outPosition = hinge.pivot + step * (positionA - hinge.pivot) + hinge.slide * t;
+        outRotation = glm::normalize(step * rotationA);
     }
 } // namespace sw::parts

@@ -1,0 +1,118 @@
+{
+  "id": 203,
+  "type": "Structural",
+  "name": "EN-4 Connecting Tunnel",
+  "dryMassKg": 3000,
+  "costCredits": 6000,
+  "volumeM3": 28,
+  "crashToleranceMps": 10,
+  "breakingForceN": 6000000,
+  "dragCoefficientArea": 8,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.15, 1.68, 0],
+      "color": [0.66, 0.67, 0.7],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 20,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, -1.05],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.3, 0.1, 1.1],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 20,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.3, 0.1, 1.1],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 20,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, 1.05],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.3, 0.1, 1.1],
+      "color": [0.4, 0.41, 0.44],
+      "emissive": 0,
+      "specular": 0.32,
+      "gloss": 0.6,
+      "segments": 20,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, -0.52],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.19, 0.4, 1.12],
+      "color": [0.72, 0.58, 0.22],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.7,
+      "segments": 20,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "tube",
+      "position": [0, 0, 0.52],
+      "rotationDeg": [0, 0, 0],
+      "size": [1.19, 0.4, 1.12],
+      "color": [0.72, 0.58, 0.22],
+      "emissive": 0,
+      "specular": 0.45,
+      "gloss": 0.7,
+      "segments": 20,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "ringA",
+      "position": [0, 0, -1.68],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 1.1
+    },
+    {
+      "name": "ringB",
+      "position": [0, 0, 1.68],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 1.1
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [1.15, 1.15, 1.68]
+    }
+  ]
+}

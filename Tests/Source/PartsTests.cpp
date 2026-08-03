@@ -3,6 +3,7 @@
 // (mass/thrust/drag from parts + carried resources) and rigid attachment.
 // ============================================================================
 
+#include <cstring>
 #include "TestFramework.hpp"
 
 #include <Core/FileSystem.hpp>
@@ -281,7 +282,10 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
         SW_CHECK(parts::isVesselPart(definition) !=
                  (parts::isBuilding(definition) || parts::isProp(definition)));
     }
-    SW_CHECK_EQ(rocketParts, static_cast<usize>(9));
+    // + the ten ENDURANCE pieces (F15): five module kinds, the connecting
+    // tunnel, the core hub and its spoke, and the two support craft — all
+    // ordinary vessel parts.
+    SW_CHECK_EQ(rocketParts, static_cast<usize>(19));
     // + CV-1, BT-1, PL-1, CW-1, and F5's VB-1 hall and LP-1 pad
     SW_CHECK_EQ(buildings, static_cast<usize>(12));
     // CR-1 crate, EV-1 suit, CR-2 vehicle cradle
@@ -469,4 +473,571 @@ SW_TEST(PartGeometryRaycastAndOverlap)
     {
         SW_CHECK(std::abs(glm::length(vertex.normal) - 1.0f) < 1.0e-2f);
     }
+}
+
+// ============================================================================
+// F15 — THE ENDURANCE, CHECKED AS A CONTRACT
+//
+// The ring ship is assembled by arithmetic in GameScene, and arithmetic
+// against data authored in another file is exactly the pair that drifts:
+// widen a module in Part Studio, and twelve joints open up in a way no
+// existing test would notice. So the numbers the blueprint depends on are
+// asserted here, against the SHIPPED catalogue — the ring's closure, the
+// spoke's reach, the names of every node the blueprint asks for by name,
+// and the propellant and power that make the thing flyable rather than
+// scenery.
+// ============================================================================
+SW_TEST(EnduranceCatalogueDescribesAFlyableRing)
+{
+    const std::filesystem::path directory =
+        FileSystem::executableDirectory() / "Assets" / "Parts";
+    SW_CHECK(parts::loadCatalog(directory));
+
+    const u32 ids[] = {
+        parts::kPartEnduranceHabitat, parts::kPartEnduranceEngine,
+        parts::kPartEnduranceCommand, parts::kPartEnduranceTunnel,
+        parts::kPartEnduranceRanger,  parts::kPartEnduranceLander,
+        parts::kPartEnduranceCargo,   parts::kPartEnduranceCryo,
+        parts::kPartEnduranceCoreHub, parts::kPartEnduranceSpoke};
+    for (const u32 id : ids)
+    {
+        const parts::PartDefinition* definition = parts::findDefinition(id);
+        SW_CHECK(definition != nullptr);
+        if (definition == nullptr) { continue; }
+        // Every piece is a VESSEL part (no industrial block, not a prop) and
+        // carries a collision hull: you can bump into all of it.
+        SW_CHECK(parts::isVesselPart(*definition));
+        SW_CHECK(!parts::effectiveHull(*definition).empty());
+    }
+
+    // ---- the ring closes ---------------------------------------------------
+    // Module centres on the apothem a = 29.4 m of a regular dodecagon; the
+    // vertex is a*tan(15 deg) along the tangent, and what is left over
+    // between a 12.4 m module and it is exactly half a tunnel.
+    constexpr f32 kApothem = 29.4f;
+    constexpr f32 kModuleHalfLen = 6.2f;
+    constexpr f32 kModuleHalfRad = 2.4f;
+    const f32 vertex = kApothem * std::tan(glm::pi<f32>() / 12.0f);
+    const auto halfExtent = [](u32 id, int axis) {
+        const parts::PartDefinition* definition = parts::findDefinition(id);
+        if (definition == nullptr) { return 0.0f; }
+        f32 out = 0.0f;
+        for (const parts::HitBox& box : parts::effectiveHull(*definition))
+        {
+            out = std::max(out, std::abs(box.halfExtents[axis]));
+        }
+        return out;
+    };
+    SW_CHECK(std::abs(halfExtent(parts::kPartEnduranceTunnel, 2) -
+                      (vertex - kModuleHalfLen)) < 0.05f);
+    // ...and every module is the length and thickness that arithmetic used.
+    for (const u32 id : {parts::kPartEnduranceHabitat, parts::kPartEnduranceEngine,
+                         parts::kPartEnduranceCommand, parts::kPartEnduranceCryo})
+    {
+        SW_CHECK(std::abs(halfExtent(id, 2) - kModuleHalfLen) < 0.01f);
+        SW_CHECK(std::abs(halfExtent(id, 0) - kModuleHalfRad) < 0.01f);
+    }
+    // 64 metres across, which is the film's number and the one the whole
+    // silhouette rests on.
+    SW_CHECK(std::abs(2.0f * (kApothem + kModuleHalfRad) - 64.0f) < 1.0f);
+
+    // ---- the spokes reach exactly from the core to the ring ----------------
+    // hub skin + a whole spoke must land on the module's inner face, or the
+    // six struts inside the ring are six struts that miss it.
+    const f32 hubRadius = halfExtent(parts::kPartEnduranceCoreHub, 0);
+    const f32 spokeHalf = halfExtent(parts::kPartEnduranceSpoke, 2);
+    SW_CHECK(std::abs((hubRadius + 2.0f * spokeHalf) -
+                      (kApothem - kModuleHalfRad)) < 0.05f);
+
+    // ---- every node the blueprint asks for, by name ------------------------
+    const auto hasNode = [](u32 id, std::string_view name) {
+        const parts::PartDefinition* definition = parts::findDefinition(id);
+        if (definition == nullptr) { return false; }
+        for (const parts::AttachNode& node : definition->nodes)
+        {
+            if (node.name == name) { return true; }
+        }
+        return false;
+    };
+    for (const u32 id : {parts::kPartEnduranceHabitat, parts::kPartEnduranceEngine,
+                         parts::kPartEnduranceCommand, parts::kPartEnduranceCryo,
+                         parts::kPartEnduranceCargo})
+    {
+        SW_CHECK(hasNode(id, "ringA"));
+        SW_CHECK(hasNode(id, "ringB"));
+        SW_CHECK(hasNode(id, "spoke"));
+    }
+    SW_CHECK(hasNode(parts::kPartEnduranceCargo, "dock"));
+    SW_CHECK(hasNode(parts::kPartEnduranceRanger, "dock"));
+    SW_CHECK(hasNode(parts::kPartEnduranceLander, "dock"));
+    SW_CHECK(hasNode(parts::kPartEnduranceSpoke, "hub"));
+    SW_CHECK(hasNode(parts::kPartEnduranceSpoke, "ring"));
+    // The core hub's six radial berths and its six docking ports: the
+    // "mounts six support craft at one time" the design claims.
+    for (const char* name : {"spoke0", "spoke1", "spoke2", "spoke3", "spoke4",
+                             "spoke5"})
+    {
+        SW_CHECK(hasNode(parts::kPartEnduranceCoreHub, name));
+    }
+    usize hubPorts = 0;
+    for (const char* name : {"dockF0", "dockF1", "dockF2", "dockA0", "dockA1",
+                             "dockA2"})
+    {
+        hubPorts += hasNode(parts::kPartEnduranceCoreHub, name) ? 1u : 0u;
+    }
+    SW_CHECK_EQ(hubPorts, static_cast<usize>(6));
+
+    // ---- it can actually fly ----------------------------------------------
+    // Twelve plasma engines over four modules, propellant in those same
+    // modules, and joules and photovoltaics in the habitats. Without these
+    // the Endurance is a very large ornament.
+    const parts::PartDefinition* propulsion =
+        parts::findDefinition(parts::kPartEnduranceEngine);
+    SW_CHECK(propulsion != nullptr);
+    if (propulsion != nullptr)
+    {
+        SW_CHECK(propulsion->thrustNewtons > 0.0);
+        SW_CHECK(propulsion->specificImpulseS > 1000.0); // plasma, not chemical
+        SW_CHECK(propulsion->capacities[0].resource == res::Resource::Fuel);
+        SW_CHECK(propulsion->capacities[0].units > 0.0);
+    }
+    const parts::PartDefinition* habitat =
+        parts::findDefinition(parts::kPartEnduranceHabitat);
+    SW_CHECK(habitat != nullptr);
+    if (habitat != nullptr)
+    {
+        // Battery-typed: SolarChargeSystem only pays a vessel that has one.
+        SW_CHECK(habitat->type == parts::PartType::Battery);
+        SW_CHECK(habitat->chargeRateKw > 0.0);
+        SW_CHECK(habitat->capacities[0].resource == res::Resource::ElectricCharge);
+    }
+
+    // ---- and the air has an answer for every piece -------------------------
+    // AeroForge solved a table for each one; a part flown from its geometry
+    // rather than from a single guessed Cd*A is the whole point of F6.
+    for (const u32 id : ids)
+    {
+        const parts::PartDefinition* definition = parts::findDefinition(id);
+        if (definition == nullptr) { continue; }
+        SW_CHECK(definition->dragCoefficientArea > 0.0); // the fallback still exists
+    }
+}
+
+// ============================================================================
+// THE HINGE, RECOVERED FROM TWO POSES
+//
+// Animations are authored by moving the thing: the panel is posed once closed
+// and once open, and the file holds those two poses and nothing else. Playing
+// that back the obvious way — slerp the rotation, lerp the position — is
+// correct at both ENDS and wrong in the middle, and wrong in the one way that
+// is most visible: a panel swinging ninety degrees about a mount at its root
+// has its centre cut the corner, so it shrinks toward the hub and springs back
+// out. It reads as a telescope, not a hinge.
+//
+// Chasles' theorem says every rigid motion is a rotation about some axis
+// through some point plus a slide along that axis. These tests set up motions
+// whose hinge is known by construction and check that it comes back.
+// ============================================================================
+SW_TEST(AHingeIsRecoveredFromThePosesItProduced)
+{
+    using namespace sw::parts;
+
+    // A panel two metres long, hinged at the origin, swung 90 degrees about
+    // +Y. Its centre starts at (2,0,0) and must end at (0,0,-2) having
+    // travelled an ARC of radius 2 — never nearer the hinge, never further.
+    const sw::Vec3 startPosition{2.0f, 0.0f, 0.0f};
+    const sw::Quat startRotation{1.0f, 0.0f, 0.0f, 0.0f};
+    const sw::Quat turn = glm::angleAxis(1.5707963f, sw::Vec3{0.0f, 1.0f, 0.0f});
+    const sw::Vec3 endPosition = turn * startPosition;
+    const sw::Quat endRotation = turn * startRotation;
+
+    const HingeMotion hinge =
+        hingeBetween(startPosition, startRotation, endPosition, endRotation);
+    SW_CHECK(std::abs(hinge.angleRadians - 1.5707963f) < 1.0e-4f);
+    SW_CHECK(std::abs(std::abs(hinge.axis.y) - 1.0f) < 1.0e-4f);
+    // The pivot is the mount, and it is at the origin.
+    SW_CHECK(glm::length(hinge.pivot) < 1.0e-3f);
+    SW_CHECK(glm::length(hinge.slide) < 1.0e-3f);
+
+    // Now the property that matters: the radius is constant along the whole
+    // travel. A lerp would give 1.414 at the midpoint against the true 2.0 —
+    // thirty per cent of the panel's own length, swallowed and spat back out.
+    for (sw::i32 step = 0; step <= 10; ++step)
+    {
+        const sw::f32 phase = static_cast<sw::f32>(step) / 10.0f;
+        sw::Vec3 position{};
+        sw::Quat rotation{};
+        poseAlongHinge(hinge, startPosition, startRotation, phase, position, rotation);
+        SW_CHECK(std::abs(glm::length(position) - 2.0f) < 1.0e-3f);
+    }
+    // ...and both ends land exactly where they were authored.
+    sw::Vec3 atZero{};
+    sw::Quat rotationAtZero{};
+    poseAlongHinge(hinge, startPosition, startRotation, 0.0f, atZero, rotationAtZero);
+    SW_CHECK(glm::length(atZero - startPosition) < 1.0e-4f);
+    sw::Vec3 atOne{};
+    sw::Quat rotationAtOne{};
+    poseAlongHinge(hinge, startPosition, startRotation, 1.0f, atOne, rotationAtOne);
+    SW_CHECK(glm::length(atOne - endPosition) < 1.0e-3f);
+    SW_CHECK(std::abs(glm::dot(rotationAtOne, endRotation)) > 0.9999f);
+}
+
+SW_TEST(AHingeOffTheOriginAndAPureSlideBothSurvive)
+{
+    using namespace sw::parts;
+
+    // A hinge at (0, 0, -0.5) — a bay door on the nose end of a part — turning
+    // 70 degrees about +X. Nothing about this is symmetric, which is the
+    // point: the pivot solve has to find a point that is not the origin.
+    const sw::Vec3 pivot{0.0f, 0.0f, -0.5f};
+    const sw::Vec3 startPosition{0.0f, 0.4f, -0.5f};
+    const sw::Quat startRotation =
+        glm::angleAxis(0.3f, glm::normalize(sw::Vec3{1.0f, 1.0f, 0.0f}));
+    const sw::Quat turn = glm::angleAxis(1.2217305f, sw::Vec3{1.0f, 0.0f, 0.0f});
+    const sw::Vec3 endPosition = pivot + turn * (startPosition - pivot);
+    const sw::Quat endRotation = turn * startRotation;
+
+    const HingeMotion hinge =
+        hingeBetween(startPosition, startRotation, endPosition, endRotation);
+    SW_CHECK(std::abs(hinge.angleRadians - 1.2217305f) < 1.0e-4f);
+    // Only the component PERPENDICULAR to the axis is determined — sliding the
+    // pivot along the hinge changes no point's path — so that is what is
+    // checked, and checking the whole vector would be checking an arbitrary
+    // choice rather than a fact.
+    const sw::Vec3 pivotError = hinge.pivot - pivot;
+    const sw::Vec3 perpendicular =
+        pivotError - hinge.axis * glm::dot(pivotError, hinge.axis);
+    SW_CHECK(glm::length(perpendicular) < 1.0e-3f);
+    // The radius about the true pivot holds all the way round.
+    for (sw::i32 step = 0; step <= 8; ++step)
+    {
+        sw::Vec3 position{};
+        sw::Quat rotation{};
+        poseAlongHinge(hinge, startPosition, startRotation,
+                       static_cast<sw::f32>(step) / 8.0f, position, rotation);
+        SW_CHECK(std::abs(glm::length(position - pivot) - 0.4f) < 2.0e-3f);
+    }
+
+    // A LANDING GEAR SLIDES, and a slide has no pivot at all: (I - R) is the
+    // zero matrix and the solve that finds a hinge would divide by it. It has
+    // to come back as a straight line instead.
+    const sw::Vec3 outPosition{0.0f, -1.2f, 0.0f};
+    const HingeMotion slide = hingeBetween(sw::Vec3{0.0f}, startRotation, outPosition,
+                                           startRotation);
+    SW_CHECK(slide.angleRadians < 1.0e-4f);
+    SW_CHECK(glm::length(slide.slide - outPosition) < 1.0e-4f);
+    sw::Vec3 halfway{};
+    sw::Quat unchanged{};
+    poseAlongHinge(slide, sw::Vec3{0.0f}, startRotation, 0.5f, halfway, unchanged);
+    SW_CHECK(glm::length(halfway - outPosition * 0.5f) < 1.0e-4f);
+    SW_CHECK(std::abs(glm::dot(unchanged, startRotation)) > 0.9999f);
+}
+
+SW_TEST(AnimationsSurviveTheRoundTripAndTheOldFilesStillLoad)
+{
+    using namespace sw::parts;
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / "sw_anim_roundtrip";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path path = directory / "anim.swpart";
+
+    PartDefinition written{};
+    written.id = 9001;
+    written.type = PartType::SolarPanel;
+    written.name = "TEST WING";
+    written.chargeRateKw = 7.5;
+    PartShape body{};
+    body.position = {0.0f, 0.0f, 0.0f};
+    written.shapes.push_back(body);
+    PartShape array{};
+    array.position = {-1.0f, 0.0f, 0.0f};
+    array.rotationDeg = {0.0f, 90.0f, 0.0f};
+    array.animation = 0;
+    array.endPosition = {-2.0f, 0.25f, 0.0f};
+    array.endRotationDeg = {0.0f, 0.0f, 15.0f};
+    array.endEmissive = 0.75f;
+    written.shapes.push_back(array);
+    PartAnimation animation{};
+    std::strncpy(animation.name, "SOLAR ARRAY", PartAnimation::kNameCapacity - 1);
+    animation.trigger = AnimationTrigger::Toggle;
+    animation.verbs = AnimationVerbs::OpenClose;
+    animation.gates = AnimationGates::Power;
+    animation.durationSeconds = 4.5f;
+    animation.startsOpen = true;
+    written.animations.push_back(animation);
+
+    SW_CHECK(savePartFile(written, path));
+    PartDefinition read{};
+    SW_CHECK(loadPartFile(path, read));
+    SW_CHECK_EQ(read.animations.size(), static_cast<sw::usize>(1));
+    SW_CHECK_EQ(std::string(read.animations[0].name), std::string("SOLAR ARRAY"));
+    SW_CHECK(read.animations[0].gates == AnimationGates::Power);
+    SW_CHECK(read.animations[0].startsOpen);
+    SW_CHECK(std::abs(read.animations[0].durationSeconds - 4.5f) < 1.0e-6f);
+    SW_CHECK_EQ(read.shapes[0].animation, -1);
+    SW_CHECK_EQ(read.shapes[1].animation, 0);
+    SW_CHECK(glm::length(read.shapes[1].endPosition - array.endPosition) < 1.0e-6f);
+    SW_CHECK(glm::length(read.shapes[1].endRotationDeg - array.endRotationDeg) < 1.0e-4f);
+    SW_CHECK(std::abs(read.shapes[1].endEmissive - 0.75f) < 1.0e-6f);
+
+    // THE STATIC SHAPE WROTE NO ANIMATION KEYS AT ALL. Thirty-four shipped
+    // parts animate nothing, and emitting four dead keys on every shape of
+    // every one of them would put a thousand lines of noise into the next
+    // diff of an unrelated edit.
+    const std::vector<sw::u8> bytes = sw::FileSystem::readBinaryFile(path);
+    const std::string text(bytes.begin(), bytes.end());
+    SW_CHECK_EQ(text.find("endPosition"), text.rfind("endPosition")); // exactly one
+
+    // AND A FILE FROM BEFORE ANY OF THIS still loads, with every shape static.
+    PartDefinition legacy{};
+    legacy.id = 9002;
+    legacy.name = "OLD";
+    legacy.shapes.push_back(body);
+    const std::filesystem::path legacyPath = directory / "legacy.swpart";
+    SW_CHECK(savePartFile(legacy, legacyPath));
+    PartDefinition reloaded{};
+    SW_CHECK(loadPartFile(legacyPath, reloaded));
+    SW_CHECK(reloaded.animations.empty());
+    SW_CHECK_EQ(reloaded.shapes[0].animation, -1);
+
+    // A shape pointing at an animation that is not there is corrected on load
+    // rather than becoming an invisible group nobody can find.
+    PartDefinition dangling = legacy;
+    dangling.id = 9003;
+    dangling.shapes[0].animation = 3;
+    const std::filesystem::path danglingPath = directory / "dangling.swpart";
+    SW_CHECK(savePartFile(dangling, danglingPath));
+    PartDefinition fixed{};
+    SW_CHECK(loadPartFile(danglingPath, fixed));
+    SW_CHECK_EQ(fixed.shapes[0].animation, -1);
+
+    std::filesystem::remove_all(directory);
+}
+
+SW_TEST(AStowedPanelMakesNoPowerAndAShutEngineMakesNoThrust)
+{
+    using namespace sw::parts;
+    PartDefinition panel{};
+    panel.chargeRateKw = 4.0;
+    PartAnimation deploy{};
+    deploy.gates = AnimationGates::Power;
+    panel.animations.push_back(deploy);
+
+    PartAnimationComponent state{};
+    state.count = 1;
+
+    // Stowed: nothing. Half open: half of it — a panel caught mid-travel
+    // really is presenting half its area, and a rule that waited for exactly
+    // 1 would put the whole effect in the last instant of a four-second
+    // deployment.
+    state.phase[0] = 0.0f;
+    SW_CHECK(animationGate(panel, &state, AnimationGates::Power) < 1.0e-6);
+    state.phase[0] = 0.5f;
+    SW_CHECK(std::abs(animationGate(panel, &state, AnimationGates::Power) - 0.5) < 1.0e-6);
+    state.phase[0] = 1.0f;
+    SW_CHECK(std::abs(animationGate(panel, &state, AnimationGates::Power) - 1.0) < 1.0e-6);
+    // The gate is per KIND: a power gate says nothing about thrust.
+    SW_CHECK(std::abs(animationGate(panel, &state, AnimationGates::Thrust) - 1.0) < 1.0e-6);
+
+    // AND A PART WITH NO ANIMATION STATE WORKS, which is the default that
+    // matters: getting it backwards would have switched off every engine in
+    // the game the day animations were added.
+    SW_CHECK(std::abs(animationGate(panel, nullptr, AnimationGates::Power) - 1.0) < 1.0e-6);
+    PartDefinition plain{};
+    SW_CHECK(std::abs(animationGate(plain, &state, AnimationGates::Power) - 1.0) < 1.0e-6);
+}
+
+// ============================================================================
+// PICKING A PART TO OPERATE
+//
+// "Le click est possible mais extremement difficile." It was, and the exact
+// collider raycast was wrong twice over. Once because the colliders sit at the
+// shapes' REST poses, so a solar wing drawn swung out has its collider still
+// folded against the hull — clicking the panel you can SEE misses, and
+// clicking empty space beside the tank hits. And once because exact is the
+// wrong ambition: a wing seen edge-on from twenty metres is two pixels of
+// collider, and a switch that demands two pixels is a switch nobody can work.
+//
+// What replaced it is one ray and the part's bounding sphere, which already
+// covers the deployed pose. This pins the tolerance that buys, in degrees,
+// because degrees are what a hand actually has to hit.
+// ============================================================================
+SW_TEST(APartIsPickedByTheRayThatPassesThroughIt)
+{
+    using namespace sw::parts;
+    const sw::Vec3 forward{0.0f, 0.0f, -1.0f};
+
+    // Dead centre, twenty metres away, a part with a 1.5 m bounding sphere.
+    const sw::Vec3 toPart{0.0f, 0.0f, -20.0f};
+    SW_CHECK(std::abs(rayEntersSphere(toPart, forward, 1.5f) - 18.5f) < 1.0e-4f);
+
+    // HOW FAR OFF THE HAND MAY BE. asin(1.5/20) is 4.3 degrees; anything
+    // inside that must hit and anything outside must miss. Four degrees is a
+    // target a person can hit without aiming; the old exact test on an
+    // edge-on panel was a twentieth of one.
+    const auto rayAtDegrees = [&](sw::f32 degrees) {
+        const sw::f32 radians = degrees * 0.017453292f;
+        return glm::normalize(sw::Vec3{std::sin(radians), 0.0f, -std::cos(radians)});
+    };
+    SW_CHECK(rayEntersSphere(toPart, rayAtDegrees(0.0f), 1.5f) >= 0.0f);
+    SW_CHECK(rayEntersSphere(toPart, rayAtDegrees(3.0f), 1.5f) >= 0.0f);
+    SW_CHECK(rayEntersSphere(toPart, rayAtDegrees(4.0f), 1.5f) >= 0.0f);
+    SW_CHECK(rayEntersSphere(toPart, rayAtDegrees(5.0f), 1.5f) < 0.0f);
+
+    // BEHIND THE EYE IS NOT IN THE WAY. A part directly astern shares the
+    // ray's LINE and none of its direction, and a test that forgot the sign
+    // would let the pilot work switches by looking away from them.
+    SW_CHECK(rayEntersSphere(sw::Vec3{0.0f, 0.0f, 20.0f}, forward, 1.5f) < 0.0f);
+    // ...but a part the eye is INSIDE is at zero, not behind: standing in the
+    // middle of a cargo bay still counts as pointing at it.
+    SW_CHECK_EQ(rayEntersSphere(sw::Vec3{0.3f, 0.0f, 0.2f}, forward, 1.5f), 0.0f);
+
+    // NEAREST WINS, so a part in front of another shadows it exactly as it
+    // looks like it should. This is the whole of the depth rule.
+    const sw::f32 near = rayEntersSphere(sw::Vec3{0.0f, 0.0f, -8.0f}, forward, 1.0f);
+    const sw::f32 far = rayEntersSphere(sw::Vec3{0.0f, 0.0f, -40.0f}, forward, 1.0f);
+    SW_CHECK(near >= 0.0f && far >= 0.0f && near < far);
+}
+
+SW_TEST(ADeployedWingIsClickableWhereItIsDrawn)
+{
+    using namespace sw::parts;
+    // The bug in one assertion, on a part built here so the check runs
+    // whichever catalogue is loaded. A wing's array is authored FOLDED and
+    // swings out to x = -1.55; the bounding sphere the pick uses has to cover
+    // both poses, or the half of the animation the pilot spends looking at the
+    // deployed panel is exactly the half that cannot be clicked.
+    PartDefinition wing{};
+    wing.id = 9100;
+    wing.type = PartType::SolarPanel;
+    PartShape mount{};
+    mount.size = {0.10f, 0.09f, 0.09f};
+    wing.shapes.push_back(mount);
+    PartShape array{};
+    array.position = {-0.20f, -1.35f, 0.0f}; // stowed alongside the hull
+    array.rotationDeg = {0.0f, 0.0f, 90.0f};
+    array.size = {1.40f, 0.02f, 0.55f};
+    array.animation = 0;
+    array.endPosition = {-1.55f, 0.0f, 0.0f}; // deployed, straight out
+    array.endRotationDeg = {0.0f, 0.0f, 0.0f};
+    wing.shapes.push_back(array);
+    wing.animations.push_back(PartAnimation{});
+
+    const f32 radius = partBoundsRadius(wing);
+    // Both poses inside the sphere, with their own half-extents.
+    SW_CHECK(glm::length(array.position) + 1.4f <= radius + 1.0e-4f);
+    SW_CHECK(glm::length(array.endPosition) + 1.4f <= radius + 1.0e-4f);
+
+    // ...and the deployed pose is the one that sets it. Take the animation
+    // away and the sphere shrinks, which is precisely the regression this
+    // guards: a radius measured on the stowed silhouette alone.
+    PartDefinition stowedOnly = wing;
+    stowedOnly.shapes[1].animation = -1;
+    SW_CHECK(partBoundsRadius(stowedOnly) < radius);
+
+    // The tolerance that buys at a working distance: a couple of degrees.
+    const sw::Vec3 forward{0.0f, 0.0f, -1.0f};
+    const sw::Vec3 toPart{0.0f, 0.0f, -25.0f};
+    SW_CHECK(rayEntersSphere(toPart, forward, radius) >= 0.0f);
+    const sw::f32 wobble = 3.0f * 0.017453292f;
+    SW_CHECK(rayEntersSphere(toPart,
+                             glm::normalize(sw::Vec3{std::sin(wobble), 0.0f,
+                                                     -std::cos(wobble)}),
+                             radius) >= 0.0f);
+}
+
+// ============================================================================
+// THE SHIP THE PILOT IS ACTUALLY IN
+//
+// "Cela ne marche toujours pas ni pour le moteur ni pour le panneau solaire."
+// Three rounds of fixing the pick had all been aimed at the wrong thing. The
+// menu, the ray, the click-versus-drag rule were by then all correct; what was
+// missing is that the animations had been authored on the CATALOGUE parts —
+// the SP-2 wing and the V-400 engine, which a player meets in the hangar — and
+// the Endurance the game starts you in is built from none of them. Every part
+// within reach of the cursor had an empty `animations` list, the pick
+// (correctly) refuses those, and so a feature that worked perfectly could not
+// be reached from inside the game.
+//
+// The measurement that ended it was blunt: "35 part entities, 0 with
+// animations". This test is that measurement, kept.
+// ============================================================================
+SW_TEST(TheEnduranceModulesArePartsThePilotCanOperate)
+{
+    using namespace sw::parts;
+    SW_CHECK(loadCatalog(FileSystem::executableDirectory() / "Assets" / "Parts"));
+
+    // The habitat's arrays: a toggle the pilot works by hand, gating the
+    // module's own charge rate, with real geometry bound to it. A gate with
+    // nothing moving is a switch that does nothing visible; geometry with no
+    // gate is scenery.
+    const PartDefinition* habitat = findDefinition(kPartEnduranceHabitat);
+    SW_CHECK(habitat != nullptr);
+    SW_CHECK(!habitat->animations.empty());
+    SW_CHECK(habitat->animations[0].trigger == AnimationTrigger::Toggle);
+    SW_CHECK(habitat->animations[0].gates == AnimationGates::Power);
+    SW_CHECK(habitat->chargeRateKw > 0.0);
+    usize movingShapes = 0;
+    for (const PartShape& shape : habitat->shapes)
+    {
+        movingShapes += (shape.animation == 0) ? 1u : 0u;
+    }
+    SW_CHECK(movingShapes >= 2); // one array each side of the module
+
+    // The propulsion module: a hand switch that gates thrust, and a second
+    // animation the THROTTLE drives — the pilot never presses that one, so it
+    // must not be a toggle or it would appear in the menu as a dead button.
+    const PartDefinition* engine = findDefinition(kPartEnduranceEngine);
+    SW_CHECK(engine != nullptr);
+    SW_CHECK_EQ(engine->animations.size(), static_cast<usize>(2));
+    SW_CHECK(engine->animations[0].trigger == AnimationTrigger::Toggle);
+    SW_CHECK(engine->animations[0].gates == AnimationGates::Thrust);
+    SW_CHECK(engine->thrustNewtons > 0.0);
+    SW_CHECK(engine->animations[1].trigger == AnimationTrigger::Throttle);
+    // ...and it lights something up, from dark: a nozzle authored bright at
+    // rest is an engine that looks lit while it is shut down.
+    usize glows = 0;
+    for (const PartShape& shape : engine->shapes)
+    {
+        if (shape.animation == 1)
+        {
+            ++glows;
+            SW_CHECK(shape.endEmissive > shape.emissive);
+            SW_CHECK(shape.emissive < 0.25f);
+        }
+    }
+    SW_CHECK_EQ(glows, static_cast<usize>(3)); // three nozzles per module
+
+    // AND THE CLICK TARGET COVERS THE DEPLOYED POSE. The pick tests a bounding
+    // sphere; if that sphere were measured on the stowed silhouette the arrays
+    // would stand two metres outside anything a cursor could hit.
+    const f32 reach = partBoundsRadius(*habitat);
+    for (const PartShape& shape : habitat->shapes)
+    {
+        if (shape.animation >= 0)
+        {
+            SW_CHECK(glm::length(shape.endPosition) <= reach + 1.0e-4f);
+        }
+    }
+
+    // Every animated part in the catalogue, checked the same way: a shape may
+    // only point at an animation that exists, and no part may carry more than
+    // the runtime component can hold.
+    usize animatedParts = 0;
+    for (const PartDefinition& definition : catalog())
+    {
+        if (definition.animations.empty())
+        {
+            continue;
+        }
+        ++animatedParts;
+        SW_CHECK(definition.animations.size() <= kMaxPartAnimations);
+        for (const PartShape& shape : definition.shapes)
+        {
+            SW_CHECK(shape.animation < static_cast<i32>(definition.animations.size()));
+        }
+    }
+    // The SP-2 wing and V-400 engine from the hangar, plus the two Endurance
+    // modules that were the whole point of this test.
+    SW_CHECK_EQ(animatedParts, static_cast<usize>(4));
 }

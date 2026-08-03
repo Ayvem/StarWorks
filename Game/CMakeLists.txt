@@ -11,6 +11,8 @@ add_executable(StarWorks
     Source/GameFactory.cpp
     Source/GameFactoryUi.cpp
     Source/GameFlight.cpp
+    Source/GameParts.cpp
+    Source/GameStars.cpp
     Source/GameHangar.cpp
     Source/GameHud.cpp
     Source/GameInternal.hpp
