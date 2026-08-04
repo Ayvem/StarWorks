@@ -52,8 +52,14 @@ namespace game
         m_saveSchema.registerComponent<sw::phys::SurfaceAnchorComponent>(
             "phys.SurfaceAnchor", 2); // v2: local rotation + auto-release payload
         m_saveSchema.registerComponent<sw::planet::TerrainComponent>("planet.Terrain", 3);
+        // v2: + the baseline density under copper and ice, so no landing site
+        // is a dead end.
         m_saveSchema.registerComponent<sw::planet::DepositComponent>("planet.Deposits",
-                                                                    1);
+                                                                    2);
+        // F43 — what has been LOOKED AT. The ore itself is an analytic field
+        // and is never saved; the survey is a record of what a player did, so
+        // it is the one thing about a body's geology that has to be.
+        m_saveSchema.registerComponent<sw::planet::SurveyComponent>("planet.Survey", 1);
         // v2: + surfaceRelative, and kStability joined the modes.
         m_saveSchema.registerComponent<SasComponent>("game.Sas", 2);
         m_saveSchema.registerComponent<sw::parts::PartComponent>("parts.Part", 1);
@@ -334,6 +340,54 @@ namespace game
         rebuildConveyorNetwork();
         rebuildPowerNetwork();
         rebuildHulls();
+
+        // ...AND THE THIRD DERIVED THING, which nobody had noticed was one.
+        //
+        // `groundDensity` is a CACHE of a pure function — the analytic ore
+        // field, at a place that cannot move, for the resource this machine's
+        // recipe names. It is stored only to keep the production tick off the
+        // noise generator. That makes a stale value a silent, permanent lie:
+        // a mine that once had STOP pressed on it kept the zero that sampled,
+        // and one built before the default recipe learnt to match the ground
+        // kept a zero it was born with. Both look exactly like a worked-out
+        // deposit, and this game has none.
+        //
+        // Recomputing it here can only ever agree with the field, so a world
+        // that loads is a world whose mines are paid what the rock holds.
+        sw::u32 resampled = 0;
+        m_world.forEach<sw::factory::BuildingComponent,
+                        sw::factory::RecipeStateComponent>(
+            [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building,
+                sw::factory::RecipeStateComponent& state) {
+                if (building.category != sw::factory::BuildingCategory::Miner)
+                {
+                    return;
+                }
+                const sw::planet::DepositComponent* deposits = nullptr;
+                sw::Vec3 up{};
+                if (!buildingGround(m_world, entity, deposits, up))
+                {
+                    return;
+                }
+                const sw::f32 fresh = depositDensityFor(deposits, up, state.recipeId);
+                // STOP is not a reading: a stopped mine keeps whatever the
+                // ground was worth for the recipe it last ran.
+                if (sw::factory::minedResource(state.recipeId) ==
+                    sw::res::Resource::Count)
+                {
+                    return;
+                }
+                if (std::abs(fresh - building.groundDensity) > 1.0e-6f)
+                {
+                    ++resampled;
+                }
+                building.groundDensity = fresh;
+            });
+        if (resampled > 0)
+        {
+            SW_LOG_INFO("Game", "{} mine(s) re-sampled from the ore field on load",
+                        resampled);
+        }
 
         SW_LOG_INFO("Game", "Loaded '{}': {} entities, t={:.1f}s, warp x{:g}",
                     path.string(), m_world.aliveCount(), m_simulation.simulatedSeconds(),

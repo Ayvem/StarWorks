@@ -96,8 +96,13 @@ namespace studio
         {
             loadCurrentFile();
         }
-        SW_LOG_INFO("Studio", "Part Studio ready - {} part files in '{}'",
-                    m_files.size(), m_directory.string());
+        // The same stamp the game prints, and for the same reason: a stale
+        // Part Studio does not merely miss a feature, it SAVES OVER fields it
+        // has never heard of. This one is the difference between "the tool
+        // dropped my flex numbers" and "the tool is three milestones old".
+        SW_LOG_INFO("Studio", "Part Studio build {} - {} part files in '{}'",
+                    sw::FileSystem::buildStamp(), m_files.size(),
+                    m_directory.string());
     }
 
     sw::u32 PartStudioApp::registerMesh(sw::Mesh mesh)
@@ -482,15 +487,39 @@ namespace studio
         {
             return sw::Mat4{1.0f};
         }
-        const sw::Quat restRotation{glm::radians(shape.rotationDeg)};
-        const sw::Quat endRotation{glm::radians(shape.endRotationDeg)};
+        // THE SAME MOTION THE GAME WILL PLAY, asked of the same function.
+        //
+        // This is a TWIN, in the sense the shader parity checker means it: two
+        // implementations of one motion, and a tool that disagrees with the
+        // runtime is worse than no tool, because it certifies the wrong thing.
+        // The shapes of one motion are carried by their DRIVER's pose, so the
+        // preview follows the driver rather than the shape — identical while
+        // a motion is one hinge, and the honest answer when it is not.
+        const sw::parts::PartShape* driver = &shape;
+        for (const sw::parts::PartMotionGroup& motion :
+             sw::parts::partMotionGroups(m_part))
+        {
+            if (std::find(motion.shapes.begin(), motion.shapes.end(),
+                          static_cast<sw::u32>(index)) != motion.shapes.end())
+            {
+                driver = &m_part.shapes[motion.driver];
+                break;
+            }
+        }
+        // ...and the same easing. The game plays a smoothstep because a hinge
+        // that starts and stops instantly reads as a mechanism being yanked;
+        // a scrub bar that walks the raw phase shows a motion nobody will see.
+        const sw::f32 raw = glm::clamp(m_phase, 0.0f, 1.0f);
+        const sw::f32 eased = raw * raw * (3.0f - 2.0f * raw);
+        const sw::Quat restRotation{glm::radians(driver->rotationDeg)};
+        const sw::Quat endRotation{glm::radians(driver->endRotationDeg)};
         const sw::parts::HingeMotion hinge = sw::parts::hingeBetween(
-            shape.position, restRotation, shape.endPosition, endRotation);
+            driver->position, restRotation, driver->endPosition, endRotation);
         sw::Vec3 position{};
         sw::Quat rotation{};
-        sw::parts::poseAlongHinge(hinge, shape.position, restRotation, m_phase, position,
+        sw::parts::poseAlongHinge(hinge, driver->position, restRotation, eased, position,
                                   rotation);
-        const sw::Mat4 rest = glm::translate(sw::Mat4{1.0f}, shape.position) *
+        const sw::Mat4 rest = glm::translate(sw::Mat4{1.0f}, driver->position) *
                               glm::mat4_cast(restRotation);
         const sw::Mat4 live =
             glm::translate(sw::Mat4{1.0f}, position) * glm::mat4_cast(rotation);

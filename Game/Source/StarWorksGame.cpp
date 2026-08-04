@@ -195,9 +195,31 @@ namespace game
         // chance to save, and the reflex that closes a dialog in every other
         // program threw away the session. In the hangar it still belongs to
         // the editor (drop / put back the held part).
-        if (keyPressed(sw::KeyCode::Escape) && !m_editorMode)
+        if (keyPressed(sw::KeyCode::Escape) && !m_editorMode && !m_geologyMode)
         {
             openMenu(MenuPage::Root);
+            return;
+        }
+
+        // --- F44: THE GEOLOGY SCREEN --------------------------------------------
+        //
+        // F4 and not a letter, for the reason F3 is not one: every letter in
+        // reach is a flight control, and F2 shows the hulls while F5/F9 save
+        // and load — the panel keys are a family and this is one of them.
+        //
+        // It returns EARLY, which the hangar does not. The hangar leaves the
+        // cockpit reachable underneath because it grew out of it; this screen
+        // is a map of a planet and nothing on it should ever fire a decoupler.
+        // One return is a smaller promise to keep than eleven `&& !m_geologyMode`.
+        if (keyPressed(sw::KeyCode::F4) && !m_editorMode)
+        {
+            if (m_geologyMode) { exitGeology(); }
+            else { enterGeology(); }
+        }
+        if (m_geologyMode)
+        {
+            updateGeology();
+            handleHudClicks();
             return;
         }
 
@@ -601,6 +623,9 @@ namespace game
             PhaseTimer phase(m_phaseMs[kPhaseTerrain]);
             updateTerrainPatch();
         }
+        // The instrument, after the flight state it reads and the celestial
+        // index it looks the primary up in.
+        updateSurvey();
         {
             PhaseTimer phase(m_phaseMs[kPhaseGrass]);
             updateGrassField();
@@ -731,6 +756,22 @@ namespace game
             hudBeginButtons(); // the boot bar is its own screen
             collectShellHud();
             renderer().renderFrame(m_camera, m_drawItems);
+            return;
+        }
+        if (m_geologyMode)
+        {
+            // The debug hooks live in applyDebugJump and this branch returns
+            // before the frame ever reaches it — so a capture that opened this
+            // screen could never press anything ON it. One-shot flags make the
+            // second call free.
+            applyDebugJump();
+            // No star, no shadows, no air: the globe is drawn unlit and the
+            // background is the black a map is read on, not a sky.
+            renderer().setSunPosition({0.0f, 0.0f, 0.0f});
+            renderer().setShadowSpheres({});
+            renderer().setAtmosphere({0.0f, 0.0f, 0.0f}, 0.0f, {0.0f, 0.0f, 0.0f});
+            collectGeologyItems();
+            renderer().renderFrame(m_geologyCamera, m_drawItems);
             return;
         }
         if (m_editorMode)

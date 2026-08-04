@@ -263,16 +263,46 @@ namespace game
             // and the second is drawn with an extra transform in front of it.
             m_partMeshIds[definition.id] = registerMesh(
                 renderer().createMesh(sw::parts::buildPartMeshGroup(definition, -1)));
-            for (sw::u32 group = 0; group < definition.animations.size(); ++group)
+            // ONE MESH PER MOTION. Not per animation: an animation may hold
+            // more than one rigid motion, and welding them together is what
+            // made a four-segment array deploy as one segment carrying three
+            // passengers. Shapes that really do share a hinge still share a
+            // mesh — the grouping is derived from the poses, so a panel and
+            // its struts cost one draw call exactly as before.
+            std::vector<sw::parts::PartMotionGroup> motions =
+                sw::parts::partMotionGroups(definition);
+            for (sw::u32 index = 0; index < motions.size(); ++index)
             {
                 const sw::MeshData mesh =
-                    sw::parts::buildPartMeshGroup(definition, static_cast<sw::i32>(group));
+                    sw::parts::buildPartMotionMesh(definition, motions[index]);
                 if (mesh.indices.empty())
                 {
                     continue; // an animation that only gates, moving nothing
                 }
-                m_partGroupMeshIds[partGroupKey(definition.id, group)] =
+                m_partGroupMeshIds[partGroupKey(definition.id, index)] =
                     registerMesh(renderer().createMesh(mesh));
+            }
+            if (!motions.empty())
+            {
+                // SAID OUT LOUD, once per animated part, at boot.
+                //
+                // "The animation is still wrong" and "the binary predates the
+                // fix" look identical from a screenshot, and a screenshot is
+                // what a bug report is. This line is the difference: a build
+                // that decomposes the solar wing into eleven motions says so,
+                // and one that has never heard of a motion prints nothing at
+                // all. It costs four lines in a log nobody reads until the
+                // day it is the only thing worth reading.
+                std::string shape;
+                for (const sw::parts::PartMotionGroup& motion : motions)
+                {
+                    shape += std::format(" A{}x{}", motion.animation,
+                                         motion.shapes.size());
+                }
+                SW_LOG_INFO("Game", "{}: {} animation(s) -> {} motion(s):{}",
+                            definition.name, definition.animations.size(),
+                            motions.size(), shape);
+                m_partMotions[definition.id] = std::move(motions);
             }
         }
         // The BELT and its CARGO are ordinary parts. Their mesh slots and
@@ -365,6 +395,16 @@ namespace game
         // stays one pixel wide however far out the map is zoomed.
         m_orbitLineMeshIndex = registerMesh(renderer().createMesh(
             sw::PrimitiveFactory::makeBox({0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f, 1.0f})));
+
+        // F44: the geology screen's two globe slots, claimed HERE and never
+        // again. m_meshes is a plain vector and a DrawItem holds a raw pointer
+        // into it, so registering a mesh once the frame's items are collected
+        // reallocates the vector and dangles every one of them.
+        for (sw::u32& slot : m_geologyGlobeMesh)
+        {
+            slot = registerMesh(renderer().createMesh(sw::PrimitiveFactory::makeUvSphere(
+                1.0f, 8, 16, {0.5f, 0.5f, 0.5f, 1.0f})));
+        }
 
         // Sun position and eclipse occluders are camera-relative and set
         // every frame in onRender.

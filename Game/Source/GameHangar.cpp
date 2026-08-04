@@ -1049,6 +1049,38 @@ namespace game
             item.tint = tint;
             item.transparent = transparent;
             m_drawItems.push_back(item);
+            // ...AND EVERYTHING THAT MOVES, at its rest pose.
+            //
+            // The design office drew the STATIC mesh and nothing else, so an
+            // animated part appeared here as whatever it has that does not
+            // move. On a solar wing that is the twenty-centimetre mount block
+            // and nothing at all of the array — you place a panel and see a
+            // stub. It was invisible as a bug for the same reason it is
+            // obvious as a symptom: the two shipped animated parts before now
+            // were the Endurance's, which cannot be built in a hangar, and
+            // the V-400, whose only moving shape is a glow cone that is dark
+            // until the engine lights.
+            //
+            // The rest pose is the right pose: a part is BUILT stowed — a
+            // wing folded in its fairing, a gear down on the pad — and the
+            // motion transform at phase zero is the identity, so this is the
+            // same matrix the body uses.
+            if (const auto motions = m_partMotions.find(definitionId);
+                motions != m_partMotions.end())
+            {
+                for (sw::u32 index = 0; index < motions->second.size(); ++index)
+                {
+                    const auto slot =
+                        m_partGroupMeshIds.find(partGroupKey(definitionId, index));
+                    if (slot == m_partGroupMeshIds.end())
+                    {
+                        continue;
+                    }
+                    sw::DrawItem moving = item;
+                    moving.mesh = &m_meshes[slot->second];
+                    m_drawItems.push_back(moving);
+                }
+            }
         };
 
         // Floor grid: the hangar deck.
@@ -1234,7 +1266,7 @@ namespace game
         constexpr sw::f32 kRowHeight = 0.068f;
         constexpr sw::f32 kRowWidth = 0.40f;
         sw::f32 rowY = -0.70f;
-        for (sw::usize i = 0; i < partCatalog.size() && i < 14; ++i)
+        for (sw::usize i = 0; i < partCatalog.size() && i < 16; ++i)
         {
             const bool held = partCatalog[i]->id == m_heldDefinition;
             panel(-0.98f, rowY, -0.98f + kRowWidth, rowY + kRowHeight,

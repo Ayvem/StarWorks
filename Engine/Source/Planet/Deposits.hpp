@@ -26,6 +26,7 @@
 #include "Planet/Terrain.hpp"
 #include "Resources/ResourceTypes.hpp"
 
+#include <algorithm>
 #include <type_traits>
 
 namespace sw::planet
@@ -48,6 +49,27 @@ namespace sw::planet
         /// 1 = only in the permanently shadowed high latitudes. This single
         /// number is what makes a lunar polar site the obvious first colony.
         f32 icePolarBias = 0.85f;
+        /// THE FLOOR UNDER COPPER AND ICE: what the barren rock between the
+        /// patches carries anyway.
+        ///
+        /// Ore in patches is the interesting half of the design and it has a
+        /// failure mode that is not interesting at all: land somewhere with no
+        /// copper and no ice within reach and the colony cannot start, through
+        /// no decision the player made. Copper gates the electronics and ice
+        /// gates the fuel and the air, so either gap is a dead end, and the
+        /// only cure available to a player who cannot yet build anything is to
+        /// abandon the site.
+        ///
+        /// A tenth of the rock everywhere makes every landing viable and
+        /// changes nothing about why you would move: a mine on baseline ground
+        /// runs at a TENTH of the rate of one on a real deposit, because yield
+        /// is the nominal rate times the density underfoot. Expansion stops
+        /// being a requirement and becomes an optimisation, which is where it
+        /// belongs.
+        ///
+        /// Iron has no floor: at 0.55 richness it is already almost everywhere,
+        /// and giving the abundant resource a floor too would flatten the map.
+        f32 baselineDensity = 0.10f;
     };
     static_assert(std::is_trivially_copyable_v<DepositComponent>);
 
@@ -87,7 +109,10 @@ namespace sw::planet
         case res::Resource::IronOre:
             return metal(kIronOffset, 0u);
         case res::Resource::CopperOre:
-            return metal(kCopperOffset, 911u);
+            // The floor is a MAXIMUM against the field, not an addition to it:
+            // a rich patch is exactly as rich as it was, and only the barren
+            // rock between patches comes up to the baseline.
+            return std::max(metal(kCopperOffset, 911u), deposits.baselineDensity);
         case res::Resource::WaterIce:
         {
             // Ice survives where the sun does not reach: the polar term is a
@@ -101,7 +126,10 @@ namespace sw::planet
                            deposits.seed + 4242u);
             const f32 edge = 1.0f - deposits.iceRichness;
             const f32 patch = math::smoothstepf(edge, edge + 0.12f, field);
-            return patch * polar;
+            // Same floor as copper, and it matters more here: the polar term
+            // multiplies ice down to nothing across most of a body by design,
+            // so without a floor an equatorial landing has no water at all.
+            return std::max(patch * polar, deposits.baselineDensity);
         }
         default:
             return 0.0f; // refined goods are made, not dug

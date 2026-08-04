@@ -285,7 +285,7 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
     // + the ten ENDURANCE pieces (F15): five module kinds, the connecting
     // tunnel, the core hub and its spoke, and the two support craft — all
     // ordinary vessel parts.
-    SW_CHECK_EQ(rocketParts, static_cast<usize>(19));
+    SW_CHECK_EQ(rocketParts, static_cast<usize>(20)); // + the OS-1 surveyor
     // + CV-1, BT-1, PL-1, CW-1, and F5's VB-1 hall and LP-1 pad
     SW_CHECK_EQ(buildings, static_cast<usize>(12));
     // CR-1 crate, EV-1 suit, CR-2 vehicle cradle
@@ -1037,9 +1037,9 @@ SW_TEST(TheEnduranceModulesArePartsThePilotCanOperate)
             SW_CHECK(shape.animation < static_cast<i32>(definition.animations.size()));
         }
     }
-    // The SP-2 wing and V-400 engine from the hangar, plus the two Endurance
-    // modules that were the whole point of this test.
-    SW_CHECK_EQ(animatedParts, static_cast<usize>(4));
+    // The SP-2 wing and V-400 engine from the hangar, the two Endurance
+    // modules that were the whole point of this test, and the OS-1's dish.
+    SW_CHECK_EQ(animatedParts, static_cast<usize>(5));
 }
 
 // ============================================================================
@@ -1252,6 +1252,91 @@ SW_TEST(ThrustThroughAnOffCentreBalancePointTipsTheNoseTowardTheHeavySide)
     }
 }
 
+// ============================================================================
+// ONE ANIMATION MAY BE MORE THAN ONE MOTION
+//
+// « j'ai modifié l'animation de sp2_solar_wing.swpart dans PartStudio.exe pour
+// la rendre meilleure et je suis très satisfait du résultat mais dans le jeu
+// l'animation est buggé. »
+//
+// The tool was right and the game was wrong. An animation used to be a single
+// rigid body: every shape it moved was welded into one mesh and carried by the
+// hinge of the FIRST of them. That is correct for a panel and the struts
+// holding it — they really do swing together — and it silently destroys any
+// animation with two motions in it. A telescoping array whose four segments
+// deploy to four different places came out as one segment with three
+// stowaways, and Part Studio, which previews each shape on its own hinge,
+// showed it working perfectly.
+//
+// So the grouping is DERIVED from the poses rather than declared: same
+// animation AND same rest-to-deployed transform. Nothing was re-authored and
+// no format changed.
+// ============================================================================
+SW_TEST(ShapesOfOneAnimationThatMoveDifferentlyAreDifferentMotions)
+{
+    using namespace sw::parts;
+    SW_CHECK(loadCatalog(FileSystem::executableDirectory() / "Assets" / "Parts"));
+
+    // ---- the shipped wing: four segments, four places ---------------------
+    const PartDefinition* wing = findDefinition(kPartSolarWing);
+    SW_CHECK(wing != nullptr);
+    SW_CHECK(wing->animations.size() == 1);
+    const std::vector<PartMotionGroup> motions = partMotionGroups(*wing);
+    SW_CHECK(motions.size() > 1); // the whole point
+
+    // Every animated shape lands in exactly one motion, and every motion's
+    // riders share their driver's transform — the invariant the renderer
+    // depends on, since it draws them all with one matrix.
+    usize animated = 0;
+    for (usize i = 0; i < wing->shapes.size(); ++i)
+    {
+        if (wing->shapes[i].visible && wing->shapes[i].animation >= 0) { ++animated; }
+    }
+    usize covered = 0;
+    for (const PartMotionGroup& motion : motions)
+    {
+        SW_CHECK(!motion.shapes.empty());
+        SW_CHECK(motion.shapes.front() == motion.driver);
+        covered += motion.shapes.size();
+        const PartShape& driver = wing->shapes[motion.driver];
+        const Vec3 driverDelta = driver.endPosition - driver.position;
+        for (const u32 index : motion.shapes)
+        {
+            const PartShape& rider = wing->shapes[index];
+            SW_CHECK(rider.animation == motion.animation);
+            SW_CHECK(glm::length((rider.endPosition - rider.position) - driverDelta) <
+                     1.0e-2f);
+        }
+    }
+    SW_CHECK_EQ(covered, animated);
+
+    // ...and the four deployed panels really do end up four places apart. A
+    // grouping that welded them would give one x, repeated.
+    std::vector<f32> deployedX;
+    for (const PartMotionGroup& motion : motions)
+    {
+        deployedX.push_back(wing->shapes[motion.driver].endPosition.x);
+    }
+    std::sort(deployedX.begin(), deployedX.end());
+    SW_CHECK(deployedX.front() < deployedX.back() - 1.0f);
+
+    // ---- and a part whose shapes DO share a hinge still costs one ---------
+    // The Endurance's propulsion module lights three nozzle discs with one
+    // throttle animation; they move identically, so they must stay welded or
+    // this change would have cost two draw calls per module for nothing.
+    const PartDefinition* engine = findDefinition(kPartEnduranceEngine);
+    SW_CHECK(engine != nullptr);
+    const std::vector<PartMotionGroup> engineMotions = partMotionGroups(*engine);
+    SW_CHECK_EQ(engineMotions.size(), static_cast<usize>(1));
+    SW_CHECK_EQ(engineMotions.front().shapes.size(), static_cast<usize>(3));
+
+    // ---- the mesh of a motion holds that motion's shapes and no others ----
+    const MeshData first = buildPartMotionMesh(*wing, motions.front());
+    SW_CHECK(!first.indices.empty());
+    const MeshData whole = buildPartMeshGroup(*wing, 0);
+    SW_CHECK(first.vertices.size() < whole.vertices.size());
+}
+
 SW_TEST(AnEngineCanPushAlongAnAxisThatIsNotItsNose)
 {
     using namespace sw::parts;
@@ -1383,6 +1468,46 @@ SW_TEST(AFlexiblePartBendsUnderLoadAndOnlyKeepsTheBendPastYield)
     // pushed sideways hinges, it does not twist about its own length.
     SW_CHECK(std::abs(glm::normalize(flex().elastic).y) > 0.99f);
 
+    // AND IT TRAILS THE PUSH RATHER THAN LEADING IT, which is the half a
+    // magnitude test cannot see. The member sticks out along the vessel's -Z
+    // and the load is along +X, so its TIP must be displaced toward -X: a
+    // solar wing on a rocket under thrust sweeps back.
+    //
+    // Stated as the tip's own motion, because that is what a player sees and
+    // because the sign was wrong for two milestones without anything noticing:
+    // on a single member a backwards bend reads as an odd-looking bend, and it
+    // took a SYMMETRY PAIR — two arms pointing outward in opposite directions,
+    // splayed one up and one down instead of both swept back — to make it
+    // obvious. PartAttachmentSystem rotates by the right-hand rule, so the tip
+    // moves by axis x outward.
+    {
+        // Measured on the POSE, not on an intermediate vector: run the system
+        // that draws it and look at where the member's far end ended up.
+        PartAttachmentSystem attachment;
+        attachment.update(world, 0.02f);
+        Vec3 low{1.0e9f};
+        Vec3 high{-1.0e9f};
+        expandPartHullBounds(*findDefinition(kPartCoreStructural), Vec3{0.0f},
+                             Quat{1.0f, 0.0f, 0.0f, 0.0f}, low, high);
+        const Vec3 hullCentre = (low + high) * 0.5f;
+        const auto& posed = world.getComponent<TransformComponent>(part);
+        const Vec3 load{1.0f, 0.0f, 0.0f}; // where it is being pushed
+        const Vec3 tipNow = Vec3(posed.position) + posed.rotation * hullCentre;
+        const Vec3 tipRest = Vec3{0.0f, 0.0f, -8.0f} + hullCentre;
+        SW_CHECK(glm::length(tipNow - tipRest) > 1.0e-4f);
+        SW_CHECK(glm::dot(tipNow - tipRest, load) < 0.0f);
+
+        // AND ITS ROOT DOES NOT MOVE. A joint bends AT the joint: the end
+        // bolted to the parent stays exactly where it was bolted, and only
+        // what is beyond it swings. Rotating the part about the vessel's
+        // balance point instead — which is what this did — translates the
+        // whole member bodily, so a wing leaves its mount behind and hangs in
+        // space beside the hull.
+        const Vec3 rootRest = Vec3{0.0f, 0.0f, -8.0f} + flex().rootOffset;
+        const Vec3 rootNow = Vec3(posed.position) + posed.rotation * flex().rootOffset;
+        SW_CHECK(glm::length(rootNow - rootRest) < 1.0e-4f);
+    }
+
     // IT SPRINGS BACK. Take the load off and the elastic part decays — that is
     // the difference between a spring and a hinge, and the ringing on the way
     // down is what a big panel does after the engines cut.
@@ -1404,22 +1529,129 @@ SW_TEST(AFlexiblePartBendsUnderLoadAndOnlyKeepsTheBendPastYield)
     }
     const f32 set = glm::length(flex().permanent);
     SW_CHECK(set > 1.0e-3f);
-    // The elastic part is capped at the yield angle by construction: past it,
-    // everything extra has gone into the metal.
-    const f32 yieldAngle = static_cast<f32>(4.0e4 / 5.0e4);
-    SW_CHECK(glm::length(flex().elastic) <= yieldAngle + 1.0e-4f);
+    // BENDING IS A MOTION AND A MOTION TAKES TIME. The excess drains into the
+    // metal at a bounded rate rather than all at once, so thirty ticks of
+    // overload can bend the part by thirty ticks' worth and no more. Without
+    // the bound a SINGLE frame of a simulation discontinuity — a craft
+    // spawning, a rails hand-off, a hull correction — left a part sixty-eight
+    // degrees out of true and, because the permanent set only ever grows,
+    // marked it for the rest of the session.
+    constexpr f32 kMaxYieldRateRadPerS = 1.0f;
+    SW_CHECK(set <= kMaxYieldRateRadPerS * 30.0f * 0.02f + 1.0e-3f);
 
-    // ...and it STAYS. Four hundred quiet ticks later the permanent set is
-    // still there, which is the whole point of it being permanent.
+    // The load comes off. The elastic part falls back to the yield angle as
+    // the rest of the excess finishes moving into the metal.
+    const f32 yieldAngle = static_cast<f32>(4.0e4 / 5.0e4);
     for (int i = 0; i < 400; ++i)
     {
         assembly.update(world, 0.02f);
         flexSystem.update(world, 0.02f);
     }
-    SW_CHECK(std::abs(glm::length(flex().permanent) - set) < 1.0e-4f);
+    const f32 settled = glm::length(flex().permanent);
+    SW_CHECK(settled >= set);                                  // never springs back
+    SW_CHECK(glm::length(flex().elastic) <= yieldAngle + 1.0e-3f);
+
+    // ...and it STAYS. Four hundred more quiet ticks change nothing, which is
+    // the whole point of it being permanent.
+    for (int i = 0; i < 400; ++i)
+    {
+        assembly.update(world, 0.02f);
+        flexSystem.update(world, 0.02f);
+    }
+    SW_CHECK(std::abs(glm::length(flex().permanent) - settled) < 1.0e-4f);
 
     // Put the catalogue back: the definitions are a process-wide registry and
     // the next test to load it deserves what the file says.
+    {
+        auto& definition = const_cast<PartDefinition&>(*findDefinition(kPartCoreStructural));
+        definition.flexStiffnessNmPerRad = 0.0;
+        definition.flexYieldNm = 0.0;
+    }
+}
+
+// ============================================================================
+// FREE FALL CARRIES NO LOAD
+//
+// « les joints sont trop élastiques ils doivent être bien plus rigides » —
+// sent with a picture of a coasting craft whose two solar wings hung at
+// different angles, engine off.
+//
+// They were not too soft. The flex pass differenced the vessel's velocity to
+// find its acceleration, and in orbit a velocity turns at the local
+// gravitational field: 8.7 m/s^2 near Terra, of nothing at all. Gravity pulls
+// on every gram of a craft equally, so it puts no force through any joint —
+// that is why an astronaut floats beside their ship instead of being pressed
+// against a wall — and a system that reads it as a load bends a spacecraft
+// under its own weight while weightless. Measured on the Starling coasting,
+// engine off: 10.07 degrees of elastic bend and a permanent set pinned at the
+// 68.75 degree clamp.
+//
+// The load is PROPER acceleration now: the difference, minus what gravity
+// actually applied. Thrust, the ground, the air and a collision all survive
+// it, because every one of them acts on part of a craft and is carried
+// through the structure to the rest.
+// ============================================================================
+SW_TEST(AVesselInFreeFallPutsNoLoadThroughItsJoints)
+{
+    ecs::World world;
+    const ecs::Entity root = world.createEntity();
+    world.addComponent(root, TransformComponent{});
+    world.addComponent(root, VesselComponent{});
+    world.addComponent(root, phys::DynamicBodyComponent{{0.0, 0.0, 0.0}, 1.0});
+
+    const ecs::Entity part = world.createEntity();
+    world.addComponent(part, TransformComponent{});
+    world.addComponent(part, PreviousTransformComponent{});
+    PartComponent component{};
+    component.definitionId = kPartCoreStructural;
+    component.vessel = root;
+    component.localPosition = {0.0f, 0.0f, -8.0f};
+    world.addComponent(part, component);
+    world.addComponent(part, PartFlexComponent{});
+
+    VesselAssemblySystem assembly;
+    PartFlexSystem flexSystem;
+    auto body = [&world, root]() -> phys::DynamicBodyComponent& {
+        return world.getComponent<phys::DynamicBodyComponent>(root);
+    };
+    auto flex = [&world, part]() -> PartFlexComponent& {
+        return world.getComponent<PartFlexComponent>(part);
+    };
+    {
+        auto& definition = const_cast<PartDefinition&>(*findDefinition(kPartCoreStructural));
+        definition.flexStiffnessNmPerRad = 5.0e4;
+        definition.flexYieldNm = 4.0e4;
+    }
+
+    // ORBIT. Nine metres per second squared of sideways velocity change, held
+    // for four seconds, every bit of it gravity — which the integrator says so
+    // by writing what it applied.
+    constexpr f64 kStep = 0.02;
+    const WorldVec3 gravity{9.0, 0.0, 0.0};
+    body().velocity = {0.0, 7800.0, 0.0};
+    for (int i = 0; i < 200; ++i)
+    {
+        body().gravityMps2 = gravity;
+        body().velocity += gravity * kStep;
+        assembly.update(world, static_cast<f32>(kStep));
+        flexSystem.update(world, static_cast<f32>(kStep));
+    }
+    SW_CHECK(glm::length(flex().elastic) < 1.0e-4f);
+    SW_CHECK(glm::length(flex().permanent) < 1.0e-6f);
+
+    // THE SAME VELOCITY CHANGE, NOT FROM GRAVITY, BENDS IT. Identical numbers
+    // on the left-hand side; the only difference is who is pushing. Without
+    // this the test above would pass on a system that had simply stopped
+    // working.
+    for (int i = 0; i < 200; ++i)
+    {
+        body().gravityMps2 = WorldVec3{0.0};
+        body().velocity += gravity * kStep;
+        assembly.update(world, static_cast<f32>(kStep));
+        flexSystem.update(world, static_cast<f32>(kStep));
+    }
+    SW_CHECK(glm::length(flex().elastic) > 1.0e-3f);
+
     {
         auto& definition = const_cast<PartDefinition&>(*findDefinition(kPartCoreStructural));
         definition.flexStiffnessNmPerRad = 0.0;

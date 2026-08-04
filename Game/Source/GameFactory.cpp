@@ -251,40 +251,12 @@ namespace game
         // the iron field reads 0.000000. Sixty seconds of the real
         // ProductionSystem on an Ice Harvesting recipe (1.2 u/s) then gives
         // 0.0000 units in state kStarved the old way, and 59.3924 units in
-        // state kRunning this way. An IRON mine is untouched: over 2000
-        // sampled directions on Terra the largest difference between the old
-        // expression and this one is 0.000000000.
+        // state kRunning this way.
         //
-        // An extraction recipe has exactly one output and no inputs (see
-        // factory::builtinCatalog), so outputs[0] IS what the mine pulls out
-        // of the rock. Anything that is not an extraction recipe — a
-        // smelter, a silo, a solar farm, or a machine with no recipe picked
-        // yet — has no deposit to speak of and reports Count.
-        [[nodiscard]] sw::res::Resource minedResourceFor(sw::u32 recipeId)
-        {
-            const sw::factory::RecipeDefinition* recipe =
-                sw::factory::findRecipe(recipeId);
-            if (recipe == nullptr ||
-                recipe->requiredCategory != sw::factory::BuildingCategory::Miner)
-            {
-                return sw::res::Resource::Count;
-            }
-            return recipe->outputs[0].resource;
-        }
-
+        // The mapping itself now lives in the engine (factory::minedResource),
+        // because the placement validator needs its inverse.
         /// Density of whatever `recipeId` extracts, under `up`. 0 when the
         /// body has no geology, or when the recipe digs for nothing.
-        [[nodiscard]] sw::f32 depositDensityFor(
-            const sw::planet::DepositComponent* deposits, const sw::Vec3& up,
-            sw::u32 recipeId)
-        {
-            const sw::res::Resource resource = minedResourceFor(recipeId);
-            if (deposits == nullptr || resource == sw::res::Resource::Count)
-            {
-                return 0.0f;
-            }
-            return sw::planet::oreDensity(*deposits, up, resource);
-        }
     } // namespace
 
     // ------------------------------------------------------------------------
@@ -967,10 +939,45 @@ namespace game
         return worst;
     }
 
-    sw::u32 StarWorksGame::defaultRecipeFor(sw::factory::BuildingCategory category)
+    // ------------------------------------------------------------------------
+    // A MINE STARTS ON WHAT IS ACTUALLY UNDER IT
+    //
+    // It used to start on the first recipe in the catalogue, which is IRON,
+    // whatever the ground held — and the placement validator passes ground on
+    // the BEST of the three resources. The two disagreed, and after F43 gave
+    // copper and ice a baseline tenth the disagreement became the common case:
+    // measured on Terra, of 10 978 legal dry sites, 4 296 (THIRTY-NINE PER
+    // CENT) have exactly zero iron under them. A mine dropped on one of those
+    // was born on the iron recipe, sampled a density of zero, and sat in
+    // kStarved for the rest of the save — producing nothing, ever, with no
+    // message saying why. That is the "the copper drills stopped producing"
+    // and the "the ore is running out" in one bug, and neither was true: the
+    // field is analytic and nothing in this game depletes.
+    //
+    // So the ground chooses. The same bestDeposit the validator used to say
+    // yes now says WHAT, and the machine is born digging it.
+    // ------------------------------------------------------------------------
+    sw::u32 StarWorksGame::defaultRecipeFor(sw::factory::BuildingCategory category,
+                                            const sw::planet::DepositComponent* deposits,
+                                            const sw::Vec3& up)
     {
         const std::vector<sw::u32> recipes = sw::factory::recipesForCategory(category);
-        return recipes.empty() ? 0u : recipes.front();
+        if (recipes.empty())
+        {
+            return 0u;
+        }
+        if (category == sw::factory::BuildingCategory::Miner && deposits != nullptr)
+        {
+            sw::f32 density = 0.0f;
+            const sw::res::Resource best =
+                sw::planet::bestDeposit(*deposits, up, density);
+            if (const sw::u32 id = sw::factory::extractionRecipeFor(best);
+                id != 0 && density > 0.0f)
+            {
+                return id;
+            }
+        }
+        return recipes.front();
     }
 
     // ------------------------------------------------------------------------
@@ -1585,7 +1592,10 @@ namespace game
             // A HUB founds its own site; everything else joins the nearest.
             const sw::ecs::Entity entity = placeBuilding(
                 m_heldBuilding, body, m_buildCursor.direction, m_buildYaw,
-                defaultRecipeFor(held->building.category),
+                defaultRecipeFor(
+                    held->building.category,
+                    m_world.tryGetComponent<sw::planet::DepositComponent>(body),
+                    m_buildCursor.direction),
                 siteNear(body, m_buildCursor.direction),
                 (held->building.category == sw::factory::BuildingCategory::Beacon)
                     ? sw::Vec4{1.0f, 0.78f, 0.28f, 1.0f}
@@ -1638,15 +1648,24 @@ namespace game
         // The SITING stays permanent, which is the point of sampling once:
         // this re-reads the same field at the same place, only for the
         // resource now being asked for.
-        if (auto* building = m_world.tryGetComponent<sw::factory::BuildingComponent>(entity))
+        //
+        // ...AND STOP IS NOT A RESAMPLE. recipeId 0 is the STOP button, and it
+        // digs for nothing, so the sample came back 0.0 and OVERWROTE a
+        // perfectly good number. The machine then read as barren ground rather
+        // than as a stopped machine, which is a difference the panel shows and
+        // the player cannot undo except by chance. A recipe that is not a mine
+        // leaves the stored density alone.
+        if (sw::factory::minedResource(recipeId) != sw::res::Resource::Count)
         {
-            if (const auto* anchor =
-                    m_world.tryGetComponent<sw::phys::SurfaceAnchorComponent>(entity);
-                anchor != nullptr && glm::length(anchor->localPosition) > 1.0)
+            if (auto* building =
+                    m_world.tryGetComponent<sw::factory::BuildingComponent>(entity))
             {
-                building->groundDensity = depositDensityFor(
-                    m_world.tryGetComponent<sw::planet::DepositComponent>(anchor->body),
-                    sw::Vec3(glm::normalize(anchor->localPosition)), recipeId);
+                const sw::planet::DepositComponent* deposits = nullptr;
+                sw::Vec3 up{};
+                if (buildingGround(m_world, entity, deposits, up))
+                {
+                    building->groundDensity = depositDensityFor(deposits, up, recipeId);
+                }
             }
         }
 

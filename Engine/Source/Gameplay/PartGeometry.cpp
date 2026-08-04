@@ -527,6 +527,92 @@ namespace sw::parts
         return mesh;
     }
 
+    std::vector<PartMotionGroup> partMotionGroups(const PartDefinition& definition)
+    {
+        // The delta that takes a shape from where it is authored to where it
+        // deploys, as a transform of the PART's frame rather than of the
+        // shape's own. That distinction is the whole comparison: two shapes
+        // that each turn ninety degrees about their own centres are two
+        // motions, not one, and only the part-frame transform says so.
+        const auto deltaOf = [](const PartShape& shape) {
+            const Mat4 rest = glm::translate(Mat4{1.0f}, shape.position) *
+                              glm::mat4_cast(Quat{glm::radians(shape.rotationDeg)});
+            const Mat4 end = glm::translate(Mat4{1.0f}, shape.endPosition) *
+                             glm::mat4_cast(Quat{glm::radians(shape.endRotationDeg)});
+            return end * glm::inverse(rest);
+        };
+        // A millimetre and a thousandth of a unit of rotation: authored poses
+        // are typed to three decimals and round-tripped through JSON, so an
+        // exact comparison would split a group that a person wrote as one.
+        const auto same = [](const Mat4& a, const Mat4& b) {
+            for (int column = 0; column < 4; ++column)
+            {
+                for (int row = 0; row < 4; ++row)
+                {
+                    if (std::abs(a[column][row] - b[column][row]) > 1.0e-3f)
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+
+        std::vector<PartMotionGroup> motions;
+        std::vector<Mat4> deltas;
+        for (usize i = 0; i < definition.shapes.size(); ++i)
+        {
+            const PartShape& shape = definition.shapes[i];
+            if (!shape.visible || shape.animation < 0)
+            {
+                continue;
+            }
+            const Mat4 delta = deltaOf(shape);
+            bool placed = false;
+            for (usize m = 0; m < motions.size(); ++m)
+            {
+                if (motions[m].animation == shape.animation && same(deltas[m], delta))
+                {
+                    motions[m].shapes.push_back(static_cast<u32>(i));
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed)
+            {
+                PartMotionGroup motion{};
+                motion.animation = shape.animation;
+                motion.driver = static_cast<u32>(i);
+                motion.shapes.push_back(static_cast<u32>(i));
+                motions.push_back(std::move(motion));
+                deltas.push_back(delta);
+            }
+        }
+        return motions;
+    }
+
+    MeshData buildPartMotionMesh(const PartDefinition& definition,
+                                 const PartMotionGroup& motion)
+    {
+        MeshData mesh;
+        for (const u32 index : motion.shapes)
+        {
+            if (index >= definition.shapes.size())
+            {
+                continue;
+            }
+            const MeshData shapeMesh = buildShapeMesh(definition.shapes[index]);
+            const u32 base = static_cast<u32>(mesh.vertices.size());
+            mesh.vertices.insert(mesh.vertices.end(), shapeMesh.vertices.begin(),
+                                 shapeMesh.vertices.end());
+            for (const u32 triangle : shapeMesh.indices)
+            {
+                mesh.indices.push_back(base + triangle);
+            }
+        }
+        return mesh;
+    }
+
     MeshData buildPartMesh(const PartDefinition& definition)
     {
         MeshData mesh;

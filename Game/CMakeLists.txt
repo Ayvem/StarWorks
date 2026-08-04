@@ -13,6 +13,7 @@ add_executable(StarWorks
     Source/GameFlight.cpp
     Source/GameParts.cpp
     Source/GameStars.cpp
+    Source/GameGeology.cpp
     Source/GameHangar.cpp
     Source/GameHud.cpp
     Source/GameInternal.hpp
@@ -21,6 +22,7 @@ add_executable(StarWorks
     Source/GameSaveLoad.cpp
     Source/GameScene.cpp
     Source/GameShell.cpp
+    Source/GameSurvey.cpp
     Source/GameTerrain.cpp
     Source/Main.cpp
     Source/StarWorksGame.cpp

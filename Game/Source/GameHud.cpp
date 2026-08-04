@@ -764,6 +764,22 @@ namespace game
                          sw::Vec4{0.85f, 0.75f, 1.0f, 0.95f});
         }
 
+        // ---- the orbital survey ----------------------------------------------
+        //
+        // On the flight HUD rather than in the part's own menu, because what
+        // it reports is a property of the ORBIT: an instrument that is armed
+        // and doing nothing is the most confusing state this feature has, and
+        // the reason it is idle — a periapsis inside the air — is not visible
+        // from the cockpit at all.
+        if (!m_surveyStatus.empty())
+        {
+            const bool working = m_surveyFraction > 0.0f;
+            hudText(m_surveyStatus, kX, y, kLine,
+                    working ? sw::Vec4{0.45f, 0.85f, 0.95f, 0.95f}
+                            : sw::Vec4{0.95f, 0.75f, 0.35f, 0.95f});
+            y += kLine * 1.3f;
+        }
+
         // ---- maneuver node status --------------------------------------------
         if (m_nodeActive)
         {
@@ -1184,6 +1200,42 @@ namespace game
         case sw::ui::HudAction::Shell:
             handleShellClick(route.index);
             return false;
+        case sw::ui::HudAction::Geology:
+        {
+            // TRUE on every branch: a press that landed on a button must NOT
+            // also fall through to the globe and drop a beacon behind the
+            // panel it just pressed.
+            if (route.index == 1500u)
+            {
+                exitGeology();
+                return true;
+            }
+            if (route.index >= 1520u)
+            {
+                const std::vector<sw::ecs::Entity> bodies = geologyBodies();
+                const sw::usize row = route.index - 1520u;
+                if (row < bodies.size() && bodies[row] != m_geologyBody)
+                {
+                    m_geologyBody = bodies[row];
+                    m_geologyGlobeDirty = true;
+                }
+                return true;
+            }
+            if (route.index >= 1501u && route.index < 1504u)
+            {
+                const sw::res::Resource channels[] = {sw::res::Resource::IronOre,
+                                                      sw::res::Resource::CopperOre,
+                                                      sw::res::Resource::WaterIce};
+                const sw::res::Resource picked = channels[route.index - 1501u];
+                if (picked != m_geologyChannel)
+                {
+                    m_geologyChannel = picked;
+                    m_geologyGlobeDirty = true;
+                }
+                return true;
+            }
+            return true;
+        }
         case sw::ui::HudAction::NetSyncTo:
         {
             const std::vector<sw::net::PlayerView> roster = netRoster();
@@ -1359,6 +1411,19 @@ namespace game
                 }
                 break;
             }
+        }
+
+        // ---- geology 3D click (no button consumed it) ---------------------------
+        // A press on the globe itself, which is the one control on that screen
+        // that is not a rectangle.
+        if (m_geologyMode)
+        {
+            sw::Vec3 direction{};
+            if (geologyCursorDirection(direction))
+            {
+                geologyToggleBeacon(direction);
+            }
+            return;
         }
 
         // ---- hangar 3D click (no button consumed it) ----------------------------

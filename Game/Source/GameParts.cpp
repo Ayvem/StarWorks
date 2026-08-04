@@ -19,6 +19,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace game
 {
@@ -62,33 +64,69 @@ namespace game
         {
             return;
         }
-        for (sw::u32 group = 0; group < state->count; ++group)
+        const auto motions = m_partMotions.find(part.definitionId);
+        if (motions == m_partMotions.end())
         {
-            const auto slot = m_partGroupMeshIds.find(partGroupKey(part.definitionId, group));
+            return;
+        }
+        // SW_ANIMPROBE=<definitionId>: what this part's motions actually DID
+        // this frame, from inside the draw loop that does it — how many
+        // motions, which mesh each found, what phase drove it and where its
+        // matrix put it. Three rounds of "the animation is still buggy" went
+        // past on evidence that stopped at the mesh grouping, which was
+        // correct; the thing nobody had printed was the transform.
+        std::FILE* probe = nullptr;
+        if (const char* wanted = std::getenv("SW_ANIMPROBE");
+            wanted != nullptr && !m_debugAnimProbed &&
+            part.definitionId == static_cast<sw::u32>(std::strtoul(wanted, nullptr, 10)) &&
+            ++m_debugAnimDelay > 150u)
+        {
+            // LATE, and that is the point. The first version fired on the
+            // first frame this part was drawn, which is a hundred frames
+            // before the hook presses the button, and reported phase 0.000
+            // for an animation that had not been asked to move yet -- a
+            // measurement of the probe rather than of the feature.
+            m_debugAnimProbed = true;
+            probe = std::fopen("/tmp/sw_animprobe.txt", "w");
+            if (probe != nullptr)
+            {
+                std::fprintf(probe, "definition %u: %zu motions, %u animation states\n",
+                             part.definitionId, motions->second.size(), state->count);
+                for (sw::u32 a = 0; a < state->count; ++a)
+                {
+                    std::fprintf(probe, "  A%u phase %.3f target %.3f\n", a,
+                                 static_cast<double>(state->phase[a]),
+                                 static_cast<double>(state->target[a]));
+                }
+            }
+        }
+        for (sw::u32 index = 0; index < motions->second.size(); ++index)
+        {
+            const sw::parts::PartMotionGroup& motion = motions->second[index];
+            const auto slot = m_partGroupMeshIds.find(partGroupKey(part.definitionId, index));
             if (slot == m_partGroupMeshIds.end())
             {
                 continue;
             }
-            // THE GROUP'S OWN MOTION, once per group and not once per shape.
+            // ONE HINGE PER MOTION, and the motion is what the poses say it
+            // is rather than what the animation index says.
             //
-            // Every shape a group owns rides the SAME hinge, and the hinge is
-            // taken from the first of them. That is not a shortcut, it is what
-            // a group MEANS: an array and the four struts holding it swing
-            // together or they come apart in mid-air. A part that needs two
-            // hinges has two animations, which is also how it is built.
-            const sw::parts::PartShape* driver = nullptr;
-            for (const sw::parts::PartShape& shape : definition->shapes)
-            {
-                if (shape.visible && shape.animation == static_cast<sw::i32>(group))
-                {
-                    driver = &shape;
-                    break;
-                }
-            }
-            if (driver == nullptr)
+            // Shapes that share a hinge share a mesh and one transform — an
+            // array and the four struts holding it swing together or they
+            // come apart in mid-air, and they really do share a hinge. Shapes
+            // that DO NOT share one are separate motions, which is how a
+            // telescoping array whose four segments deploy to four different
+            // places comes out as four segments rather than as one carrying
+            // three passengers. `partMotionGroups` derives both from the
+            // authored poses; nothing here has to be told which it is.
+            const sw::u32 group = (motion.animation >= 0)
+                                      ? static_cast<sw::u32>(motion.animation)
+                                      : 0u;
+            if (group >= state->count || motion.driver >= definition->shapes.size())
             {
                 continue;
             }
+            const sw::parts::PartShape* driver = &definition->shapes[motion.driver];
             const sw::Quat restRotation{glm::radians(driver->rotationDeg)};
             const sw::Quat endRotation{glm::radians(driver->endRotationDeg)};
             const sw::parts::HingeMotion hinge = sw::parts::hingeBetween(
@@ -127,6 +165,40 @@ namespace game
                 item.tint = {tint.r * scale, tint.g * scale, tint.b * scale, tint.a};
             }
             m_drawItems.push_back(item);
+            if (probe != nullptr)
+            {
+                // ...AND WHERE IT LANDS IN THE WORLD. The part-local answer
+                // was right three times running while the picture stayed
+                // wrong, so the probe follows the matrix all the way to the
+                // camera-relative point the renderer will actually place.
+                // The mesh is baked at the REST pose, so the point that
+                // lands where the shape is DRAWN is the rest point put
+                // through the item's own matrix. Putting the END pose
+                // through it applies the motion twice, which is how the
+                // first version of this line produced numbers that were
+                // wrong by exactly one deployment.
+                const sw::Vec4 tip = item.transform * sw::Vec4(driver->position, 1.0f);
+                std::fprintf(probe, "        drawn at %8.3f %8.3f %8.3f\n",
+                             static_cast<double>(tip.x), static_cast<double>(tip.y),
+                             static_cast<double>(tip.z));
+                const sw::Mat4 delta = live * glm::inverse(rest);
+                std::fprintf(probe,
+                             "  motion %2u A%d driver %2u x%zu mesh %u  phase %.3f  "
+                             "rest %6.3f %6.3f %6.3f -> now %6.3f %6.3f %6.3f\n",
+                             index, motion.animation, motion.driver,
+                             motion.shapes.size(), slot->second,
+                             static_cast<double>(raw),
+                             static_cast<double>(driver->position.x),
+                             static_cast<double>(driver->position.y),
+                             static_cast<double>(driver->position.z),
+                             static_cast<double>((delta * sw::Vec4(driver->position, 1.0f)).x),
+                             static_cast<double>((delta * sw::Vec4(driver->position, 1.0f)).y),
+                             static_cast<double>((delta * sw::Vec4(driver->position, 1.0f)).z));
+            }
+        }
+        if (probe != nullptr)
+        {
+            std::fclose(probe);
         }
     }
 

@@ -1,0 +1,41 @@
+{
+  "name": "DESIGN 2",
+  "parts": [
+    {
+      "definitionId": 9,
+      "position": [0, 0, 0],
+      "rotation": [1, 0, 0, 0],
+      "parent": -1,
+      "parentPoint": 0,
+      "childPoint": 0,
+      "symmetryGroup": -1
+    },
+    {
+      "definitionId": 2,
+      "position": [0, 0, 2.4000000953674316],
+      "rotation": [1, 0, 0, 0],
+      "parent": 0,
+      "parentPoint": 1,
+      "childPoint": 0,
+      "symmetryGroup": -1
+    },
+    {
+      "definitionId": 5,
+      "position": [0.33735227584838867, 1.047001838684082, 0.7060971260070801],
+      "rotation": [0.5887777805328369, 0, 0, -0.808294951915741],
+      "parent": 0,
+      "parentPoint": 255,
+      "childPoint": 0,
+      "symmetryGroup": 0
+    },
+    {
+      "definitionId": 5,
+      "position": [-0.3373521566390991, -1.047001838684082, 0.7060971260070801],
+      "rotation": [0.808294951915741, 0, 0, 0.5887778401374817],
+      "parent": 0,
+      "parentPoint": 255,
+      "childPoint": 0,
+      "symmetryGroup": 0
+    }
+  ]
+}

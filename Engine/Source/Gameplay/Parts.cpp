@@ -1242,10 +1242,70 @@ namespace sw::parts
                     vessel.angularAccelRadPerS2 = Vec3{0.0f};
                     return;
                 }
+                // PROPER ACCELERATION, NOT COORDINATE ACCELERATION, and the
+                // difference is the whole of what a joint carries.
+                //
+                // Gravity pulls on every gram of a vessel equally, so a craft
+                // in free fall feels NOTHING however fast its velocity is
+                // turning: there is no force through any joint, which is why
+                // an astronaut floats next to their ship rather than being
+                // pressed against a wall. Everything else — thrust, the
+                // ground, the air, a collision — acts on part of the craft and
+                // is carried through the structure to the rest of it, and that
+                // is exactly the load this system exists to model.
+                //
+                // Differencing the velocity alone gets all of those AND
+                // gravity, and gravity is the largest of them by far in the
+                // place a spacecraft spends its life. Measured on the Starling
+                // coasting in a circular orbit, engine off: 8.7 m/s^2 of
+                // nothing at all, times 75 kg of solar wing on a 1.4 m lever,
+                // is 913 N m through a joint that yields at 580 — so the wings
+                // took a permanent set, every frame, until they hit the clamp
+                // at 68.75 degrees. The craft was bending under its own weight
+                // while weightless.
+                //
+                // The subtraction uses what GravityIntegrationSystem actually
+                // APPLIED rather than a field recomputed here, so the two
+                // cannot drift apart.
                 const Quat toVessel = glm::inverse(transform.rotation);
-                const WorldVec3 deltaV = body.velocity - vessel.previousVelocity;
+                const WorldVec3 deltaV = body.velocity - vessel.previousVelocity -
+                                         body.gravityMps2 * static_cast<f64>(deltaSeconds);
                 vessel.accelerationMps2 =
                     toVessel * (Vec3(deltaV) / deltaSeconds);
+                // A STEP IN VELOCITY IS NOT A FORCE. Spawning a craft, handing
+                // one from rails to dynamics, moving the floating origin, or a
+                // hull correction pushing something out of the ground all
+                // change `velocity` between two ticks without anything having
+                // pushed on it, and differencing reads the step as an
+                // acceleration of tens of thousands of g.
+                //
+                // The cap is fifty g because that is past every load the game
+                // can really produce — this rocket's own engine is 2 g, a hard
+                // landing is ten to twenty — and far below any discontinuity.
+                // It matters more than it looks: the permanent set only ever
+                // grows, so ONE bad frame bends a craft for the rest of the
+                // session, which is precisely what was happening.
+                constexpr f32 kMaxProperAccel = 50.0f * 9.80665f;
+                if (const f32 magnitude = glm::length(vessel.accelerationMps2);
+                    magnitude > kMaxProperAccel)
+                {
+                    // SAID OUT LOUD, a few times. A clamp that fires silently
+                    // is a clamp nobody knows is load-bearing, and the whole
+                    // reason this one exists is that something upstream is
+                    // teleporting a vessel. Naming the number is how the
+                    // upstream thing gets found instead of tolerated.
+                    static int reported = 0;
+                    if (reported < 5)
+                    {
+                        ++reported;
+                        SW_LOG_WARN("Parts",
+                                    "flex: {:.0f} g of velocity step clamped to 50 g "
+                                    "(speed {:.0f} m/s) — a discontinuity, not a force",
+                                    static_cast<f64>(magnitude / 9.80665f),
+                                    glm::length(body.velocity));
+                    }
+                    vessel.accelerationMps2 *= kMaxProperAccel / magnitude;
+                }
                 vessel.angularAccelRadPerS2 =
                     (body.angularVelocity - vessel.previousAngularVelocity) /
                     deltaSeconds;
@@ -1276,26 +1336,89 @@ namespace sw::parts
                     vessel->accelerationMps2 +
                     glm::cross(vessel->angularAccelRadPerS2, arm);
 
+                // WHERE IT IS BOLTED, WHICH WAY IT REACHES, AND HOW FAR — all
+                // three from the part's own geometry rather than from where
+                // the ship happens to balance.
+                //
+                // THE ROOT is the attach node nearest the balance point: that
+                // is the end facing whatever carries this part, which is the
+                // end that does not move. A part with no nodes bends about its
+                // origin.
+                //
+                // THE REACH is from that root to the centre of the part's own
+                // hull — the lever its mass acts through, and the axis it
+                // bends about. Both are properties of the PART. Measured from
+                // the vessel's balance point instead, a wing bolted straight
+                // out of the hull's side reported a reach forty degrees off
+                // its real one, because the balance point is also several
+                // metres up the stack; and the lever came out as the part's
+                // whole bounding radius — 3.8 m for a deployed array whose
+                // mass centres 1.5 m from its root — so every load was two and
+                // a half times too big.
+                Vec3 root{0.0f};
+                {
+                    f32 nearest = std::numeric_limits<f32>::max();
+                    for (const AttachNode& node : definition->nodes)
+                    {
+                        const Vec3 candidate = part.localRotation * node.position;
+                        const f32 distance = glm::length(part.localPosition + candidate -
+                                                         vessel->centreOfMass);
+                        if (distance < nearest)
+                        {
+                            nearest = distance;
+                            root = candidate;
+                        }
+                    }
+                }
+                flex.rootOffset = root;
+                Vec3 low{1.0e9f};
+                Vec3 high{-1.0e9f};
+                expandPartHullBounds(*definition, Vec3{0.0f},
+                                     Quat{1.0f, 0.0f, 0.0f, 0.0f}, low, high);
+                const Vec3 reach =
+                    (high.x >= low.x)
+                        ? (part.localRotation * ((low + high) * 0.5f)) - root
+                        : Vec3{0.0f};
+
                 // ...AND ONLY ITS LATERAL PART BENDS ANYTHING. A beam pushed
                 // along its own length is in compression, not in bending. The
                 // part's own long axis is the direction it sticks out from the
                 // vessel's balance point, which is also the lever its mass acts
                 // through.
+                const f32 reachLength = glm::length(reach);
                 const f32 armLength = glm::length(arm);
                 const Vec3 outward =
-                    (armLength > 1.0e-3f) ? arm / armLength : Vec3{0.0f, 0.0f, -1.0f};
+                    (reachLength > 1.0e-2f)  ? reach / reachLength
+                    : (armLength > 1.0e-3f)  ? arm / armLength
+                                             : Vec3{0.0f, 0.0f, -1.0f};
                 const Vec3 lateral =
                     properAccel - outward * glm::dot(properAccel, outward);
 
                 // Moment = mass x lateral acceleration x lever, and the lever
-                // is the part's own reach rather than its distance from the
-                // balance point: a strut bends about ITS root, not about the
-                // ship's middle.
-                const f32 lever = std::max(partBoundsRadius(*definition), 0.25f);
+                // is how far this part's own mass sits from its own root.
+                const f32 lever = std::max(reachLength, 0.25f);
                 const f32 moment =
                     static_cast<f32>(definition->dryMassKg) * glm::length(lateral) *
                     lever;
-                const Vec3 axis = glm::cross(outward, lateral);
+                flex.worstMomentNm = std::max(flex.worstMomentNm, moment);
+                // A BEAM TRAILS THE PUSH, IT DOES NOT LEAD IT.
+                //
+                // The member sticks out along `outward` and its own mass lags
+                // behind whatever is accelerating the ship, so the TIP is
+                // displaced OPPOSITE to the load — a solar wing on a rocket
+                // under thrust sweeps back, it does not sweep forward.
+                //
+                // PartAttachmentSystem turns this vector into a rotation about
+                // the balance point by the right-hand rule, so the tip moves by
+                // `axis x outward`, and the axis that carries it to -lateral is
+                // cross(LATERAL, OUTWARD). It was written the other way round,
+                // and on a single member that reads as an odd-looking bend and
+                // nothing worse. On a SYMMETRY PAIR it is unmistakable: the two
+                // arms point outward in opposite directions, so the wrong sign
+                // splays them apart — one wing up, one wing down — instead of
+                // sweeping both the same way. Which is exactly how it was
+                // spotted, from a picture of a craft with two solar wings.
+                const Vec3 axis = glm::cross(lateral, outward);
                 const f32 axisLength = glm::length(axis);
                 const Vec3 target =
                     (axisLength > 1.0e-6f)
@@ -1327,9 +1450,31 @@ namespace sw::parts
                     const f32 bend = glm::length(flex.elastic);
                     if (bend > yieldAngle)
                     {
+                        // BENDING IS A MOTION, AND A MOTION TAKES TIME.
+                        //
+                        // The excess used to move into the permanent set
+                        // whole, in one tick — so a single frame of overload
+                        // could leave a part sixty-eight degrees out of true,
+                        // which no metal does: the panel would have had to
+                        // swing sixty-eight degrees in twenty milliseconds,
+                        // three thousand degrees a second. And the permanent
+                        // set only ever GROWS, so one such frame marked a
+                        // craft for the rest of the session with nothing left
+                        // behind to say what had hit it.
+                        //
+                        // A cap of one radian per second keeps every real
+                        // event intact — a hard landing bends a leg over the
+                        // half second it is being crushed, which is exactly
+                        // how long that takes — and turns a one-frame
+                        // discontinuity into a degree of set instead of a
+                        // ruined ship.
+                        constexpr f32 kMaxYieldRateRadPerS = 1.0f;
                         const Vec3 direction = flex.elastic / bend;
-                        flex.permanent += direction * (bend - yieldAngle);
-                        flex.elastic = direction * yieldAngle;
+                        const f32 excess =
+                            std::min(bend - yieldAngle,
+                                     kMaxYieldRateRadPerS * deltaSeconds);
+                        flex.permanent += direction * excess;
+                        flex.elastic -= direction * excess;
                         flex.rate *= 0.25f; // the energy went into the metal
                     }
                 }
@@ -1371,10 +1516,24 @@ namespace sw::parts
                 // and, if it carries an engine, PUSHES bent — which is the
                 // feedback that makes a long craft wobble instead of settling.
                 //
-                // About the balance point and not about the part's own origin,
-                // because a deflection is a rotation of the member relative to
-                // the ship, and a member that rotated about its own centre
-                // would pivot in place without going anywhere.
+                // A JOINT BENDS AT THE JOINT.
+                //
+                // The part turns about ITS OWN ORIGIN, which is where its
+                // attach node is and therefore where it is bolted to whatever
+                // carries it. Its root stays welded to the parent and its far
+                // end swings, which is what bending is.
+                //
+                // This used to rotate the part about the VESSEL'S BALANCE
+                // POINT, defended in a comment on the grounds that a member
+                // turning about its own centre "would pivot in place without
+                // going anywhere". That is exactly what a hinge does — the
+                // root goes nowhere, the tip goes somewhere — and rotating
+                // about a point metres away instead TRANSLATES the whole part
+                // bodily: a solar wing two metres from the balance point and
+                // bent fifteen degrees leaves its mount half a metre behind
+                // and hangs in space beside the hull. Reported as parts that
+                // "look like they are floating instead of being attached to
+                // the parent structure", which is precisely what it was.
                 Vec3 localPosition = part.localPosition;
                 Quat localRotation = part.localRotation;
                 if (const auto* flex = world.tryGetComponent<PartFlexComponent>(entity))
@@ -1383,13 +1542,12 @@ namespace sw::parts
                     const f32 angle = glm::length(bend);
                     if (angle > 1.0e-5f)
                     {
-                        const auto* aggregate =
-                            world.tryGetComponent<VesselComponent>(part.vessel);
-                        const Vec3 pivot =
-                            (aggregate != nullptr) ? aggregate->centreOfMass : Vec3{0.0f};
+                        // About the ROOT — the attach node facing the parent,
+                        // chosen by PartFlexSystem and left here so there is
+                        // one answer rather than two. The root itself does not
+                        // move; everything beyond it swings.
                         const Quat deflection = glm::angleAxis(angle, bend / angle);
-                        localPosition =
-                            pivot + deflection * (part.localPosition - pivot);
+                        localPosition += flex->rootOffset - deflection * flex->rootOffset;
                         localRotation = deflection * part.localRotation;
                     }
                 }

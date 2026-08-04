@@ -1,0 +1,113 @@
+{
+ "name": "SURVEYOR",
+ "parts": [
+  {
+   "definitionId": 9,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": -1,
+   "parentPoint": 0,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 1,
+   "position": [
+    0,
+    0,
+    3.4
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 0,
+   "parentPoint": 1,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 2,
+   "position": [
+    0,
+    0,
+    6.6
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 1,
+   "parentPoint": 1,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 10,
+   "position": [
+    0.62,
+    0,
+    2.4
+   ],
+   "rotation": [
+    0.7071068,
+    0,
+    0,
+    0.7071068
+   ],
+   "parent": 1,
+   "parentPoint": 0,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 5,
+   "position": [
+    0.62,
+    0,
+    4.4
+   ],
+   "rotation": [
+    0.7071068,
+    0,
+    0,
+    0.7071068
+   ],
+   "parent": 1,
+   "parentPoint": 0,
+   "childPoint": 0,
+   "symmetryGroup": 1
+  },
+  {
+   "definitionId": 5,
+   "position": [
+    -0.62,
+    0,
+    4.4
+   ],
+   "rotation": [
+    0.7071068,
+    0,
+    0,
+    -0.7071068
+   ],
+   "parent": 1,
+   "parentPoint": 0,
+   "childPoint": 0,
+   "symmetryGroup": 1
+  }
+ ]
+}

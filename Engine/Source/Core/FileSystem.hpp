@@ -9,6 +9,7 @@
 #include "Core/Types.hpp"
 
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace sw
@@ -27,6 +28,18 @@ namespace sw
 
         /// Directory containing the running executable.
         [[nodiscard]] static std::filesystem::path executableDirectory();
+
+        /// The running executable's own file, and WHEN IT WAS LINKED, as a
+        /// "YYYY-MM-DD HH:MM" string in local time.
+        ///
+        /// Not `__DATE__`. That macro is baked into whichever translation
+        /// unit contains it, so a build that recompiles one other file and
+        /// relinks reports the timestamp of the last time THAT file changed —
+        /// a stamp that goes stale exactly when it is most needed, which is
+        /// after a partial rebuild. The file's own modification time cannot:
+        /// it is written by the linker, every time, whatever was recompiled.
+        [[nodiscard]] static std::filesystem::path executablePath();
+        [[nodiscard]] static std::string buildStamp();
 
         /// The root of the SOURCE tree, or an empty path when there is none.
         ///

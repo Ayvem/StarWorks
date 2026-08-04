@@ -508,6 +508,14 @@ namespace game
                 vertex.color.r *= relief;
                 vertex.color.g *= relief;
                 vertex.color.b *= relief;
+
+                // NO ORE TINT. The ground used to take a wash of the
+                // resource under it wherever a survey had passed, and it went
+                // because it was answering a question in the wrong place: the
+                // number a player wants is "how rich is THIS spot", to four
+                // hundredths, at the moment they are choosing what the drill
+                // digs — and that is a figure in the machine's own panel, not
+                // a hue on a hillside they also need to read the slope of.
             }
         }
         mesh.indices.reserve(kCells * kCells * 6);

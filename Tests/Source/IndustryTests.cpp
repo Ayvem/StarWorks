@@ -1035,3 +1035,132 @@ SW_TEST(SolarPowerIsIntegratedAcrossTheTickNotSampledAtItsStart)
                                                 sw::WorldVec3{0.0}, 3600.0),
                 sw::factory::solarFactor(site, up, star, {}));
 }
+
+// ---------------------------------------------------------------------------
+// F45: GROUND YOU MAY BUILD ON IS GROUND THAT PRODUCES.
+//
+// The placement validator passes a site when the BEST of iron, copper and ice
+// clears the part's minimum. The production tick scales the yield by the
+// density of the resource THE RECIPE names. Those are two different questions,
+// and while a mine was born on the first recipe in the catalogue — iron —
+// they had two different answers on most of a planet.
+//
+// F43 made it the common case rather than a corner: copper and ice got a floor
+// of a tenth so no landing site is a dead end, iron deliberately did not, and
+// the MN-1's minimum came down to 0.08 to match. Every site whose only ore was
+// that floor then passed the validator and produced a machine that could never
+// dig a gram. Measured below on the real Terra presets.
+// ---------------------------------------------------------------------------
+SW_TEST(AMineBuiltWhereTheRulesAllowItCanAlwaysDigSomething)
+{
+    const sw::planet::TerrainComponent terrain = sw::planet::presetTerra();
+    const sw::planet::DepositComponent deposits = sw::planet::depositsTerra();
+    constexpr sw::f32 kMinOreDensity = 0.08f; // mn1_miner.swpart
+
+    sw::u32 legalSites = 0;
+    sw::u32 ironWouldBeBarren = 0;
+    sw::Vec3 witness{0.0f}; // a legal site with no iron under it at all
+    for (sw::u32 i = 0; i < 20000; ++i)
+    {
+        // A deterministic sweep of directions, land only, like the validator.
+        sw::u32 s = i * 2654435761u + 12345u;
+        s ^= s >> 15;
+        s *= 2246822519u;
+        s ^= s >> 13;
+        const sw::f32 u = static_cast<sw::f32>(s & 0xFFFFFFu) / 16777216.0f;
+        s ^= s >> 16;
+        s *= 3266489917u;
+        s ^= s >> 11;
+        const sw::f32 v = static_cast<sw::f32>(s & 0xFFFFFFu) / 16777216.0f;
+        const sw::f32 z = 2.0f * u - 1.0f;
+        const sw::f32 ring = std::sqrt(std::max(0.0f, 1.0f - z * z));
+        const sw::f32 phi = 6.28318530718f * v;
+        const sw::Vec3 direction =
+            glm::normalize(sw::Vec3{ring * std::cos(phi), z, ring * std::sin(phi)});
+        if (sw::planet::terrainElevation(terrain, direction) <= 0.0)
+        {
+            continue;
+        }
+        sw::f32 best = 0.0f;
+        const sw::res::Resource richest =
+            sw::planet::bestDeposit(deposits, direction, best);
+        if (best < kMinOreDensity)
+        {
+            continue; // the validator refuses here, and nothing is built
+        }
+        ++legalSites;
+        if (sw::planet::oreDensity(deposits, direction, sw::res::Resource::IronOre) <=
+            0.0f)
+        {
+            ++ironWouldBeBarren;
+            if (glm::length(witness) < 0.5f)
+            {
+                witness = direction; // the first one, kept for the tick below
+            }
+        }
+
+        // THE RULE: the recipe a mine starts on digs the richest thing under
+        // it, and the density it will be paid at is that richness.
+        const sw::u32 recipe = sw::factory::extractionRecipeFor(richest);
+        SW_CHECK(recipe != 0);
+        SW_CHECK(sw::factory::minedResource(recipe) == richest);
+        SW_CHECK(sw::planet::oreDensity(deposits, direction,
+                                        sw::factory::minedResource(recipe)) == best);
+        SW_CHECK(best > 0.0f);
+    }
+
+    // The sweep has to be big enough to mean anything, and the failure it
+    // guards has to be real: on Terra, nearly two fifths of the ground a mine
+    // may legally stand on holds no iron at all.
+    SW_CHECK(legalSites > 5000u);
+    SW_CHECK(ironWouldBeBarren * 4u > legalSites); // over a quarter, measured 39%
+
+    // ...and one of those sites, run through the real production tick with the
+    // recipe the ground chose, actually produces. This is the whole bug in
+    // four lines: the same site on the iron recipe yields nothing at all.
+    sw::ecs::World world;
+    SW_CHECK(glm::length(witness) > 0.5f);
+    sw::f32 richness = 0.0f;
+    const sw::res::Resource richest =
+        sw::planet::bestDeposit(deposits, witness, richness);
+    const sw::ecs::Entity good =
+        makeMachine(world, sw::factory::BuildingCategory::Miner,
+                    sw::factory::extractionRecipeFor(richest), 100.0, richness);
+    const sw::ecs::Entity old =
+        makeMachine(world, sw::factory::BuildingCategory::Miner,
+                    sw::factory::kRecipeMineIronOre, 100.0,
+                    sw::planet::oreDensity(deposits, witness,
+                                           sw::res::Resource::IronOre));
+    sw::factory::ProductionSystem production;
+    production.update(world, 60.0f);
+    SW_CHECK(sw::factory::inventoryVolume(
+                 world.getComponent<sw::factory::InventoryComponent>(good)) > 0.0);
+    SW_CHECK_EQ(world.getComponent<sw::factory::RecipeStateComponent>(good).state,
+                sw::factory::RecipeStateComponent::kRunning);
+    SW_CHECK_EQ(sw::factory::inventoryVolume(
+                    world.getComponent<sw::factory::InventoryComponent>(old)),
+                0.0);
+}
+
+SW_TEST(WhatAMineDigsRoundTripsAndStoppingIsNotAResource)
+{
+    // Every miner recipe names exactly one resource, and naming it back gives
+    // the same recipe. The pair is what lets the placement rule and the yield
+    // rule be the same rule.
+    for (const sw::u32 id : sw::factory::recipesForCategory(
+             sw::factory::BuildingCategory::Miner))
+    {
+        const sw::res::Resource resource = sw::factory::minedResource(id);
+        SW_CHECK(resource != sw::res::Resource::Count);
+        SW_CHECK(sw::factory::extractionRecipeFor(resource) == id);
+    }
+
+    // STOP is recipe zero. It digs for nothing — and anything that re-samples
+    // the ground on a recipe change must be able to tell that apart from
+    // "this ground is barren", or pressing STOP rewrites the site as worthless.
+    SW_CHECK(sw::factory::minedResource(0u) == sw::res::Resource::Count);
+    SW_CHECK(sw::factory::extractionRecipeFor(sw::res::Resource::Count) == 0u);
+    // A smelter is not a mine, whatever it is holding.
+    SW_CHECK(sw::factory::minedResource(sw::factory::kRecipeSmeltIron) ==
+             sw::res::Resource::Count);
+}

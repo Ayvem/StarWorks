@@ -18,7 +18,7 @@
     "powerKw": -8,
     "inventoryVolumeM3": 30,
     "maxSlopeTangent": 0.22,
-    "minOreDensity": 0.15
+    "minOreDensity": 0.08
   },
   "capacities": [],
   "shapes": [

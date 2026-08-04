@@ -1141,6 +1141,24 @@ namespace game
                 rowY += kRowHeight + kRowGap;
             }
 
+            // THE GROUND UNDER THIS MACHINE, sampled once for the whole list.
+            //
+            // A mine's yield is its recipe's rate times the density of what it
+            // is digging, and until now nothing anywhere on screen said what
+            // that density was. Two mines, one on a rich patch and one on the
+            // bare tenth F43 put under every rock, looked identical and ran ten
+            // to one — which reads exactly like a mine that has run out. Ore
+            // does not run out in this game; it was never possible to SEE that
+            // it had not.
+            const bool miner =
+                building->category == sw::factory::BuildingCategory::Miner;
+            const sw::planet::DepositComponent* groundDeposits = nullptr;
+            sw::Vec3 groundUp{};
+            const bool haveGround =
+                miner &&
+                buildingGround(m_world, m_configTarget, groundDeposits, groundUp) &&
+                groundDeposits != nullptr;
+
             sw::usize index = 0;
             for (const sw::u32 id : recipes)
             {
@@ -1189,11 +1207,38 @@ namespace game
                                         hud::caps(std::string(
                                             sw::res::definition(out.resource).name)));
                 }
-                hudText(flow, kLeft + 0.26f, rowY + 0.024f, 0.026f,
+                // MOVED RIGHT. "COPPER ORE EXTRACTION" is twenty-one glyphs
+                // and ran straight through the sentence beside it; nobody had
+                // noticed because both strings are legible on their own and
+                // the overlap only bites at the longest name.
+                hudText(flow, kLeft + 0.42f, rowY + 0.024f, 0.026f,
                         selected ? hud::kText : hud::kTextDim);
                 hudText(std::format("{:.0f} KW", recipe->powerKw), kRight - 0.13f,
                         rowY + 0.024f, 0.028f,
                         (recipe->powerKw >= 400.0) ? hud::kWarn : hud::kTextDim);
+
+                // WHAT THIS GROUND HOLDS OF THAT, beside the resource it names.
+                // The swatch is the geology screen's own ramp at this density,
+                // so the globe a site was chosen on and the panel the drill is
+                // armed from cannot disagree about how rich it is. The second
+                // figure is the rate the mine would actually run at, because
+                // that is the number a starving smelter downstream is short of.
+                if (haveGround)
+                {
+                    const sw::f32 density =
+                        depositDensityFor(groundDeposits, groundUp, id);
+                    const sw::Vec3 swatch = sw::planet::oreRampColor(
+                        sw::factory::minedResource(id), density);
+                    hudQuad(kRight - 0.345f, rowY + 0.022f, kRight - 0.320f,
+                            rowY + 0.050f, {swatch.r, swatch.g, swatch.b, 1.0f});
+                    hudText(std::format("{:.2f}  {:.2f}/S", density,
+                                        recipe->outputs[0].unitsPerSecond *
+                                            static_cast<sw::f64>(density)),
+                            kRight - 0.306f, rowY + 0.024f, 0.028f,
+                            (density <= 0.0f)   ? hud::kBad
+                            : (density < 0.15f) ? hud::kWarn
+                                                : hud::kOk);
+                }
 
                 m_hudButtons.push_back({kLeft + kPad, rowY, kRight - kPad,
                                         rowY + kRowHeight, 610u + id});

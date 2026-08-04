@@ -10,6 +10,8 @@
   "dragCoefficientArea": 0.9,
   "liftCoefficient": 0,
   "thrustNewtons": 0,
+  "flexStiffnessNmPerRad": 320000,
+  "flexYieldNm": 12000,
   "specificImpulseS": 0,
   "chargeRateKw": 4,
   "capacities": [],

@@ -2848,6 +2848,10 @@ Measured, on the ring, under a held throttle:
 | 2 | 5.09° | 7.60° |
 | 1 | 5.09° | 10.03° |
 
+*(Superseded by M40, which stiffened every flexible part and stopped gravity
+being read as a load: the ring now reads 2.26° elastic and 0.000° permanent at
+four engines and 2.20° / 0.000° at three.)*
+
 The elastic figure caps at 5.09°, which is exactly `flexYieldNm / stiffness` for
 the core spoke — the yield doing its job rather than a clamp doing it.
 
@@ -3094,6 +3098,779 @@ as two signs, because that is the thing a player sees, and a third separates the
 two causes that look identical from the pilot's seat: a craft with symmetric
 engines and an off-centre mass still twists, and the nose goes toward the heavy
 side.
+
+## Milestone 38 — the tool was right and the game was wrong
+
+> « j'ai modifié l'animation de sp2_solar_wing.swpart dans PartStudio.exe pour
+> la rendre meilleure et je suis très satisfait du résultat mais dans le jeu
+> l'animation est buggé »
+
+The new wing is a **telescoping array**: four panel segments stowed at the same
+place, folded ninety degrees, deploying to −0.5, −1.2, −1.9 and −2.6 m, with
+their trims and three struts. Twelve shapes, eleven of them moving, one
+animation. It previewed beautifully.
+
+### An animation is not necessarily one rigid body
+
+The game welded every shape of an animation into a single mesh and carried the
+whole thing on the hinge of the **first** of them. The comment in the draw loop
+said so and defended it: *"an array and the four struts holding it swing
+together or they come apart in mid-air. A part that needs two hinges has two
+animations."* That is a fine rule; nothing enforced it, and nothing told the
+author it existed. Four segments bound to one animation came out in game as the
+first segment with three stowaways welded to it.
+
+So the grouping is now **derived from the poses instead of declared**: shapes
+belong to the same motion when the same animation drives them *and* the rigid
+transform from their rest pose to their deployed pose is the same. Nothing was
+re-authored and no format changed. The old five-shape wing groups into exactly
+one motion — checked, and it is the reason to trust the equivalence: the part
+that was authored as one hinge is recovered as one hinge, so a panel and its
+struts still cost one draw call.
+
+Measured across the shipped catalogue:
+
+| part | animations | motions |
+|---|---:|---:|
+| V-400 Engine | 2 | 1 (the glow cone) |
+| EN-2 Propulsion Module | 2 | 1, holding **3** shapes — the three nozzle discs |
+| EN-1 Habitat Module | 1 | **2** |
+| SP-2 Solar Wing (new) | 1 | **11** |
+
+EN-1 is the one nobody had noticed. Its two folding arrays deploy to opposite
+faces — roof and floor — and they had been welded together and both sent to the
+roof array's destination since the day they were authored. The same bug, in the
+shipped game, for a milestone and a half, on a part small enough that it read as
+a modelling choice.
+
+### The tool must not certify what the runtime cannot do
+
+This is the parity rule the shaders already live under, one level up: two
+implementations of one motion, and the disagreement was invisible because each
+was self-consistent. Part Studio previewed **per shape** — which is what the
+author means — and the game played **per animation**. Whichever way that
+disagreement had been resolved, the tool showing a motion the runtime cannot
+render is the worse failure, because it certifies the wrong thing.
+
+Part Studio now asks `partMotionGroups` the same question the renderer asks, and
+follows the motion's driver rather than the shape. While a motion is one hinge
+the two are numerically identical, which is exactly why the old code passed for
+a year. The scrub bar also eases with the same smoothstep the game plays, so the
+slider walks the motion the player will actually see rather than a linear
+version of it.
+
+### Two tonnes of a different kind
+
+The wing came back from his machine without `flexStiffnessNmPerRad` or
+`flexYieldNm` — F33b fields his PartStudio.exe predates, so its loader ignored
+them and its writer could not put them back. They are restored here, and the
+lesson is a build one rather than a code one: **a part round-tripped through an
+older tool loses every field that tool has not heard of.** The reader treats
+absent as default, which is right for reading a file written before a feature
+existed and quietly destructive when the tool doing the writing is the stale
+one.
+
+## Milestone 39 — where an animated part is NOT drawn, and how to tell which binary you are running
+
+> « les animations des pieces sont toujours buggé dans le jeu »
+
+Third round on the same feature, so this one started by refusing to look at the
+code until the game had been made to *show* the thing. Two hooks came first:
+`SW_SPAWN=<design>` puts a shipped design on the ground through the same call
+the launch pad makes, and `SW_HANGAR=<design>` opens the design office on it.
+Before them, the only craft a capture could reach was the Endurance — the one
+animated vessel that spawns on its own — and the only part carrying a solar
+wing is a *design*, which otherwise reaches the world through four factory
+systems and several minutes of simulated production. **An animation nobody can
+photograph is an animation nobody has checked**, which is exactly how the
+previous two rounds got through.
+
+### What the flight path actually does, in metres
+
+`SW_ANIMPROBE=<definitionId>` prints, from inside the draw loop, every motion of
+one part: which mesh it found, what phase drove it, and where its matrix puts
+it. On the Starling with the array deployed:
+
+```
+definition 5: 11 motions, 1 animation states
+  A0 phase 1.000 target 1.000
+  motion  0 driver  1 mesh 78  drawn at -4.332 -6.502  4.723
+  motion  5 driver  6 mesh 83  drawn at -5.017 -6.375  4.654
+  motion  6 driver  7 mesh 84  drawn at -5.702 -6.248  4.586
+  motion  7 driver  8 mesh 85  drawn at -6.387 -6.121  4.518
+```
+
+Consecutive panels are **0.700 m apart** — the authored spacing, exactly, in
+camera-relative metres. The four segments span 2.83 m. **F38's fix works and the
+flight renderer is correct**, and that is worth stating as a measurement rather
+than as an opinion, because two rounds of pixel-squinting at foreshortened
+screenshots had failed to settle it either way.
+
+The probe's own first version fired on the first frame the part was drawn — a
+hundred frames before the hook presses the button — and reported `phase 0.000`
+for an animation that had not been asked to move yet. That is the same
+self-inflicted failure the roadmap already documents, in its purest form: a
+measurement of the instrument rather than of the feature.
+
+### The design office never drew a moving shape
+
+`collectHangarItems` pushed `m_partMeshIds[definitionId]` and stopped. That map
+holds a part's STATIC group — the shapes that never move. So in the hangar, an
+animated part appeared as whatever it has that is not animated: on the SP-2,
+a twenty-centimetre mount block and *none of the array*. You place a solar wing
+and you see a stub.
+
+It stayed invisible for a year and a half because of what the catalogue happened
+to hold: the two other animated parts are the Endurance's, which cannot be built
+in a hangar, and the V-400, whose only moving shape is a glow cone that is dark
+until the engine lights. The moment somebody authored a wing that is ELEVEN
+moving shapes and one static one, the gap became the whole part.
+
+The hangar now draws every motion at its rest pose, which is one line of matrix
+work: a part is built stowed — a wing folded in its fairing, a gear down on the
+pad — and the motion transform at phase zero is the identity, so it is the same
+matrix the body already uses.
+
+### And a build stamp, because that was the other half
+
+The game and Part Studio now print `build <date> <time>` as the first line of
+every session's log. *"The fix is in the source I sent you"* and *"the fix is in
+the executable you are running"* are different claims, and from the outside they
+look exactly alike: a `.swpart` is data and takes effect the moment it is
+copied, while a change to how parts are DRAWN is code and takes effect when the
+game is rebuilt. The stamp turns an afternoon of that into one line.
+
+It matters most for the tool. A stale Part Studio does not merely lack a
+feature — it SAVES OVER fields it has never heard of, which is how F38's wing
+came back without its flex numbers.
+
+**The first version of the stamp was `__DATE__`, and it lied on its first
+run.** That macro is baked into whichever translation unit contains it, so a
+build that recompiles one *other* file and relinks reports the date that file
+last changed — the game printed a timestamp eight hours stale after a one-file
+rebuild, which is precisely the failure the stamp exists to catch. It is the
+executable's own modification time now, written by the linker every time
+whatever was recompiled, and it names the path it came from, which also catches
+the other half of the question: *which* copy of the game is running.
+
+Alongside it, one line per animated part at boot:
+
+```
+StarWorks build 2026-08-04 07:29 (…/bin/StarWorks)
+V-400 Engine:           2 animation(s) -> 1 motion(s):  A1x1
+SP-2 Solar Wing:        1 animation(s) -> 11 motion(s): A0x1 …
+EN-1 Habitat Module:    1 animation(s) -> 2 motion(s):  A0x1 A0x1
+EN-2 Propulsion Module: 2 animation(s) -> 1 motion(s):  A1x3
+```
+
+A build that decomposes the wing into eleven motions says so; one that has
+never heard of a motion prints nothing at all. "The animation is still wrong"
+and "the binary predates the fix" are indistinguishable in a screenshot, and a
+screenshot is what a bug report is.
+
+## Milestone 40 — a ship bending under its own weight while weightless
+
+> « les joints sont trop élastiques ils doivent être bien plus rigides »
+
+Sent with a picture of a coasting craft, engine off, whose two solar wings hung
+at different angles. They were not too soft. **The flex pass was reading gravity
+as a structural load.**
+
+### Free fall carries nothing
+
+`PartFlexSystem` finds a vessel's acceleration by differencing its velocity
+across a tick — which catches thrust, the ground, the air and a collision
+without any of them having to report anything, and was the right instinct. It
+also catches gravity, and in the place a spacecraft spends its life gravity is
+by far the largest of them.
+
+Gravity pulls on every gram of a craft equally, so it puts **no force through
+any joint**. That is why an astronaut floats beside their ship instead of being
+pressed against a wall, and it is the whole content of the equivalence
+principle. A system that reads it as a load bends a spacecraft under its own
+weight while weightless.
+
+Measured on the Starling, coasting in a suborbital arc with the engine off:
+**10.07° of elastic bend and a permanent set pinned at the 68.75° clamp** — from
+8.7 m/s² of nothing at all, times 75 kg of solar wing on a 1.4 m lever, giving
+913 N·m through a joint that yielded at 580.
+
+The load is proper acceleration now: the difference, minus **what gravity
+actually applied**. `GravityIntegrationSystem` records what it added on the body
+it added it to, so the subtraction cannot drift from a field recomputed
+elsewhere. Coasting bend after: **0.004°**.
+
+### Bending is a motion, and a motion takes time
+
+Two guards came out of the same measurement, and both are about the fact that
+the permanent set only ever GROWS — so one bad frame marks a craft for the rest
+of the session and leaves nothing behind saying what hit it.
+
+**A step in velocity is not a force.** Spawning a craft, a rails hand-off, a
+floating-origin rebase and a hull correction all change `velocity` between two
+ticks without anything having pushed. Differencing reads the step as tens of
+thousands of g, so it is capped at fifty — past every load the game can really
+produce (this rocket's own engine is 2 g, a hard landing ten to twenty) and far
+below any discontinuity. It logs the first few times it fires, because a clamp
+nobody knows is load-bearing is a clamp hiding a bug.
+
+**And the excess drains into the metal at a bounded rate**, one radian per
+second, instead of transferring whole in a single tick. No metal acquires
+sixty-eight degrees of set in twenty milliseconds — the panel would have to
+swing at three thousand degrees a second. A hard landing still bends a leg over
+the half second it is being crushed, which is how long that actually takes.
+
+That clamp then earned its keep immediately: it caught `SW_SPAWN` dropping the
+test rocket close enough to Terra's **centre** that the point-mass field there
+is 1e5 m/s², ejecting it from inside the planet at ten thousand g a tick and
+ten kilometres a second within five ticks. For three measurements that looked
+like a physics bug in the flex model rather than a debug hook dropping a rocket
+down a well. The hook now places the craft beside the player, twenty metres up
+the local vertical, carrying the player's own velocity.
+
+### The numbers, from a requirement rather than from feel
+
+The old stiffnesses were far too soft to survive contact with arithmetic: at
+3300 N·m/rad the SP-2 yielded at 580 N·m, which a 75 kg panel on a 3.8 m lever
+reaches at **a fifth of a g** of lateral acceleration. Any real manoeuvre
+permanently bent a solar panel.
+
+Sized instead so that a deployed wing rides the craft's own worst acceleration
+at about a degree and only takes a set in a crash:
+
+| part | stiffness N·m/rad | yield N·m | yields past |
+|---|---:|---:|---:|
+| SP-2 Solar Wing | 3 300 → **320 000** | 580 → **12 000** | 2.15° |
+| EN-4 Ring Spoke | 64 000 → **130 000** | 5 000 → **9 000** | 3.97° |
+| EN-10 Core Spoke | 90 000 → **260 000** | 8 000 → **30 000** | 6.61° |
+
+Measured after, on the Starling: **0.004° coasting, 1.04° at full throttle**,
+permanent set 0.08° and 0.55° (the landing). On the Endurance under a held
+throttle: **2.26° elastic and 0.000° permanent** at four engines, 2.20° / 0.000°
+at three — where before it took a 1.53° permanent set at three engines and
+10.03° at one.
+
+## Milestone 41 — a beam trails the push, it does not lead it
+
+> « il semble que les déformations sont dans le mauvais sens »
+
+Sent with a picture of a craft whose two solar wings were splayed — one swept
+up, one swept down — instead of both sweeping the same way. Correct diagnosis,
+and it is one cross product written the wrong way round.
+
+A member sticking out along `outward` has its own mass, which lags behind
+whatever is accelerating the ship, so its **tip is displaced opposite to the
+load**: a solar wing on a rocket under thrust sweeps back, not forward.
+`PartAttachmentSystem` turns the bend vector into a rotation about the balance
+point by the right-hand rule, so the tip moves by `axis × outward`, and the axis
+that carries it to `−lateral` is `cross(LATERAL, OUTWARD)`. It was
+`cross(outward, lateral)`.
+
+**Why it survived two milestones:** on a single member a backwards bend reads as
+an odd-looking bend and nothing worse. It takes a SYMMETRY PAIR to make it
+obvious — two arms pointing outward in opposite directions get opposite axes, so
+the wrong sign splays them apart instead of sweeping both the same way. The
+first craft in the game with a symmetric pair of flexible parts is the Starling
+with two SP-2 wings, and it was photographed the day it existed.
+
+The test now states it as **the tip's own motion** rather than as an axis: the
+member reaches along the vessel's −Z, the load is along +X, and
+`dot(cross(bend, outward), load)` must be −1. Magnitude assertions cannot see a
+sign, which is exactly how this got through — the previous version checked that
+the bend axis was perpendicular to both the member and the load, and a backwards
+axis is perpendicular to both.
+
+Nothing about the magnitudes changed: the Endurance still reads 2.20° elastic
+and 0.000° permanent at three engines.
+
+## Milestone 42 — a joint bends at the joint
+
+> « les parties se déforment trop facilement et ils donnent l'impression de
+> flotter au lieu d'être attachée à la structure parent. Le point de rotation
+> est sûrement mal placé »
+
+Both halves right, and the second one names the cause of the first.
+
+### The pivot was the ship's balance point
+
+`PartAttachmentSystem` rotated a bent part about the **vessel's centre of
+mass**, and a comment defended it: a member turning about its own centre "would
+pivot in place without going anywhere". That is exactly what a hinge does — the
+root goes nowhere and the tip goes somewhere — and rotating about a point metres
+away instead **translates the whole member bodily**. A solar wing two metres from
+the balance point, bent fifteen degrees, leaves its mount half a metre behind and
+hangs in space beside the hull. Which is what the picture showed.
+
+The part turns about its **root** now: the attach node facing whatever carries
+it, chosen as the node nearest the balance point, with a part that declares no
+nodes bending about its origin. The choice is made ONCE, by `PartFlexSystem`,
+and stored on the flex component — `PartAttachmentSystem` needs the same answer
+and two implementations of one pivot is a twin waiting to disagree.
+
+### ...and the lever was the whole part
+
+The same mistake, in the load. `lever` was `partBoundsRadius`, the part's entire
+bounding radius: **3.8 m for a deployed array whose mass centres 1.5 m from its
+root**. And `outward` — which decides both the bending axis and which part of
+the acceleration counts as lateral — was the direction from the ship's balance
+point to the part, which for a wing bolted straight out of the hull's side is
+forty degrees off the direction the wing actually reaches.
+
+Both are properties of the PART and are read from it now: the reach runs from
+the root to the centre of the part's own hull, and its length is the lever its
+mass acts through. That is why the parts "deform too easily" as well: every load
+was two and a half times too big, at an angle.
+
+| | before | after |
+|---|---:|---:|
+| Starling coasting | 0.195° elastic, 0.000° permanent | **0.195° / 0.000°** |
+| Starling at full throttle | 0.483° / 0.550° | **0.483° / 0.000°** |
+| Starling worst moment | 58 127 N·m | **2 716 N·m** |
+| Endurance, 3 of 4 engines | 2.20° / 0.000° | **0.068° / 0.000°** |
+
+The landing no longer takes a permanent set at all, because the moment that used
+to exceed yield no longer does.
+
+### What this costs
+
+The flex is now **subtle**, and on the Endurance nearly invisible — 0.068° on a
+500 t ring pushed by 88 kN, which is 0.18 m/s². That is honest rather than
+disappointing: a structure that size under that thrust does not visibly bend.
+The numbers in the three `.swpart` files are the place to re-tune if the effect
+should read more strongly, now that the geometry underneath them is right.
+
+## Milestone 43 — ore everywhere, and an instrument that says where
+
+> « ajouter une base de cuivre et de glace à miner partout (10%) pour ne pas
+> empêcher l'expansion juste à cause d'un spawn. Ensuite il faut créer une
+> nouvelle pièce : radar (tu peux lui trouver un meilleur nom) qui une fois sur
+> une orbite stable peux être activé et alors révèle les concentrations en
+> minerais dans le sol »
+
+Two requests that look unrelated and are the same one: the early game was
+gated by **where you happened to land**, and neither half of that — the ground
+under you, or knowing what is under anyone else's ground — was a decision the
+player got to make.
+
+### Half one: the floor
+
+`oreDensity` puts metal in **patches** with barren rock between them, which is
+the interesting half of the design and has a failure mode that is not
+interesting at all. Copper gates the electronics; ice gates the fuel and the
+air. Land with neither in reach and the colony cannot start — not through a
+decision, through a seed — and the only cure available to a player who cannot
+yet build anything is to abandon the site.
+
+So copper and ice now carry a floor of **a tenth of the rock everywhere**:
+
+```cpp
+case res::Resource::CopperOre:
+    return std::max(metal(kCopperOffset, 911u), deposits.baselineDensity);
+```
+
+A **maximum against the field, not an addition to it** — a rich patch is
+exactly as rich as it was, and only the barren rock between patches comes up to
+the baseline. Yield is the nominal rate times the density underfoot, so a mine
+on baseline ground runs at a tenth of the rate of one on a real deposit.
+Expansion stops being a requirement and becomes an optimisation, which is where
+it belongs.
+
+Iron has no floor. At 0.55 richness it is already almost everywhere, and giving
+the abundant resource a floor too would flatten the map into a uniform grey.
+
+The barren-ground test in `ConstructionTests` had been written to hunt for
+ground that refuses a mine, and it now states the new truth instead: over
+40 000 directions, **nothing is refused for want of ore**, the poorest ground
+sits exactly at the floor, and the richest is more than five times it.
+
+### Half two: the OS-1 Orbital Surveyor
+
+Not "radar" — a radar is a thing that finds aircraft. This is a **surveyor**:
+180 kg, one dish, one animation (`SURVEY`, a toggle), one radial mount, and a
+rule about where it works. `Assets/Ships/surveyor.swship` flies it on an SC-1
+core with a V-400 and two SP-2 wings.
+
+The rule is the feature. `surveyOrbitStable()`:
+
+```cpp
+return !m_flight.grounded && m_flight.closedOrbit &&
+       m_flight.periapsisAltitude > std::max(m_flight.atmosphereTop, 0.0);
+```
+
+Closed, not resting on anything, and with its **low** point above the air. An
+instrument on a suborbital arc is a camera pointed at the ground it is about to
+hit; one dipping into the atmosphere every pass has a mission measured in
+hours. Neither is a survey. And when it is armed and idle the HUD **says so** —
+`SURVEY IDLE: NEEDS A STABLE ORBIT` — because a switched-on instrument doing
+nothing is the most confusing state this feature can be in, and a periapsis is
+not visible from the cockpit.
+
+### Coverage is a record, so it is state
+
+`Planet/Deposits.hpp` is an analytic field: ore is a property of a place, not
+an object that exists, and nothing about it is saved. That is exactly right for
+the ore and exactly wrong for the survey, because a survey is a **record of
+what a player did**. `Planet/Survey.hpp` holds it: 64 × 32 cells, one bit each,
+**256 bytes for a whole planet**, trivially copyable like everything the save
+snapshot memcpy's by column.
+
+Coarse on purpose. The cells gate **whether** the field is shown, and the field
+itself is still sampled continuously underneath, so a cell boundary never
+quantises what the player reads. On Terra a cell is about 600 km across, which
+is roughly what a real orbital instrument resolves in one pass anyway.
+
+### The bug that only exists at speed
+
+The first version marked the cell under the spacecraft, once per frame. Correct
+at sixty hertz and a **lie at any other rate**: under warp the craft crosses
+eight degrees between frames while the instrument sees six, so the track comes
+out dotted. Measured: **nine revolutions at x100 read one per cent**.
+
+`markSurveyArc` paints the arc between this sample and the last, stepping along
+it at eight tenths of a swath. Coverage becomes a function of **where the craft
+went** rather than of how often anyone looked, and warp and frame rate both
+stop mattering:
+
+| polar orbit, 6 revolutions | sampled every 5 s | every 300 s | every 600 s |
+|---|---:|---:|---:|
+| arc painted | 62.3% | **62.3%** | 61.8% |
+| sample points only | 62.3% | 33.0% | 16.7% |
+
+At a 300 s sample interval the two maps are not merely close, they are **cell
+for cell identical**. At 600 s twelve cells of 2048 go unpainted at the turns,
+where a great circle cuts the corner off a track that is really a spiral —
+which is honest, and is what the test allows.
+
+A jump too large to be flight — a warp hand-off, a new sphere of influence — is
+not an arc and is not painted; it marks where the craft now is.
+
+### Two displays, because they answer two questions
+
+**The map** answers *where should I land*. One mark per surveyed cell that
+holds something, drawn at the cell it describes. Sizing it took two tries and
+both failures were instructive. Sized like every other map marker — a constant
+fraction of the screen — the marks were specks: a survey mark is not a **label**
+for a thing, it is a **patch of ground**, so it is sized by the ground and
+shrinks with the planet as you fly away. Sized at the full cell they touched
+their neighbours and a surveyed planet vanished under a solid scab of colour;
+at two thirds of a cell the gaps are what make the coverage legible **as**
+coverage, and the coastline you are choosing a site on is still there.
+
+The facing-side test needed the same correction. Culling at exactly the horizon
+is not enough when a mark is a flat card 300 km wide: one lying on the limb
+stands half of itself off the edge of the globe, and the overlay grows a bright
+crust. Where the horizon *is* depends on range — `cos(horizon) = radius/range` —
+and a fixed cut-off is wrong at every range but one. Measured with a fixed one:
+from 2.4 radii it admitted 72° where the horizon is at 65°.
+
+**The ground** answers *where exactly do I put the mine*, and no map at planet
+scale can: a cell up there is 600 km across and a drill needs sixteen metres.
+`buildTerrainPatch` blends the resource colour into the vertex albedo where the
+cell under it is surveyed, weighted by grade. Deliberately a **tint** and not a
+colour, because the player has to see the slope they are siting on at the same
+time. Photographed at 0.55 and a surveyed Terra came out the colour of Mars;
+0.40 is the shipped number.
+
+### What the instruments got wrong
+
+Twice, and both times the instrument and not the feature.
+
+`SW_SHOT=…,map` forced map view from the first frame. **The part menu does not
+exist in map view** — no per-part control does — so `SW_PARTMENU` could not find
+the button it presses, and said so correctly: `BUTTON 900 IS NOT IN THE TABLE`.
+A capture could photograph the overlay, or arm the thing that fills it, never
+both. The map is a press and it comes **after** the other presses: the token now
+waits forty frames, which is invisible to every existing shot because a capture
+keeps only its last frame.
+
+`SW_SURVEYALL` marks a whole body surveyed and is an **overlay** hook, not a
+feature hook. What it presses is the drawing, which needs coverage to exist;
+what it does not press is the instrument, which is measured through `SW_ORBIT`,
+the real part menu button and the real arming rule. The distinction is written
+at the hook, because this file has been burnt by the other kind before.
+
+### What is pinned
+
+`SurveyTests.cpp`: the grid tiles the sphere with no gaps and no overlap and
+every cell centre lands back in its own cell; coverage follows the path and not
+the sample rate (with the dotted regression kept as the control); a polar orbit
+closes the map and an **equatorial one never can** — its poles stay dark after a
+full planetary day, which is what makes the choice of orbit a decision; one
+swath reveals a swath and re-marking it costs nothing; and the floor sits below
+what the overlay calls worth moving while the real patches sit above it.
+
+### Known limits
+
+Warp above about x1000 walks the debug hook's circular orbit into an ellipse
+(the capture above finished at 23 000 × 2 780 km) — the survey keeps working
+because the periapsis stays above the air, but `SW_ORBIT` is a placement, not a
+station-keeper. And terrain patches built before a survey completes keep their
+old colour until they are rebuilt; approaching from orbit rebuilds them, sitting
+still on the ground does not.
+
+## Milestone 44 — one map per element, and a place to put the drill
+
+> « crée une nouvelle interface attribué à une certaine touche qui ouvre un
+> menu avec une liste des planètes / lunes qui ont au moins commencé à être
+> analysé par un satellite ensuite une fois l'astre sélectionné une vue 3D
+> s'affiche de cet astre avec une carte du fer en gradient de couleur pas en
+> points, il est possible de changer pour voir d'autres éléments, puis en
+> cliquant à un endroit sur la carte un point est ajouté comme une balise pour
+> pouvoir cibler l'endroit et donc y atterrir plus tard »
+
+F43 shipped an overlay that was honest and unreadable. Counted on Terra, its
+2048 cells showed **iron on 582, copper on 586 and ice on ONE** — because
+`bestDeposit` returns the winner and "the best of three" hides the two it did
+not pick. A player looking for the ice that makes fuel saw a planet with no ice
+on it. The diamonds could not carry a magnitude either: alpha on a mark over a
+lit globe is not something anyone can order by eye.
+
+So F44 is not a bigger overlay. It is the instrument every real resource map
+is: **one element at a time**, a continuous ramp, and a click that turns a
+reading into a destination. **F4** opens it.
+
+### One hue per element, lightness for how much
+
+Sequential data has exactly one legal encoding and it is not a rainbow: a
+single hue whose **lightness** moves with the value, because a reader can order
+two brightnesses of one colour and cannot order two hues. On a black screen the
+anchor flips from the paper convention — near-zero recedes into the surface and
+the rich end is the bright one, so the eye lands on the deposit rather than on
+the emptiness around it.
+
+The three hues were **measured rather than picked**: rust, malachite and
+ice-blue clear the normal-vision separation floor in all pairs (worst 22.8 in
+OKLab ×100) and each sits above 3:1 on the screen's own black. Iron and copper
+are close under deuteranopia (6.2, inside the floor band), which is legal here
+and only here — one channel is shown at a time and the live one is named in a
+lit button, so colour never carries the identity alone. Copper is **green**,
+not a second orange: malachite is what copper ore looks like, and it puts a
+whole hue between the two metals a player is most likely to confuse.
+
+`Planet/OreRamp.hpp` owns it, engine-side, because three places have to agree —
+the globe and its legend, and — for as long as they lived — F43's map marks,
+which sampled the same ramp before they were deleted (below). The
+test pins what a picture cannot: the ramp is **monotone in luminance** over
+forty steps for every channel, the ends reach their bands, out-of-range values
+clamp instead of wrapping, and at equal density the three channels are three
+visibly different colours with iron reddest, copper greenest and ice bluest.
+
+### A globe, not a scatter of marks
+
+64×32 diamonds became a **129 × 257 vertex sphere** whose colours are the ore
+field sampled per vertex — about three pixels per quad at the size the screen
+draws it, which is where a per-vertex gradient stops looking like a gradient of
+quads. It rebuilds in **29 ms** on a channel switch, into one of two mesh slots
+swapped alternately, because replacing the mesh that was drawn last frame is
+what used to force a full `waitIdle` — the terrain patch builder learnt that
+once and this is the same lesson rather than a new one.
+
+Three decisions inside that loop, each of which took a picture to settle.
+
+**Unsurveyed ground keeps its relief, in grey.** "No data" and "almost none"
+are different facts and a reader cannot tell a dark ramp step from an unknown
+one. Grey relief under saturated ramp colours means the boundary of the survey
+draws itself.
+
+**The globe is drawn unlit.** A lit sphere hides half its data in its own
+night, and the brightness on the lit half then means two things at once — how
+much ore is there, and how square-on the ground is to a lamp. The emissive path
+draws the vertex colour and nothing else, which is what a map is.
+
+**The ramp runs over water too, and the coastline is a contour.** Painting only
+the land was defensible — a drill does not go on a sea floor — and on Terra,
+which is seven tenths ocean, it produced a survey that had plainly worked and a
+globe with nothing on it. Worse, it broke the encoding: brightness meant "how
+much ore" in some places and "is this land" in others. The fill is now a pure
+function of the density everywhere, and the thing the player actually needs
+from the geography — can I put something down here — is a **coastline**, found
+by testing each vertex's four neighbours for a change of sign in elevation. A
+contour adds a line; it does not overwrite a value. The graticule is baked the
+same way, every thirty degrees, and it is what turns a flat-shaded disc into a
+sphere you can read a position off.
+
+### The list is the record of where you flew an instrument
+
+A body carries a `SurveyComponent` only once an armed OS-1 has passed over it,
+so "worlds a satellite has looked at" needs no separate bookkeeping — it is an
+ECS query, ordered nearest-first so the planet you are orbiting is the top row.
+
+That immediately surfaced a bug F43 had been hiding. The screen listed **MARS**,
+at less than one per cent, in a game where no craft has ever left Terra: at the
+moment warp went to x1000 the flight state named Mars as the SOI primary for a
+single tick, and one tick was enough to attach a survey component and paint a
+swath. **One frame in a sphere of influence is not a survey** — the first frame
+at a new primary now only remembers it, and painting requires a previous sample
+under the same body, which the arc needed anyway. A flicker never gets a second
+frame; a real arrival loses its first sixtieth of a second.
+
+### And it ends in a beacon
+
+A map that cannot be acted on is a picture. A click drops a mark on the ground
+at that direction, and **nothing about it is new machinery**: a
+`TransformComponent`, a `SurfaceAnchorComponent` and a `BeaconComponent` — the
+three the starting outpost's own mast already carries. So it is placed every
+tick in the body's rotating frame, drawn by `collectBeacons` with its label and
+its live distance in both the cockpit and the map, and saved with the world
+without one line added to the save schema. Clicking it again removes it, because
+a map you can only add to fills up with the sites you already rejected.
+
+The label is the reading — `CU 0.74`, not `WAYPOINT 3` — and on ground nobody
+has surveyed it says `REPERE` instead of inventing a measurement out of the
+absence of one. The cursor read-out above the globe gives **all three elements
+in figures** at the point under the mouse, which is the question a single
+channel cannot answer: this place has the copper, and does it also have the
+iron and the ice a base needs to stand up on its own.
+
+### What the instruments could not press
+
+`SW_GEOLOGY=<channel>[,<yaw>[,<pitch>]]` opens the screen and presses the
+channel **through the button that is actually on the panel**, shouting to the
+same file `SW_PARTMENU` does when the row is not in the table. `SW_GEOBEACON`
+is honest about its gap: the real gesture is a click, and it presses the second
+half — the placement — without the first, the cursor ray, which a capture has
+no mouse to aim. So the ray moved into the engine as `sw::ui::pickUnitSphere`
+and is pinned by a test instead: two hundred camera poses, a target on the
+visible cap, and the pick must come back within a millimetre and on the near
+side. **The near root, always** — the far one is a plausible latitude on the
+wrong hemisphere, and a beacon dropped there is simply somewhere else.
+
+With no coordinates the hook drops its mark on the **best surveyed cell of the
+live channel** and turns the globe to face it, because a mark on the far side of
+a sphere is correctly hidden and uselessly photographed.
+
+### ...and then the map marks came off
+
+> « enlève les points de ressources sur la map normale maintenant que nous
+> avons un menu pour cela »
+
+Right, and the reasoning is the same one that built the screen. Two overlays of
+one dataset is one too many, and the one that had to go is the one that could
+only ever show **the richest of three** — a display whose blind spot was the
+reason F44 exists. The orbital map is for flying: a trajectory, an encounter, a
+beacon you are aiming at. Geology is F4.
+
+What is left of `collectSurveyMarks` is nothing; `surveyTint` survives with a
+single caller, the terrain patch builder, because the tint **on the ground you
+are standing on** answers a question no globe at planet scale can — a cell up
+there is 600 km across and a drill needs sixteen metres. And the map got its
+planet back: two thousand diamonds over a body were also two thousand draw
+items per frame that nobody had asked to see.
+
+### Known limits
+
+The globe is one LOD: a body is either the whole sphere at 33k vertices or
+nothing, so a moon and a gas giant cost the same rebuild. Coverage is read from
+the same coarse 64×32 grid the survey stores, so the edge of a surveyed region
+is a staircase at cell resolution even though the ore under it is continuous.
+And the screen shows deposits only — slope, which decides whether a factory can
+actually stand where the ore is, is still something you find out by flying
+there.
+
+## Milestone 45 — the ore that was never running out
+
+> « il semble que les ressources s'épuisent actuellement, cela ne doit pas être
+> le cas, ou alors il y a un bug qui fait que des foreuses à cuivre cessent de
+> produire des minerais »
+
+Nothing depletes in this game, and the code says so plainly: `DepositComponent`
+has no quantity field, no runtime code writes to a deposit, and the whole
+design note in `Deposits.hpp` exists because ore is a **property of a place**
+rather than an object that exists. The report was still right. Two mistakes
+were making mines behave exactly like exhausted ones, and a third made it
+impossible to see that they were not.
+
+### The mine was born digging the wrong thing
+
+`defaultRecipeFor` returned the **first recipe in the catalogue** — iron —
+whatever was under the cursor. The placement validator, meanwhile, passes a
+site when the **best** of iron, copper and ice clears the part's minimum. Two
+different questions with two different answers, and F43 turned the gap from a
+corner case into the common case: copper and ice got a floor of a tenth so no
+landing site is a dead end, iron deliberately did not, and the MN-1's minimum
+came down to 0.08 to match.
+
+Measured on the real Terra presets, over 20 000 sampled directions:
+
+| | |
+|---|---:|
+| legal dry sites for an MN-1 | 10 978 |
+| ...with **exactly zero** iron under them | **4 296 (39.1%)** |
+| ...with iron under a tenth | 1 416 (12.9%) |
+| ...where the richest ore is copper | 6 791 |
+
+Two mines in five, placed exactly where the game said to place them, sampled a
+density of zero and sat in `kStarved` for the rest of the save. Producing
+nothing. Ever. With no message saying why.
+
+The ground chooses now: the same `bestDeposit` the validator used to say *yes*
+says **what**, and the machine is born digging it. The mapping between a
+resource and the recipe that extracts it moved into the engine
+(`factory::minedResource` and its inverse `extractionRecipeFor`) precisely
+because two places have to agree about it and did not.
+
+### STOP was rewriting the site as worthless
+
+`applyRecipeChoice` re-samples the ground, because a mine switched from iron to
+ice must be paid at the ice grade — right, and it also ran on recipe **0**,
+which is the STOP button. STOP digs for nothing, the sample came back 0.0, and
+it **overwrote a perfectly good number**. The machine then read as barren
+ground rather than as a stopped machine, and the only way back was to happen to
+pick a recipe again. A recipe that is not a mine now leaves the stored density
+alone.
+
+### The cache was a cache, so it is rebuilt on load
+
+`groundDensity` is stored only to keep the production tick off the noise
+generator: it is a pure function of a place that cannot move and a recipe that
+is written down beside it. That makes every stale value a silent permanent lie,
+and both bugs above wrote one. Loading a world now re-samples every mine from
+the field, next to the conveyor network and the power grid — the third derived
+thing, which nobody had noticed was one. It can only ever agree with the field,
+and it repairs saves written before today.
+
+### And now you can see the number
+
+> « la concentration de minerais de chaque ressource sera affiché dans le menu
+> de sélection de la foreuse à côté des dites ressources »
+
+Every recipe row in a miner's front plate carries the density of that resource
+**under that machine**, with a swatch from the geology screen's own ramp so the
+globe a site was chosen on and the panel the drill is armed from cannot
+disagree, and beside it the rate the mine would actually run at:
+
+```
+IRON ORE EXTRACTION     GROUND 1.00 IRONORE     ▪ 0.79  0.79/S   45 KW
+COPPER ORE EXTRACTION   GROUND 0.80 COPPERORE   ▪ 0.10  0.08/S   45 KW
+ICE HARVESTING          GROUND 1.20 WATERICE    ▪ 0.10  0.12/S   30 KW
+```
+
+That second figure is the whole report, answered. A copper drill on the bare
+floor runs at **0.08 units a second** while the smelter downstream wants 3.00 —
+so the chain dries up, and until today nothing on any screen said the mine was
+running at a tenth rather than failing. Amber below 0.15, red at zero.
+
+The ore tint on the terrain came off in the same pass. It was answering the
+question in the wrong place: what a player wants is *how rich is this spot*, to
+four hundredths, at the moment they choose what the drill digs — and that is a
+figure in the machine's own panel, not a hue on a hillside whose slope they
+also need to read.
+
+### What is pinned
+
+`AMineBuiltWhereTheRulesAllowItCanAlwaysDigSomething` sweeps 20 000 directions
+on the real presets, and for every site the validator would accept it checks
+that the recipe the ground chooses names the resource that is actually richest
+and that its density is the one the mine will be paid at. It also asserts the
+39% figure is real — over a quarter of legal sites hold no iron — so the test
+fails if the floor or the minimum ever drift back into agreement by accident.
+Then it takes one of those sites, runs the **real** `ProductionSystem` on it for
+sixty seconds twice, and requires that the ground's own recipe produces while
+the old default produces exactly nothing.
+
+`WhatAMineDigsRoundTripsAndStoppingIsNotAResource` pins the pair itself: every
+miner recipe names one resource and naming it back returns the same recipe,
+STOP names nothing, and a smelter is not a mine.
 
 ### Milestone 32+ — candidates (remaining)
 Parallelise the LOD sphere builds across the thread pool (fourteen relief worlds

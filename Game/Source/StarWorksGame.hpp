@@ -113,10 +113,14 @@ namespace game
         /// player intended. This walks the ports after every build and
         /// demolition and rebuilds every chain it finds.
         void rebuildConveyorNetwork();
-        /// The recipe a freshly placed building starts on: the first one its
-        /// category can run. F4 will let the player choose.
+        /// The recipe a freshly placed building starts on. A MINE starts on
+        /// the ore that is actually under it — see the note at the definition,
+        /// and the thirty-nine per cent of legal sites that used to produce a
+        /// machine which could never dig anything.
         [[nodiscard]] static sw::u32 defaultRecipeFor(
-            sw::factory::BuildingCategory category);
+            sw::factory::BuildingCategory category,
+            const sw::planet::DepositComponent* deposits = nullptr,
+            const sw::Vec3& up = sw::Vec3{0.0f, 1.0f, 0.0f});
         /// A body's position and rotation AS IT IS BEING DRAWN this frame —
         /// interpolated between ticks, spin in f64. Anything placed relative
         /// to a planet must use this and not the raw tick pose: the gap is a
@@ -768,6 +772,64 @@ namespace game
         FlightState m_flight{};
         void refreshFlightState();
 
+        // ---- F43: THE ORBITAL SURVEY ---------------------------------------
+        /// Fills in the coverage under the ground track when an OS-1 is armed
+        /// and the orbit is one an instrument can work from.
+        void updateSurvey();
+        [[nodiscard]] bool surveyArmed() const;
+        [[nodiscard]] bool surveyOrbitStable() const;
+        /// The colour a surveyed place is worth marking in, or false when
+        /// what is under it is not worth moving for.
+        [[nodiscard]] static bool surveyTint(const sw::planet::DepositComponent& deposits,
+                                             const sw::Vec3& bodyDirection,
+                                             sw::Vec4& outColor);
+        std::string m_surveyStatus;
+        sw::f32 m_surveyFraction = 0.0f;
+        /// Where the last sample was taken, so the arc between two samples
+        /// can be painted whole. Reset whenever the primary changes, because
+        /// an arc from one planet to another is not a ground track.
+        sw::ecs::Entity m_surveyPrimary{};
+        sw::Vec3 m_surveyPrevious{0.0f};
+
+        // ---- F44: THE GEOLOGY SCREEN ----------------------------------------
+        //
+        // A screen and not a HUD panel, for the same reason the design office
+        // is: what it shows is a WHOLE WORLD, and the question it answers —
+        // where on this planet is the copper — has nothing to do with where
+        // the ship is pointing this second. F4 opens it, F4 closes it, and
+        // the simulation holds still while it is up.
+        void enterGeology();
+        void exitGeology();
+        void updateGeology();
+        void collectGeologyItems();
+        void collectGeologyUi();
+        /// Every body a satellite has started to look at, nearest first.
+        [[nodiscard]] std::vector<sw::ecs::Entity> geologyBodies() const;
+        /// Rebuilds the ore globe for the selected body and channel. Cheap
+        /// enough to do on a channel switch and far too expensive to do per
+        /// frame, so it is driven by a dirty flag.
+        void rebuildGeologyGlobe();
+        /// The direction under the cursor on the globe, in the body's frame.
+        /// False when the cursor misses the sphere.
+        [[nodiscard]] bool geologyCursorDirection(sw::Vec3& outDirection);
+        /// Drops a beacon on the ground at a body-frame direction, or removes
+        /// the one already within a few cells of it.
+        void geologyToggleBeacon(const sw::Vec3& bodyDirection);
+        bool m_geologyMode = false;
+        bool m_pausedBeforeGeology = false;
+        sw::ecs::Entity m_geologyBody{};
+        sw::res::Resource m_geologyChannel = sw::res::Resource::IronOre;
+        sw::f32 m_geologyYaw = 0.6f;
+        sw::f32 m_geologyPitch = 0.25f;
+        sw::f32 m_geologyDistance = 2.3f;
+        /// Two slots, swapped on every rebuild: replacing the mesh that was
+        /// drawn last frame is what used to force a full waitIdle, and the
+        /// terrain patch builder learnt that the expensive way.
+        sw::u32 m_geologyGlobeMesh[2] = {0, 0};
+        sw::u32 m_geologyGlobeSlot = 0;
+        bool m_geologyGlobeDirty = true;
+        sw::Camera m_geologyCamera;
+
 
         /// Absolute simulation time a SYNC warp is aiming at, or 0.
         /// Distinct from m_warpToSeconds (the node) because it bypasses the
@@ -1030,10 +1092,15 @@ namespace game
         /// id and animation index. A part's STATIC group stays in
         /// m_partMeshIds, so every part that animates nothing is untouched.
         std::unordered_map<sw::u64, sw::u32> m_partGroupMeshIds;
+        /// The motions themselves, derived once at boot from the catalogue —
+        /// which shapes ride together and whose pose they follow. Keyed by
+        /// definition id, because it is a property of the DEFINITION and not
+        /// of any instance of it.
+        std::unordered_map<sw::u32, std::vector<sw::parts::PartMotionGroup>> m_partMotions;
         [[nodiscard]] static constexpr sw::u64 partGroupKey(sw::u32 definitionId,
                                                             sw::u32 group)
         {
-            return (static_cast<sw::u64>(definitionId) << 8) | group;
+            return (static_cast<sw::u64>(definitionId) << 16) | group;
         }
         /// Adds the live animation state to a freshly spawned part, if its
         /// definition has any. One call, from every path that makes a part.
@@ -1123,6 +1190,20 @@ namespace game
         sw::u32 m_debugBurnDelay = 0;
         bool m_debugPredSwept = false;
         sw::u32 m_debugSweepDelay = 0;
+        bool m_debugSpawned = false;
+        bool m_debugHangarOpened = false;
+        bool m_debugMachineOpened = false;
+        sw::u32 m_debugMachineDelay = 0;
+        bool m_debugGeologyOpened = false;
+        bool m_debugGeologyChannel = false;
+        bool m_debugGeologyBeacon = false;
+        sw::u32 m_debugGeologyDelay = 0;
+        bool m_debugOrbited = false;
+        bool m_debugSurveyed = false;
+        sw::u32 m_debugSurveyDelay = 0;
+        sw::u32 m_debugOrbitDelay = 0;
+        bool m_debugAnimProbed = false;
+        sw::u32 m_debugAnimDelay = 0;
         std::vector<sw::f32> m_frameSamples;
         std::vector<sw::f32> m_predictionSamples;
         /// WHERE THE FRAME WENT. One accumulator per phase of the frame,
@@ -1180,6 +1261,10 @@ namespace game
         /// camera sits, as a multiple of the standoff. Negative looks up at it.
         sw::f32 m_debugShotPitch = 0.35f;
         bool m_debugShotMap = false;
+        /// Frames the shot camera has run for. SW_SHOT's `map` token waits on
+        /// this: the part menu only exists in the cockpit, so a capture has to
+        /// arm what it photographs BEFORE it opens the map.
+        sw::u32 m_debugShotFrames = 0;
         /// SW_NO_GLARE=1 suppresses the sun's three glare layers, leaving the
         /// photosphere alone. It exists so Tools/solar_scale/check_render_size
         /// can MEASURE the sun's disc: the glare is a deliberate optical

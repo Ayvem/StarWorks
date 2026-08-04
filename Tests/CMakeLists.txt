@@ -31,6 +31,7 @@ add_executable(StarWorksTests
     Source/SimulationTests.cpp
     Source/StarCatalogueTests.cpp
     Source/SpaceTests.cpp
+    Source/SurveyTests.cpp
     Source/TerrainTests.cpp
     Source/TestFramework.hpp
 )

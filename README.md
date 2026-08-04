@@ -12,7 +12,194 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F18/F19: Continents measured against Earth, craters, twilight and a ring shadow
+## Current state — F43/F44/F45: The orbital survey, the geology screen, and the ore that was never running out
+
+**Where the ore is stopped being something you find out by landing on it.** The
+**OS-1 Orbital Surveyor** is a 180 kg instrument with one dish and one rule:
+closed orbit, off the ground, periapsis above the air. Armed and idle it says
+*why* on the HUD, because a periapsis is not visible from the cockpit. What it
+fills in is a 64×32 bit grid per body — 256 bytes for a whole planet — that
+records **whether anyone has looked**, while the ore itself stays what it always
+was: an analytic field, a property of a place, saved nowhere.
+
+Marking one cell per frame was correct at sixty hertz and a lie at any other
+rate — nine revolutions at x100 read one per cent, because the craft crosses
+eight degrees between frames while the instrument sees six. Coverage is now
+painted along the **arc** between samples, so it follows where the craft *went*:
+six polar revolutions read 62.3% sampled every five seconds and, cell for cell
+identically, every three hundred. A polar orbit closes the map; an equatorial
+one never can, and its poles stay dark after a full planetary day. That is the
+whole reason the orbit you choose is a decision.
+
+**`F4` opens the geology screen.** A list of every world a satellite has started
+to look at, nearest first, and then a globe coloured by **one element at a time**
+— iron, copper, ice — as a continuous gradient from dark to bright, with the
+scale printed under it. One hue per element with lightness carrying magnitude,
+because a reader can order two brightnesses of one colour and cannot order two
+hues; the three hues clear the colour-vision separation floor in all pairs and
+were validated rather than picked. Unsurveyed ground keeps its relief in grey,
+so the edge of your coverage draws itself, and the coastline and a 30°
+graticule are drawn as **contours over** the data rather than instead of it.
+Hovering reads out all three elements in figures; **left-click drops a beacon**
+on the ground, labelled with what is under it (`CU 0.74`), anchored to the
+rotating body, saved with the world, and shown with its live distance on the
+HUD and the map from then on — which is what you steer at on the way down.
+
+**And copper and ice now carry a floor of a tenth everywhere**, as a maximum
+against the field and not an addition to it: a rich patch is exactly as rich as
+it was, and only the barren rock between patches comes up. A mine on baseline
+ground runs at a tenth of the rate, so expansion stopped being a requirement and
+became an optimisation. Iron has no floor — at 0.55 richness a floor would only
+flatten the map.
+
+**Then the mines started behaving like exhausted ones, and nothing in this game
+depletes.** Two bugs, and a third that made them invisible. A mine was born on
+the **first recipe in the catalogue** — iron — whatever was under the cursor,
+while the placement validator passes a site on the **best** of the three; the
+floor above turned that gap into the common case. Measured on the real Terra
+presets over 20 000 directions: of 10 978 legal dry sites, **4 296 (39%) hold no
+iron at all**. Two mines in five, placed exactly where the game said to place
+them, sampled zero and sat starved for the rest of the save. The ground chooses
+now — the same lookup that says *yes* says *what*. Pressing **STOP** used to
+re-sample the ground for a recipe that digs nothing and overwrite a good number
+with zero, so a stopped machine read as barren rock; and because that stored
+density is only a cache of a pure function, **loading a world now re-samples
+every mine from the field**, beside the conveyor network and the power grid.
+
+The number is on screen at last: every recipe row in a miner's front plate
+carries the density of that ore **under that machine**, with a swatch from the
+geology screen's own ramp, and the rate the mine would actually run at —
+`0.10  0.08/S` in amber against a smelter that wants 3.00. The ore tint that
+F43 put on the terrain came off in the same pass: what a player wants is *how
+rich is this spot*, to four hundredths, at the moment they choose what the drill
+digs, and that is a figure in a panel rather than a hue on a hillside whose
+slope they also need to read.
+
+**277/277 tests, both build types, `PARITY OK`, both scale checkers at zero
+discrepancies.**
+
+## Previously — F40/F41/F42: A ship that bends, and bends at the joint
+
+Three milestones on one report, and each of the three was a different way of
+being wrong about where a force acts.
+
+**A vessel in free fall was flexing.** The load on a joint was computed from the
+craft's velocity change, and in orbit that change is *gravity* — which pulls
+every part equally and puts nothing at all through the structure. Weightlessness
+is the state where a structure is least loaded and the game had it as the state
+where it bent most. The acceleration a joint sees is now what the engines and
+the air did, with the gravitational field subtracted out, and a coasting
+Starling reads 0.000° of permanent set instead of taking one every orbit.
+
+**Then the deflections were backwards.** A beam under thrust trails the push; it
+does not lead it. And the elastic bend was being applied about the *vessel's
+centre of mass*, which does not pivot a member — it translates it bodily, so a
+solar wing two metres out and bent fifteen degrees left its own mount half a
+metre behind and hung in space beside the hull. A part now turns about its
+**root**: the attach node nearest the balance point, chosen once and stored, so
+the flex system and the attachment system cannot hold two opinions about one
+hinge. The lever was wrong in the same place — it was the part's whole bounding
+radius, 3.8 m for an array whose mass centres 1.5 m from its root — and both are
+read from the part now.
+
+| | before | after |
+|---|---:|---:|
+| Starling coasting | 0.195° elastic, 0.000° permanent | **0.195° / 0.000°** |
+| Starling at full throttle | 0.483° / 0.550° | **0.483° / 0.000°** |
+| Starling worst moment | 58 127 N·m | **2 716 N·m** |
+| Endurance, three of four engines | 2.20° / 0.000° | **0.068° / 0.000°** |
+
+The flex is now *subtle*, and on a 500 t ring pushed by 88 kN nearly invisible —
+0.18 m/s² does not visibly bend a structure that size, and saying so is honest
+rather than disappointing.
+
+## Previously — F36/F37/F38/F39: The freeze at fifty kilometres a second, and the two tonnes that turned a ship
+
+A frame-rate counter averages over a second and cannot see a single frame that
+took a sixth of one, which is exactly what a player means by that sentence. So
+the frame got **nine phase timers** — simulation, celestial index, streaming,
+prediction, terrain, grass, reentry, scene collection, render — and the first
+hypothesis died on the first measurement: the trajectory predictor cost 0.07 ms
+at six billion kilometres out. The regime was wrong, not the suspect. What was
+actually happening lived in the conic solver's anomaly bounds, which a fast
+hyperbolic arc walked straight past.
+
+**Then accelerating made the ship turn when it should not have.** Thrust was
+being applied along the wrong axis for an off-centre engine, so opening the
+throttle yawed a symmetric craft. Thrust now leaves an engine along its own
+nozzle, and the torque is whatever that line's offset from the balance point
+produces — which is a rotation only when the engine really is off-centre, and
+in the right direction when it is. The Endurance's own imbalance turned out to
+be **twelve centimetres** of centre-of-mass offset on a 500 t ring, worth
+10 253 N·m; balancing the command pod's mass took it to 40 N·m.
+
+**And a part's animation was right in the tool and wrong in the game** — the
+same `.swpart`, two different pictures. Shapes were grouped per animation, so a
+twelve-segment telescoping wing whose segments each travel a different distance
+was drawn as one rigid group; grouping is now per **motion**, derived from each
+shape's own rest→end delta. The chase for it also produced the rule this project
+now keeps: a build stamp read from the executable's own timestamp, on the first
+line of every log, because *"a `.swpart` is data and takes effect the moment it
+is copied, while a change to how parts are drawn is code and takes effect when
+the game is rebuilt — and from the outside those two look exactly alike."*
+
+## Previously — Milestone 35: Parts that move, and a way to make them move
+
+The blocker was the mesh: a part was ONE welded mesh with every shape's pose
+baked into its vertices, and `DrawItem` carries one mesh, one matrix, one tint,
+with nowhere to put a bone. So the feature is a **splitting** and not a skinning
+pass — shapes belong to a group, each group gets its own mesh, and a group is
+drawn with one extra matrix in front of the part's own. Nothing about the vertex
+format, the draw item or the shader had to learn what an animation is.
+
+**Two poses, not a timeline.** A shape carries its rest pose and its deployed
+pose, and the hinge between them is derived by Chasles' theorem — so there are
+deliberately *no pivot or axis fields* in Part Studio: the axis is whatever the
+shape's own travel says it is. Authoring an array is folding it flat, flipping
+the phase and swinging it out.
+
+Alongside it: **the orbit's other four directions** (radial in/out and normal
+in/out, because a plane change is flown normal and is not reachable by pointing
+at prograde and waiting), **two suns that both light the sky** in a binary
+system with thirty-six catalogue stars coloured by their real effective
+temperatures, and **a clock that had run out of digits** — a ground that
+vibrated on Proxima b and then kept vibrating back on Terra, which is how you
+know the fault is global rather than local.
+
+## Previously — Milestone 34: Twelve light-years, and the origin that moves with you
+
+Twenty-four systems, thirty-six stars and twenty-five confirmed planets inside
+twelve light-years, with J2000 positions, modern parallaxes and interferometric
+radii where they exist. The catalogue lives in the **engine** rather than the
+game, because the part that can be wrong is not the numbers — it is the rule
+that turns a right ascension measured on Earth's equator into a world that runs
+on the ecliptic.
+
+Then the warp ladder had to grow two rungs, and the boundary it was gated on was
+wrong by four orders of magnitude: **Sol's sphere of influence is a shade under
+two light-years**, which makes it useless as the line where interstellar warp
+starts. The ladder is written in kilometres now. And an interstellar crossing
+needed an instrument of its own — a heading readout whose colour is the whole
+tool, because four light-years turns one degree of departure error into seven
+hundred astronomical units of miss.
+
+## Previously — Milestone 33: The night the renderer got a mirror
+
+**The tool first, and it paid for itself in an hour.** `--capture <path>` writes
+the last frame of a `--frames N` run straight off the swapchain through a
+forty-line PNG writer that needs no zlib; with `--cpu`, `xvfb-run` and the
+`SW_SHOT=BODY@RADII` camera, a build can be **pointed at a planet and
+photographed, headless, from a shell script**.
+
+That mattered because the CPU preview this project had been judging planets with
+for four milestones ray-casts the fragment path and nothing else. It cannot see
+which pipeline an object took, whether it was shaded per-vertex or
+per-fragment, how a blend resolved, or what a silhouette does. Four separate
+bugs had been living in released frames while the preview said everything was
+fine — and nothing in the loop could tell the difference. Every debug hook in
+the table further down this file exists because of that night.
+
+## Previously — F18/F19: Continents measured against Earth, craters, twilight and a ring shadow
 
 **The land mask was one call to fBm, and it made a world with lakes rather than a world with an ocean** — 53.4% of the globe was land. It is now a low-frequency plate field sharpened into plateaus, with finer noise only allowed to decorate the coast, and **every constant in it was found by search rather than by eye**: Earth's real land/sea raster measured on an equal-area grid gives 28.9% land with the largest landmass holding 54.3% of it, and 360 parameter combinations were scored against those numbers. The shipped field measures 26.5% and 54.1%, in four continents. The tool that did it ships with the code.
 
@@ -536,7 +723,7 @@ The join panel distinguishes the two failures, because the cure for one is usele
 
 ## Running the tests
 
-255 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
+277 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, the survey grid and the orbits that can and cannot close it, the ore ramp's monotonicity, a mine's right to dig something wherever the rules let it be built, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
 
 ```powershell
 # Windows
@@ -560,15 +747,17 @@ ctest --test-dir build/linux-debug --output-on-failure
 
 **Autopilot (`T` cycles, or click):** `SAS` holds the craft STILL — it drives the rotation rate to zero and keeps fighting, with the RCS's own authority and no more, so it settles a wobble in under a second and honestly loses to a real aerodynamic tumble. `PGD` / `RTG` point along the velocity **in whichever frame `V` has selected**; on a landing the orbital and surface retrogrades are around 100° apart, so this is the difference between flying the navball and fighting it. `NODE` holds the burn vector. Every button toggles: clicking the lit one switches the autopilot off, and any rotation input pauses it while you fly by hand.
 
-**On foot (EVA) — where you start, and the normal state.** First person. `W`/`S` walk, `A`/`D` SIDESTEP (the mouse turns you — the suit faces where you look), `Space` jumps. `E` boards the rocket you are looking at (the same key that opens a machine's panel); `P` boards the nearest one; `G` steps back out beside it. Everything else — the map, the hangar, the build catalogue, the machine panels, the multiplayer panel — is reachable from here. `F` opens the **building catalogue**: pick one, look at the ground, left-click to place it, mouse wheel to spin it, `R` to raze what you are looking at. Belts and cables are laid the same way and with the same two clicks — pick the machine that ships, then the one that receives. `E` at a machine opens its **front plate**: state, its share of the grid, what is in the bin, and the jobs its category can run (or, at a VAB, the saved designs it can build). `F2` shows the collision hulls.
+**On foot (EVA) — where you start, and the normal state.** First person. `W`/`S` walk, `A`/`D` SIDESTEP (the mouse turns you — the suit faces where you look), `Space` jumps. `E` boards the rocket you are looking at (the same key that opens a machine's panel); `P` boards the nearest one; `G` steps back out beside it. Everything else — the map, the hangar, the build catalogue, the machine panels, the multiplayer panel — is reachable from here. `F` opens the **building catalogue**: pick one, look at the ground, left-click to place it, mouse wheel to spin it, `R` to raze what you are looking at. Belts and cables are laid the same way and with the same two clicks — pick the machine that ships, then the one that receives. `E` at a machine opens its **front plate**: state, its share of the grid, what is in the bin, and the jobs its category can run (or, at a VAB, the saved designs it can build). On a **miner** every job also carries the density of that ore *under this machine* and the rate it would actually run at — a drill on the bare tenth that every rock carries turns at a tenth of the speed, which is worth knowing before the smelter downstream starves. `F2` shows the collision hulls.
 
 **Free camera:** hold the right mouse button to look around, `WASD` to move, `Q`/`E` down/up, `Shift` to boost, mouse wheel to change speed.
 
-**Star map:** `M` toggles the system view (real scale, beacon markers, patched-conics flight plan with encounter/impact/SOI-exit markers); mouse wheel zooms from LEO out to the whole Sol system. The map centers on your current SOI primary.
+**Star map:** `M` toggles the system view (real scale, beacon markers, patched-conics flight plan with encounter/impact/SOI-exit markers); mouse wheel zooms from LEO out to the whole Sol system. The map centers on your current SOI primary. It carries no geology: ore lives on the geology screen (`F4`), and the marks it briefly wore over surveyed ground came off when that screen arrived.
 
 **Target (in map view):** left-click a body to target it, click it again to clear. The HUD then shows the CLOSEST APPROACH your plan makes to it — distance, time, relative speed — and the map marks **where that body will have moved to** by then, on its own orbit ring, with your own position at that moment and the gap between them. With a maneuver node up you get a second line for what the burn would achieve.
 
 **Maneuver nodes (in map view):** `N` create/delete, `J`/`L` node time −/+, `I`/`K` prograde +/−, `U`/`O` normal −/+, `Y`/`H` radial +/−. The step is a ladder on the modifiers, and it moves the node's time by the same factor: nothing = 1 m/s / 10 s, `Ctrl` = 0.1 m/s / 1 s, `Shift` = 10 m/s / 100 s, `Alt` = 100 m/s / 1 000 s, `Ctrl+Shift` = 1 000 m/s / 10 000 s. The armed step is on the HUD under the node's vector. Or **grab the violet marker with the left mouse button and drag it along the orbit** — the node's time follows the pixel under the cursor, and the planned trajectory redraws as you move. Fly the burn with the **NODE** SAS button (it holds the nose on the burn vector, which is almost never prograde) and the **WARP TO NODE -1 MIN** button, then burn until DV reaches zero — the readout counts down against the trajectory you would have coasted, so gravity is not mistaken for thrust.
+
+**Geology (`F4`):** the survey screen (sim paused; separate view). The left column lists every world a satellite has **started** to look at, nearest first, with its coverage — nothing you have never flown an instrument over appears. Pick one and it is drawn as a globe coloured by **one element at a time** — FER, CUIVRE, GLACE — as a continuous gradient from dark (nothing) to bright (a core worth flying to), with the scale printed under the ramp. Ground nobody has surveyed keeps its relief in grey, so the edge of your coverage draws itself; the coastline and a 30° graticule are drawn as contours over the data rather than instead of it. Right-drag turns the globe, the wheel zooms, and hovering reads out **all three elements in figures** at that point. **Left-click drops a beacon** on the ground there, labelled with what is under it (`CU 0.74`) — it is anchored to the rotating body, saved with the world, and shows up with its live distance on the HUD and the map from then on, which is what you steer at on the way down. Click it again to clear it.
 
 **Chase camera:** hold the right mouse button to orbit around the craft, mouse wheel to zoom, `C` to reset behind it.
 
@@ -747,6 +936,13 @@ frames the craft you are flying and `PART` the part whose menu is open, and for
 those the second field is **metres** rather than radii, because that is the unit
 a rocket is measured in.
 
+`map` engages forty frames in, not on the first one. The map view has no
+per-part controls at all, so a capture that opened it immediately could
+photograph an overlay or arm the instrument that fills it, never both — a
+player arms it in the cockpit and *then* opens the map, and the hook now
+presses them in that order. Only the last frame of a capture is kept, so the
+delay is invisible to every shot that does not need it.
+
 It exists purely so a change to the look of a world can be LOOKED AT, headless,
 in the shipping renderer; without it, four separate bugs lived in released
 frames while the preview said everything was fine.
@@ -764,10 +960,27 @@ variables for the same reason — a capture has no keyboard:
 | `SW_THRUST=<0..1>` | hold the throttle open |
 | `SW_PARTMENU=<n>[,<id>]` | open a part's menu; *n*≥2 also presses row *n*−2 |
 | `SW_BURN=<m/s>` | add that much delta-v prograde, where the ship already is |
+| `SW_SPAWN=<design>` | put a shipped design on the ground next to you (`STARLING`) |
+| `SW_HANGAR=[design]` | open the design office, on that design if named |
+| `SW_MACHINE=<definitionId>` | open that machine's front plate (0 = the first building) |
+| `SW_GEOLOGY=<n>[,yaw[,pitch]]` | open the geology screen on channel *n* (1 Fe, 2 Cu, 3 ice) |
+| `SW_GEOBEACON=<lat,lon>` | drop a beacon there; bare `1` uses the best surveyed cell |
+| `SW_ORBIT=<km>` | circularise the controlled craft at that altitude |
+| `SW_ORBIT_INC=<rad>` | …at that inclination (0 = equatorial, 1.57 = polar) |
+| `SW_SURVEYALL=1` | mark the whole primary surveyed — the OVERLAY, not the instrument |
+| `SW_SURVEYPROBE=1` | log the sub-satellite point and coverage every 40 ticks |
 | `SW_PICKPROBE=1` | write what the part picker can see to a file |
+| `SW_ANIMPROBE=<id>` | one part's motions, meshes and phases → `/tmp/sw_animprobe.txt` |
 | `SW_FRAMEPROBE=1` | 900 frames of per-phase timing → `/tmp/sw_frameprobe.txt` |
 | `SW_PREDSWEEP=1` | flight-plan cost vs speed and place → `/tmp/sw_predsweep.txt` |
 | `SW_NO_GLARE=1` | draw the star without its glare, to measure the disc alone |
+
+Both the game and Part Studio print `build <date> <time>` as the first line of
+their log. Reach for it before anything else when a fix "did not work": a
+`.swpart` is data and takes effect the moment it is copied, while a change to
+how parts are drawn is code and takes effect when the game is **rebuilt** — and
+from the outside those two look exactly alike. A stale Part Studio is worse than
+a stale game, because it saves over fields it has never heard of.
 
 `SW_BURN` accelerates rather than teleporting, and that distinction has already
 mattered once: a hitch reported at +50 km/s could not be reproduced by parking a

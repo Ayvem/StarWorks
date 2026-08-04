@@ -2,6 +2,8 @@
   "id": 209,
   "type": "Structural",
   "name": "EN-10 Core Spoke",
+  "flexStiffnessNmPerRad": 260000,
+  "flexYieldNm": 30000,
   "dryMassKg": 5000,
   "costCredits": 11000,
   "volumeM3": 42,

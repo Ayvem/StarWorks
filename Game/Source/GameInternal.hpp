@@ -427,6 +427,46 @@ namespace game
                               glm::clamp(glm::dot(a, b), -1.0f, 1.0f));
         }
 
+        /// Density of whatever `recipeId` extracts, under `up`. 0 when the
+        /// body has no geology, or when the recipe digs for nothing.
+        ///
+        /// Shared rather than private to the placement code because the
+        /// machine's own panel prints the same number beside every recipe it
+        /// could run. Two implementations of "how rich is this ground" is how
+        /// a mine ends up displaying one figure and being paid another.
+        [[nodiscard]] inline sw::f32 depositDensityFor(
+            const sw::planet::DepositComponent* deposits, const sw::Vec3& up,
+            sw::u32 recipeId)
+        {
+            const sw::res::Resource resource = sw::factory::minedResource(recipeId);
+            if (deposits == nullptr || resource == sw::res::Resource::Count)
+            {
+                return 0.0f;
+            }
+            return sw::planet::oreDensity(*deposits, up, resource);
+        }
+
+        /// The body-fixed direction a surface building stands on, and the
+        /// deposits of the body it stands on. False for anything not anchored
+        /// to a world — a machine on a vessel has no ground to sample.
+        [[nodiscard]] inline bool buildingGround(const sw::ecs::World& world,
+                                                 sw::ecs::Entity entity,
+                                                 const sw::planet::DepositComponent*& outDeposits,
+                                                 sw::Vec3& outUp)
+        {
+            auto& mutableWorld = const_cast<sw::ecs::World&>(world);
+            const auto* anchor =
+                mutableWorld.tryGetComponent<sw::phys::SurfaceAnchorComponent>(entity);
+            if (anchor == nullptr || !(glm::length(anchor->localPosition) > 1.0))
+            {
+                return false;
+            }
+            outUp = sw::Vec3(glm::normalize(anchor->localPosition));
+            outDeposits =
+                mutableWorld.tryGetComponent<sw::planet::DepositComponent>(anchor->body);
+            return true;
+        }
+
         /// Cargo colour for a resource — ore reads as rock, metal as metal.
         /// One crate on a belt is a few pixels; the colour IS the label.
         [[nodiscard]] inline sw::Vec3 resourceCargoColor(sw::res::Resource resource)

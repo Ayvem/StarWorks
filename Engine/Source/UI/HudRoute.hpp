@@ -40,6 +40,7 @@ namespace sw::ui
     {
         None = 0,      // consumed by nothing (the map, off-panel)
         Shell,         // the pause/main menu, id passed through
+        Geology,       // the survey screen, id passed through: close, channel, body
         NetSyncTo,     // index: a row of the multiplayer roster
         NetHost,
         NetJoin,
@@ -85,6 +86,13 @@ namespace sw::ui
         // THE SHELL OWNS 2000+, tested before everything else because while a
         // menu is up nothing behind it is clickable.
         if (id >= 2000) { return {HudAction::Shell, id}; }
+        // THE GEOLOGY SCREEN owns 1500-1999, and it sits here rather than
+        // below the multiplayer panel because 1100+ is open-ended upward: a
+        // range under it would be swallowed exactly the way the part menu was.
+        // Like the shell and the hangar it takes the raw id, because its three
+        // controls — close, pick a channel, pick a body — are one panel's
+        // business and splitting them into three actions buys nothing.
+        if (id >= 1500) { return {HudAction::Geology, id}; }
         // The multiplayer panel owns 1000+.
         if (id >= 1100) { return {HudAction::NetSyncTo, id - 1100u}; }
         if (id == 1000) { return {HudAction::NetHost, id}; }

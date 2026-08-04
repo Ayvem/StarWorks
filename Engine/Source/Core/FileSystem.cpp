@@ -2,6 +2,9 @@
 
 #include "Core/Error.hpp"
 
+#include <chrono>
+#include <cstring>
+#include <ctime>
 #include <fstream>
 
 #if defined(_WIN32)
@@ -72,6 +75,57 @@ namespace sw
 #endif
         // Fallback: current working directory.
         return std::filesystem::current_path();
+    }
+
+    std::filesystem::path FileSystem::executablePath()
+    {
+#if defined(_WIN32)
+        wchar_t buffer[MAX_PATH];
+        const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+        if (length > 0 && length < MAX_PATH)
+        {
+            return std::filesystem::path(buffer);
+        }
+#elif defined(__linux__)
+        char buffer[4096];
+        const ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+        if (length > 0)
+        {
+            buffer[length] = '\0';
+            return std::filesystem::path(buffer);
+        }
+#endif
+        return {};
+    }
+
+    std::string FileSystem::buildStamp()
+    {
+        std::error_code errorCode;
+        const std::filesystem::path self = executablePath();
+        if (self.empty())
+        {
+            return "unknown";
+        }
+        const std::filesystem::file_time_type written =
+            std::filesystem::last_write_time(self, errorCode);
+        if (errorCode)
+        {
+            return "unknown";
+        }
+        const std::time_t seconds = std::chrono::system_clock::to_time_t(
+            std::chrono::clock_cast<std::chrono::system_clock>(written));
+        std::tm local{};
+#if defined(_WIN32)
+        localtime_s(&local, &seconds);
+#else
+        localtime_r(&seconds, &local);
+#endif
+        char text[32];
+        if (std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &local) == 0)
+        {
+            return "unknown";
+        }
+        return text;
     }
 
     std::filesystem::path FileSystem::projectRoot()

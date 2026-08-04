@@ -125,7 +125,7 @@ SW_TEST(PlacementRulesComeFromTheSwpartAndRefuseForAReason)
     SW_CHECK_EQ(build::validatePlacement(terrain, deposits, kRadius, *solar, cliff, {}),
                 build::Verdict::TooSteep);
 
-    // ORE. The site the survey founds carries 0.85; the miner asks 0.15.
+    // ORE. The site the survey founds carries 0.85; the miner asks 0.08.
     f32 grade = 0.0f;
     const Vec3 site = planet::surveyEquatorialSite(
         terrain, deposits, res::Resource::IronOre, kRadius, grade);
@@ -133,11 +133,19 @@ SW_TEST(PlacementRulesComeFromTheSwpartAndRefuseForAReason)
     SW_CHECK_EQ(build::validatePlacement(terrain, deposits, kRadius, *miner, site, {}),
                 build::Verdict::Ok);
 
-    // Barren but otherwise fine ground refuses the MINER and accepts the
-    // solar field — the rule is per-building, straight off the .swpart.
-    Vec3 barren = site;
-    bool foundBarren = false;
-    for (u32 i = 0; i < 40000 && !foundBarren; ++i)
+    // ...AND NOWHERE IS A DEAD END. This used to hunt for barren ground and
+    // check that the miner was refused on it; there is no barren ground any
+    // more, and that is the point. Copper gates the electronics and ice gates
+    // the fuel and the air, so a landing site without either cannot start a
+    // colony at all — through no decision the player made, and with no cure
+    // available to somebody who cannot yet build anything.
+    //
+    // Every rock now carries a tenth of both. Forty thousand directions over
+    // the whole sphere, and not one of them refuses a mine for want of ore.
+    u32 refusedForOre = 0;
+    f32 poorest = 1.0f;
+    f32 richest = 0.0f;
+    for (u32 i = 0; i < 40000; ++i)
     {
         const f32 a = static_cast<f32>(i) * 0.0137f;
         const f32 b = static_cast<f32>(i) * 0.0071f;
@@ -145,19 +153,21 @@ SW_TEST(PlacementRulesComeFromTheSwpartAndRefuseForAReason)
             Vec3{std::cos(a) * std::cos(b), std::sin(b), std::sin(a) * std::cos(b)});
         f32 density = 0.0f;
         planet::bestDeposit(deposits, candidate, density);
-        if (density < miner->building.minOreDensity &&
-            planet::terrainElevation(terrain, candidate) > 40.0 &&
-            planet::terrainLocalSlope(terrain, candidate, kRadius, 10.0f) < 0.10f)
+        poorest = std::min(poorest, density);
+        richest = std::max(richest, density);
+        if (density < miner->building.minOreDensity)
         {
-            barren = candidate;
-            foundBarren = true;
+            ++refusedForOre;
         }
     }
-    SW_CHECK(foundBarren);
-    SW_CHECK_EQ(build::validatePlacement(terrain, deposits, kRadius, *miner, barren, {}),
-                build::Verdict::NotEnoughOre);
-    SW_CHECK_EQ(build::validatePlacement(terrain, deposits, kRadius, *solar, barren, {}),
-                build::Verdict::Ok);
+    SW_CHECK_EQ(refusedForOre, static_cast<u32>(0));
+    SW_CHECK(poorest >= deposits.baselineDensity - 1.0e-5f);
+
+    // AND SITING STILL MATTERS, which is the half a floor could have
+    // destroyed. Yield is the nominal rate times the density underfoot, so a
+    // mine on baseline ground runs at a fraction of one on a real deposit:
+    // expansion stopped being a requirement and became an optimisation.
+    SW_CHECK(richest > poorest * 5.0f);
 
     // OVERLAP. A building already standing on the spot blocks it; step off by
     // more than the two radii and it is free again.

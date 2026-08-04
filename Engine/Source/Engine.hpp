@@ -38,6 +38,8 @@
 #include "Math/Math.hpp"
 #include "Math/Noise.hpp"
 #include "Planet/Deposits.hpp"
+#include "Planet/OreRamp.hpp"
+#include "Planet/Survey.hpp"
 #include "Planet/Terrain.hpp"
 #include "Physics/Aerodynamics.hpp"
 #include "Physics/Kepler.hpp"

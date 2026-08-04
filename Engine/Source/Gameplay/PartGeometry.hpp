@@ -44,6 +44,43 @@ namespace sw::parts
     /// draw item or the shader had to learn what an animation is.
     [[nodiscard]] MeshData buildPartMeshGroup(const PartDefinition& definition, i32 group);
 
+    // ------------------------------------------------------------------------
+    // ONE MESH PER MOTION, NOT ONE PER ANIMATION
+    //
+    // An animation used to be a single rigid body: every shape it moved was
+    // welded into one mesh and carried by the hinge of the FIRST of them.
+    // That is right for a panel and the struts holding it, and wrong the
+    // moment an author gives one animation two motions — a telescoping array
+    // whose four segments deploy to four different places, say. The editor
+    // previews each shape on its own hinge, so it looked perfect there and
+    // came out in game as one segment with three stowaways.
+    //
+    // So the grouping is DERIVED rather than declared: shapes belong to the
+    // same motion when the same animation drives them AND the rigid transform
+    // from their rest pose to their deployed pose is the same. A panel and its
+    // struts still weld into one mesh and one draw call, because they really
+    // do share a hinge; four segments going four places become four, because
+    // they really are four motions. Nothing about the format changed and no
+    // part had to be re-authored — the old solar wing's five shapes still
+    // group into exactly one motion.
+    // ------------------------------------------------------------------------
+    struct PartMotionGroup
+    {
+        i32 animation = -1;   // which animation drives the phase
+        u32 driver = 0;       // index into definition.shapes: the pose to follow
+        std::vector<u32> shapes;
+    };
+
+    /// Every distinct rigid motion in the definition, in shape order. Empty
+    /// for a part that animates nothing.
+    [[nodiscard]] std::vector<PartMotionGroup> partMotionGroups(
+        const PartDefinition& definition);
+
+    /// The mesh for one motion, its vertices baked at the REST pose exactly
+    /// as buildPartMeshGroup bakes an animation's.
+    [[nodiscard]] MeshData buildPartMotionMesh(const PartDefinition& definition,
+                                               const PartMotionGroup& motion);
+
     /// Every visible shape, whatever it animates. Kept for the tools and for
     /// anything that wants a part's whole silhouette in one buffer.
     [[nodiscard]] MeshData buildPartMesh(const PartDefinition& definition);

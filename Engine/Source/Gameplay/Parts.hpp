@@ -417,6 +417,9 @@ namespace sw::parts
     inline constexpr u32 kPartDecouplerFlat = 7;
     inline constexpr u32 kPartCargoBaySmall = 8;
     inline constexpr u32 kPartCoreStructural = 9;
+    /// F43 — the orbital instrument. Armed from a stable orbit, it fills in
+    /// the survey under its own ground track.
+    inline constexpr u32 kPartOrbitalSurveyor = 10;
 
     // Buildings share the same catalogue and the same stable-id space: they
     // are parts with an industrial block, edited in the same Part Studio.
@@ -635,6 +638,24 @@ namespace sw::parts
         Vec3 elastic{0.0f};   // radians, vessel frame, springs back
         Vec3 rate{0.0f};      // radians per second
         Vec3 permanent{0.0f}; // radians, plastic set, stays
+        /// WHERE THIS PART IS BOLTED, as an offset from its own origin in the
+        /// VESSEL's frame.
+        ///
+        /// A joint bends at the joint, so the deflection has to turn the part
+        /// about its root rather than about its origin or about the ship's
+        /// balance point. Which end is the root is a question about the part's
+        /// attach nodes and about which way its parent lies, and it is
+        /// answered ONCE — here, by PartFlexSystem — because
+        /// PartAttachmentSystem needs the same answer and two implementations
+        /// of one pivot is a twin waiting to disagree.
+        Vec3 rootOffset{0.0f};
+        /// THE WORST MOMENT THIS JOINT HAS EVER CARRIED, N m.
+        ///
+        /// The permanent set only ever grows, so one bad frame marks a craft
+        /// for the rest of the session and leaves nothing behind saying what
+        /// it was. This does: the bend says a joint yielded, this says how
+        /// hard, and the two together tell a spike from a load.
+        f32 worstMomentNm = 0.0f;
     };
 
     /// THE LIVE STATE OF ONE PART'S ANIMATIONS, on the part entity.

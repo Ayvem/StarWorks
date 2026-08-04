@@ -37,6 +37,21 @@ namespace sw::phys
         Vec3 angularVelocity{0.0f};
         /// Set by SurfaceInteractionSystem while resting on a body surface.
         u32 isGrounded = 0;
+        /// WHAT GRAVITY DID TO THIS BODY THIS TICK, m/s^2, world frame.
+        ///
+        /// Written by GravityIntegrationSystem — the authority that applies
+        /// it — so that anything needing the NON-gravitational part of the
+        /// motion can subtract exactly what was added rather than recompute a
+        /// field and drift from it.
+        ///
+        /// The one thing that needs it is structural load. A vessel in free
+        /// fall has its velocity changed at nine metres per second squared and
+        /// feels NOTHING: gravity pulls on every gram of it equally, so there
+        /// is no force through any joint. Differencing the velocity without
+        /// this term loads every strut on an orbiting craft with its own
+        /// weight, which is how a solar wing coasting in a circular orbit came
+        /// to sit bent at the yield clamp.
+        WorldVec3 gravityMps2{0.0};
     };
 
     /// WHAT A BODY RESTS ON: an axis-aligned box in the entity's MODEL

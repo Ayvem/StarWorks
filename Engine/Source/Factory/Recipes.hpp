@@ -87,6 +87,22 @@ namespace sw::factory
     /// Every recipe a building of this category may run, in catalogue order.
     [[nodiscard]] std::vector<u32> recipesForCategory(BuildingCategory category);
 
+    /// WHAT A MINE DIGS, and the way back. `minedResource` is the resource an
+    /// extraction recipe pulls out of the rock (Count for anything that is not
+    /// one); `extractionRecipeFor` is its inverse — the recipe id that digs a
+    /// given resource, or 0.
+    ///
+    /// The pair lives here rather than in the game because two places have to
+    /// agree about it and disagreed for a milestone: a mine's yield is scaled
+    /// by the density of the resource ITS RECIPE names, while the placement
+    /// validator passes ground on the BEST of the three. Measured on Terra
+    /// after the F43 floor: of 10 978 legal sites, 4 296 — thirty-nine per
+    /// cent — had exactly zero iron under them, and a mine dropped there
+    /// started on the first miner recipe in the catalogue, which is iron, and
+    /// therefore could never produce a gram.
+    [[nodiscard]] res::Resource minedResource(u32 recipeId);
+    [[nodiscard]] u32 extractionRecipeFor(res::Resource resource);
+
     /// Replaces the registry with every *.swrecipe in `directory` (sorted by
     /// id). Returns false and KEEPS the previous catalogue when the folder
     /// holds no valid recipe.

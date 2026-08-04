@@ -2,6 +2,8 @@
   "id": 203,
   "type": "Structural",
   "name": "EN-4 Connecting Tunnel",
+  "flexStiffnessNmPerRad": 130000,
+  "flexYieldNm": 9000,
   "dryMassKg": 3000,
   "costCredits": 6000,
   "volumeM3": 28,

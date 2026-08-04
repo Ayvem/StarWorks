@@ -44,6 +44,7 @@ namespace sw::phys
                         acceleration += toSource * (source.mu / (distanceSq * distance));
                     }
                 }
+                body.gravityMps2 = acceleration;
                 body.velocity += acceleration * dt;
                 transform.position += body.velocity * dt;
             });

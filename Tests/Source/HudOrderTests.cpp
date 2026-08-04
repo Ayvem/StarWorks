@@ -278,7 +278,11 @@ SW_TEST(HudRoutingIsOrderedByDescendingRange)
     const Case cases[] = {
         {2000, false, false, ui::HudAction::Shell},
         {2431, true, true, ui::HudAction::Shell},   // even over an open panel
+        {1500, false, false, ui::HudAction::Geology},
+        {1523, true, true, ui::HudAction::Geology}, // its own screen, over both
+        {1999, false, false, ui::HudAction::Geology},
         {1100, false, false, ui::HudAction::NetSyncTo},
+        {1499, false, false, ui::HudAction::NetSyncTo}, // ...and not one over
         {1000, false, false, ui::HudAction::NetHost},
         {1001, false, false, ui::HudAction::NetJoin},
         {1002, false, false, ui::HudAction::NetLeave},

@@ -20,6 +20,14 @@
 
 namespace game
 {
+    namespace
+    {
+        /// How many frames SW_SHOT's `map` token waits before it switches the
+        /// view. Long enough for the boot hooks that need the cockpit — the
+        /// part menu above all — to have found their controls and pressed
+        /// them; short enough to be over long before any capture's last frame.
+        constexpr sw::u32 kDebugShotMapDelay = 40;
+    } // namespace
 
     // ------------------------------------------------------------------------
     // The shell: booting, the menu, and saves that have names
@@ -204,6 +212,22 @@ namespace game
 
     void StarWorksGame::bootLoadParts()
     {
+        // WHICH BINARY IS THIS. One line, at the top of every session's log,
+        // because "the fix is in the source I sent you" and "the fix is in
+        // the executable you are running" are different claims and a whole
+        // afternoon went past on the difference. A part file is data and
+        // takes effect the moment it is copied; a change to how parts are
+        // DRAWN is code and takes effect when the game is rebuilt, and from
+        // the outside the two look exactly alike.
+        //
+        // The stamp is the EXECUTABLE'S OWN mtime rather than __DATE__: that
+        // macro is baked into whichever translation unit holds it, so a build
+        // that recompiles one other file and relinks reports the date that
+        // file last changed. Caught on its first run — the game printed a
+        // timestamp eight hours stale after a one-file rebuild, which is the
+        // exact failure the stamp exists to prevent.
+        SW_LOG_INFO("Game", "StarWorks build {} ({})", sw::FileSystem::buildStamp(),
+                    sw::FileSystem::executablePath().string());
         sw::parts::loadCatalog(sw::FileSystem::executableDirectory() / "Assets" / "Parts");
     }
 
@@ -532,6 +556,7 @@ namespace game
                     // bends nothing is a torque nobody can see.
                     sw::f32 worstElastic = 0.0f;
                     sw::f32 worstPermanent = 0.0f;
+                    sw::f32 worstMoment = 0.0f;
                     sw::u32 flexible = 0;
                     m_world.forEach<sw::parts::PartComponent, sw::parts::PartFlexComponent>(
                         [&](sw::ecs::Entity, sw::parts::PartComponent& component,
@@ -541,13 +566,15 @@ namespace game
                             worstElastic = std::max(worstElastic, glm::length(flex.elastic));
                             worstPermanent =
                                 std::max(worstPermanent, glm::length(flex.permanent));
+                            worstMoment = std::max(worstMoment, flex.worstMomentNm);
                         });
                     std::fprintf(probe,
                                  "%u flexible parts, worst bend %.3f deg elastic, "
-                                 "%.3f deg permanent\n",
+                                 "%.3f deg permanent, worst moment %.0f N m\n",
                                  flexible,
                                  static_cast<double>(glm::degrees(worstElastic)),
-                                 static_cast<double>(glm::degrees(worstPermanent)));
+                                 static_cast<double>(glm::degrees(worstPermanent)),
+                                 static_cast<double>(worstMoment));
                 }
                 std::fclose(probe);
             }
@@ -843,6 +870,365 @@ namespace game
                             billions);
                 return;
             }
+        }
+        if (const char* designName = std::getenv("SW_SPAWN");
+            designName != nullptr && !m_debugSpawned)
+        {
+            // SW_SPAWN=<design>: put a shipped design on the ground next to
+            // the player, through the same call the launch pad makes.
+            //
+            // It exists because the ONE part of the game that carries a solar
+            // wing is a design, and a design only reaches the world through
+            // the factory: order it at the VAB, build it in a hall, belt the
+            // crate to a pad, wait for the pad to unpack it. That is four
+            // systems and several minutes of simulated production between a
+            // capture and the thing it is supposed to photograph — so every
+            // picture of an animated part so far has been of the Endurance,
+            // which is the one animated craft that spawns on its own. An
+            // animation nobody can photograph is an animation nobody has
+            // checked, which is exactly how the last two got through.
+            m_debugSpawned = true;
+            if (const sw::parts::ShipBlueprint* design =
+                    sw::parts::findBlueprint(designName))
+            {
+                std::vector<BlueprintPart> saved;
+                saved.swap(m_blueprint);
+                m_blueprint = partsFromDesign(*design);
+                const sw::ecs::Entity vessel = instantiateBlueprint({});
+                m_blueprint.swap(saved);
+                // ...AND THEN PUT IT WHERE THE PLAYER IS.
+                //
+                // A null pad leaves `instantiateBlueprint` at its old surveyed
+                // spot, and measured, that spot is close enough to Terra's
+                // CENTRE that the point-mass field there is 1e5 m/s^2: the
+                // rocket was ejected from inside the planet at ten thousand g
+                // a tick, reaching ten kilometres a second in five ticks. Its
+                // solar wings arrived bent, and for three captures that looked
+                // like a physics bug in the flex model rather than a debug
+                // hook dropping a rocket down a well.
+                if (auto* spawned = m_world.tryGetComponent<TransformComponent>(vessel))
+                {
+                    const sw::ecs::Entity here = controlledEntity();
+                    const auto& mine = m_world.getComponent<TransformComponent>(here);
+                    const sw::i32 primary = m_celestialIndex.soiPrimaryAt(
+                        mine.position, m_physicsLane->presentSeconds());
+                    sw::WorldVec3 up{0.0, 1.0, 0.0};
+                    if (primary >= 0)
+                    {
+                        const sw::WorldVec3 centre =
+                            m_celestialIndex.positionAt(primary,
+                                                        m_physicsLane->presentSeconds());
+                        const sw::WorldVec3 radial = mine.position - centre;
+                        if (glm::length(radial) > 1.0) { up = glm::normalize(radial); }
+                    }
+                    spawned->position = mine.position + up * 20.0;
+                    if (auto* moving =
+                            m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(vessel))
+                    {
+                        if (const auto* mineBody =
+                                m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(here))
+                        {
+                            // The ground it is standing over is moving; a craft
+                            // left at rest in the world frame is one dropped
+                            // off the back of a planet at 464 m/s.
+                            moving->velocity = mineBody->velocity;
+                        }
+                    }
+                }
+                rebuildHulls();
+                SW_LOG_INFO("Game", "SW_SPAWN: '{}' -> vessel {} ({} parts)", designName,
+                            vessel.index, design->parts.size());
+            }
+            else
+            {
+                // Loud, per the rule: "no such design" and "spawned nothing"
+                // look identical from the outside.
+                SW_LOG_ERROR("Game", "SW_SPAWN: no design named '{}'", designName);
+            }
+        }
+        if (std::getenv("SW_SURVEYALL") != nullptr && !m_debugSurveyed &&
+            ++m_debugSurveyDelay > 30)
+        {
+            // SW_SURVEYALL=1: mark the whole primary surveyed.
+            //
+            // An OVERLAY hook and not a feature hook, and the distinction is
+            // the one this file has been burnt by before. What it presses is
+            // the drawing, which needs coverage to exist; what it does NOT
+            // press is the instrument, which is measured through SW_ORBIT and
+            // the real arming button. Photographing the ground tint the
+            // honest way would mean surveying from orbit and then landing on
+            // the surveyed ground, which is two flights and a save.
+            m_debugSurveyed = true;
+            const sw::i32 primaryIndex = controlledPrimaryIndex();
+            if (primaryIndex >= 0)
+            {
+                const sw::ecs::Entity body =
+                    m_celestialIndex.body(static_cast<sw::usize>(primaryIndex)).entity;
+                if (m_world.tryGetComponent<sw::planet::SurveyComponent>(body) == nullptr)
+                {
+                    m_world.addComponent(body, sw::planet::SurveyComponent{});
+                }
+                if (auto* survey =
+                        m_world.tryGetComponent<sw::planet::SurveyComponent>(body))
+                {
+                    for (sw::u32 cell = 0; cell < sw::planet::SurveyComponent::kCells;
+                         ++cell)
+                    {
+                        sw::planet::markSurveyed(*survey, cell);
+                    }
+                    m_terrainCenterDir = sw::Vec3{0.0f}; // force the patch to rebuild
+                    SW_LOG_INFO("Game", "SW_SURVEYALL: whole body marked surveyed");
+                }
+            }
+        }
+        if (const char* orbitSpec = std::getenv("SW_ORBIT");
+            orbitSpec != nullptr && !m_debugOrbited && ++m_debugOrbitDelay > 40)
+        {
+            // SW_ORBIT=<km>: circularise the controlled craft at that
+            // altitude above whatever it is orbiting.
+            //
+            // The survey only works from a stable orbit, which is the whole
+            // point of it, and reaching one legitimately is a launch — four
+            // minutes of flying a rocket that a capture has no keyboard for.
+            // The velocity is the circular speed for the radius, perpendicular
+            // to the radius and to the primary's spin axis, which is an
+            // equatorial orbit; add SW_ORBIT_INC to tilt it.
+            m_debugOrbited = true;
+            const sw::ecs::Entity self = controlledEntity();
+            auto* body = m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(self);
+            auto* transform = m_world.tryGetComponent<TransformComponent>(self);
+            const sw::i32 primaryIndex = controlledPrimaryIndex();
+            if (body != nullptr && transform != nullptr && primaryIndex >= 0)
+            {
+                const auto& primary =
+                    m_celestialIndex.body(static_cast<sw::usize>(primaryIndex));
+                const auto* centre =
+                    m_world.tryGetComponent<TransformComponent>(primary.entity);
+                const auto* source =
+                    m_world.tryGetComponent<sw::phys::GravitySourceComponent>(
+                        primary.entity);
+                if (centre != nullptr && source != nullptr)
+                {
+                    const sw::f64 radius =
+                        primary.bodyRadius + std::strtod(orbitSpec, nullptr) * 1000.0;
+                    const sw::f64 inclination =
+                        (std::getenv("SW_ORBIT_INC") != nullptr)
+                            ? std::strtod(std::getenv("SW_ORBIT_INC"), nullptr)
+                            : 0.0;
+                    const sw::WorldVec3 out{1.0, 0.0, 0.0};
+                    const sw::WorldVec3 along{0.0, std::sin(inclination),
+                                              std::cos(inclination)};
+                    transform->position = centre->position + out * radius;
+                    body->velocity = source->worldVelocity +
+                                     along * std::sqrt(source->mu / radius);
+                    body->isGrounded = 0;
+                    SW_LOG_INFO("Game",
+                                "SW_ORBIT: circular at {:.0f} km over {}, inc {:.2f} rad",
+                                (radius - primary.bodyRadius) / 1000.0, primary.name,
+                                inclination);
+                }
+            }
+        }
+        // SW_MACHINE=<definitionId>: open that machine's front plate.
+        //
+        // WHAT IT SKIPS, SAID PLAINLY: the real gesture is standing in front
+        // of the thing and pressing E, and the ray from the eye to the hull is
+        // the half a capture has no head to aim. So this presses the RESULT of
+        // that ray — the same m_configTarget the key sets, on a building
+        // chosen by kind rather than by where you are looking — and the ray
+        // itself stays covered by SW_PICKPROBE. It shouts when the world holds
+        // no machine of that kind, because "the panel is empty" and "the
+        // building is not there" look identical in a screenshot.
+        if (const char* machineSpec = std::getenv("SW_MACHINE");
+            machineSpec != nullptr && !m_debugMachineOpened && ++m_debugMachineDelay > 60)
+        {
+            m_debugMachineOpened = true;
+            const sw::u32 wanted = static_cast<sw::u32>(std::strtoul(machineSpec, nullptr, 10));
+            sw::ecs::Entity found{};
+            m_world.forEach<sw::factory::BuildingComponent>(
+                [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building) {
+                    if (found.isNull() && (wanted == 0 || building.definitionId == wanted))
+                    {
+                        found = entity;
+                    }
+                });
+            if (found.isNull())
+            {
+                SW_LOG_WARN("Game", "SW_MACHINE: no building with definition {} exists",
+                            wanted);
+            }
+            else
+            {
+                m_configTarget = found;
+                SW_LOG_INFO("Game", "SW_MACHINE: panel open on building {}", found.index);
+            }
+        }
+        // SW_GEOLOGY=[channel]: open the survey screen, on that channel.
+        //
+        // The channel is pressed THROUGH THE BUTTON that is actually on the
+        // panel, and shouts to the same file SW_PARTMENU does when the row is
+        // not in the table — because "the button is missing" and "the button
+        // did nothing" look identical from outside a capture and have nothing
+        // in common. Opening itself calls enterGeology, exactly as the F4
+        // branch does; a capture has no keyboard to press F4 with.
+        if (const char* geologySpec = std::getenv("SW_GEOLOGY");
+            geologySpec != nullptr && !m_editorMode && ++m_debugGeologyDelay > 60)
+        {
+            if (!m_geologyMode && !m_debugGeologyOpened)
+            {
+                m_debugGeologyOpened = true;
+                enterGeology();
+            }
+            // SW_GEOLOGY=<channel>[,<yaw>[,<pitch>]] — the globe turns, because
+            // the half of a planet a capture happens to face is not the half
+            // the picture is about.
+            char* cursor = nullptr;
+            const sw::u32 wanted = static_cast<sw::u32>(std::strtoul(geologySpec, &cursor, 10));
+            if (cursor != nullptr && *cursor == ',')
+            {
+                m_geologyYaw = static_cast<sw::f32>(std::strtod(cursor + 1, &cursor));
+                if (cursor != nullptr && *cursor == ',')
+                {
+                    m_geologyPitch = static_cast<sw::f32>(std::strtod(cursor + 1, nullptr));
+                }
+            }
+            if (m_geologyMode && wanted >= 1 && wanted <= 3 && !m_debugGeologyChannel)
+            {
+                const sw::u32 id = 1500u + wanted; // 1501/1502/1503: FE / CU / H2O
+                const HudButton* row = nullptr;
+                for (const HudButton& candidate : m_hudButtons)
+                {
+                    if (candidate.id == id) { row = &candidate; break; }
+                }
+                if (row != nullptr)
+                {
+                    m_debugGeologyChannel = true;
+                    static_cast<void>(applyHudClick(*row));
+                }
+                else if (std::FILE* miss = std::fopen("/tmp/sw_buttonprobe.txt", "w"))
+                {
+                    std::fprintf(miss, "GEOLOGY BUTTON %u IS NOT IN THE TABLE: %zu ids",
+                                 id, m_hudButtons.size());
+                    for (const HudButton& candidate : m_hudButtons)
+                    {
+                        std::fprintf(miss, " %u", candidate.id);
+                    }
+                    std::fprintf(miss, "\n");
+                    std::fclose(miss);
+                }
+            }
+        }
+        // SW_GEOBEACON=<lat>,<lon>: drop a beacon at that point, in degrees.
+        //
+        // HONEST ABOUT WHAT IT SKIPS: the real gesture is a left click on the
+        // globe, and this presses the second half of it — the placement —
+        // without the first, the cursor ray, which a capture has no mouse to
+        // aim. That ray is pinned by a unit test instead (a direction put
+        // through the projection and back must come out where it went in), so
+        // the half this hook cannot press is the half that is checked
+        // elsewhere rather than the half nobody looks at.
+        if (const char* beaconSpec = std::getenv("SW_GEOBEACON");
+            beaconSpec != nullptr && m_geologyMode && !m_debugGeologyBeacon)
+        {
+            m_debugGeologyBeacon = true;
+            char* cursor = nullptr;
+            const double latitude = std::strtod(beaconSpec, &cursor);
+            const bool haveCoordinates = (cursor != beaconSpec) && *cursor == ',';
+            if (!haveCoordinates)
+            {
+                // SW_GEOBEACON=1 with no coordinates drops it on the BEST
+                // SURVEYED CELL of the live channel — which is the point a
+                // player would click after looking at the same globe, and the
+                // only one guaranteed to be both surveyed and worth marking.
+                // A guessed latitude lands on ground nobody has looked at, and
+                // the picture then shows the fallback label instead of the
+                // reading it was taken to show.
+                sw::Vec3 best{0.0f};
+                sw::f32 bestDensity = -1.0f;
+                if (const auto* survey =
+                        m_world.tryGetComponent<sw::planet::SurveyComponent>(m_geologyBody))
+                {
+                    const auto* deposits =
+                        m_world.tryGetComponent<sw::planet::DepositComponent>(m_geologyBody);
+                    const auto* terrain =
+                        m_world.tryGetComponent<sw::planet::TerrainComponent>(m_geologyBody);
+                    for (sw::u32 cell = 0;
+                         deposits != nullptr && cell < sw::planet::SurveyComponent::kCells;
+                         ++cell)
+                    {
+                        if (!sw::planet::surveyed(*survey, cell)) { continue; }
+                        const sw::Vec3 direction = sw::planet::surveyCellDirection(cell);
+                        if (terrain != nullptr &&
+                            sw::planet::terrainElevationSignedLod(*terrain, direction, 5) <=
+                                0.0f)
+                        {
+                            continue; // the sea is not a site
+                        }
+                        const sw::f32 density =
+                            sw::planet::oreDensity(*deposits, direction, m_geologyChannel);
+                        if (density > bestDensity)
+                        {
+                            bestDensity = density;
+                            best = direction;
+                        }
+                    }
+                }
+                if (bestDensity >= 0.0f)
+                {
+                    geologyToggleBeacon(best);
+                    // AND TURN THE GLOBE TO FACE IT. A mark on the far side of
+                    // a sphere is correctly hidden and uselessly photographed;
+                    // framing the subject is the same job SW_SHOT does for a
+                    // body. An explicit yaw in SW_GEOLOGY still wins, because
+                    // it is set after this runs.
+                    m_geologyYaw = std::atan2(best.x, best.z);
+                    m_geologyPitch = std::asin(glm::clamp(best.y, -1.0f, 1.0f));
+                    SW_LOG_INFO("Game", "SW_GEOBEACON: best cell {:.1f} lat {:.1f} lon",
+                                static_cast<double>(m_geologyPitch * 180.0f / 3.14159265f),
+                                static_cast<double>(m_geologyYaw * 180.0f / 3.14159265f));
+                }
+                else if (glm::length(m_surveyPrevious) > 0.5f)
+                {
+                    geologyToggleBeacon(glm::normalize(m_surveyPrevious));
+                }
+            }
+            else
+            {
+                const double longitude = std::strtod(cursor + 1, nullptr);
+                constexpr double kDegrees = 3.14159265358979 / 180.0;
+                const double ring = std::cos(latitude * kDegrees);
+                geologyToggleBeacon(glm::normalize(sw::Vec3{
+                    static_cast<sw::f32>(ring * std::cos(longitude * kDegrees)),
+                    static_cast<sw::f32>(std::sin(latitude * kDegrees)),
+                    static_cast<sw::f32>(ring * std::sin(longitude * kDegrees))}));
+            }
+        }
+        if (std::getenv("SW_HANGAR") != nullptr && !m_editorMode && !m_debugHangarOpened)
+        {
+            // THE DESIGN OFFICE HAS NO KEYBOARD EITHER. B opens it, a capture
+            // cannot press B, and the hangar is where a part is looked at
+            // most: it is the screen you are on while deciding whether the
+            // thing you just drew is right.
+            m_debugHangarOpened = true;
+            enterEditor();
+            // SW_HANGAR=<design> also puts that design on the deck, because
+            // "open the hangar" and "open the hangar ON something" are
+            // different pictures and only the second one shows a part.
+            if (const char* wanted = std::getenv("SW_HANGAR");
+                wanted != nullptr && *wanted != '\0' && *wanted != '1')
+            {
+                if (const sw::parts::ShipBlueprint* design =
+                        sw::parts::findBlueprint(wanted))
+                {
+                    m_blueprint = partsFromDesign(*design);
+                }
+                else
+                {
+                    SW_LOG_ERROR("Game", "SW_HANGAR: no design named '{}'", wanted);
+                }
+            }
+            SW_LOG_INFO("Game", "SW_HANGAR: design office open, {} parts",
+                        m_blueprint.size());
         }
         if (std::getenv("SW_BOARD") != nullptr && m_shipEntity.isNull())
         {
@@ -1268,6 +1654,18 @@ namespace game
         {
             return;
         }
+        // THE MAP IS A PRESS, AND IT COMES AFTER THE OTHER PRESSES.
+        //
+        // A player arms an instrument in the cockpit and THEN opens the map;
+        // the part menu does not exist in map view, and nor does any other
+        // per-part control. Holding the map on from the first frame made
+        // SW_PARTMENU unable to find the button it presses — correctly, the
+        // row genuinely was not in the table — so a capture could photograph
+        // the overlay or arm the thing that fills it, never both.
+        //
+        // The delay is invisible to every existing shot: a capture keeps only
+        // its last frame, and forty frames is a fraction of the shortest run.
+        ++m_debugShotFrames;
         // SW_SHOT=SHIP@<radii> points at the craft rather than at a world.
         // Photographing a rocket used to be impossible: the shot camera looks
         // up a CELESTIAL body by name and a rocket is not one, so anything
@@ -1318,7 +1716,7 @@ namespace game
                     m_camera.setOrientation(glm::quatLookAt(
                         glm::normalize(sw::Vec3(midpoint - eye)),
                         sw::Vec3{0.0f, 1.0f, 0.0f}));
-                    m_mapView = m_debugShotMap;
+                    m_mapView = m_debugShotMap && m_debugShotFrames > kDebugShotMapDelay;
                     return;
                 }
             }
@@ -1419,7 +1817,7 @@ namespace game
             m_camera.setPosition(eye);
             m_camera.setOrientation(glm::quatLookAt(
                 glm::normalize(sw::Vec3(target - eye)), sw::Vec3{0.0f, 1.0f, 0.0f}));
-            m_mapView = m_debugShotMap;
+            m_mapView = m_debugShotMap && m_debugShotFrames > kDebugShotMapDelay;
             return;
         }
         const sw::f32 turn = 0.70f + m_debugShotYaw; // ~40 degrees, plus the caller's
@@ -1438,11 +1836,13 @@ namespace game
         const sw::Vec3 viewUp = glm::cross(right, forward);
         const sw::Quat orientation = glm::quat_cast(sw::Mat3{right, viewUp, -forward});
 
-        sw::Camera& camera = m_debugShotMap ? m_mapCamera : m_camera;
+        sw::Camera& camera =
+            (m_debugShotMap && m_debugShotFrames > kDebugShotMapDelay) ? m_mapCamera
+                                                                      : m_camera;
         camera.setPosition(eye);
         camera.setOrientation(orientation);
         camera.setAspectRatio(renderer().aspectRatio());
-        m_mapView = m_debugShotMap;
+        m_mapView = m_debugShotMap && m_debugShotFrames > kDebugShotMapDelay;
     }
 
     void StarWorksGame::updateBoot()

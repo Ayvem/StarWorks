@@ -162,6 +162,35 @@ namespace sw::factory
         return nullptr;
     }
 
+    res::Resource minedResource(u32 recipeId)
+    {
+        const RecipeDefinition* recipe = findRecipe(recipeId);
+        if (recipe == nullptr || recipe->requiredCategory != BuildingCategory::Miner)
+        {
+            return res::Resource::Count;
+        }
+        // An extraction recipe has exactly one output and no inputs, so
+        // outputs[0] IS what the mine pulls out of the rock.
+        return recipe->outputs[0].resource;
+    }
+
+    u32 extractionRecipeFor(res::Resource resource)
+    {
+        if (resource == res::Resource::Count)
+        {
+            return 0;
+        }
+        for (const RecipeDefinition& recipe : registry())
+        {
+            if (recipe.requiredCategory == BuildingCategory::Miner &&
+                recipe.outputs[0].resource == resource)
+            {
+                return recipe.id;
+            }
+        }
+        return 0;
+    }
+
     std::vector<u32> recipesForCategory(BuildingCategory category)
     {
         std::vector<u32> ids;
