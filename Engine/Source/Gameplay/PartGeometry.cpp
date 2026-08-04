@@ -255,7 +255,100 @@ namespace sw::parts
             Vec3 center;
             Vec3 halfExtents;
             Mat3 axes; // columns = local axes in the common frame
+            /// ...AND SOME OF THESE ARE NOT BOXES (F49). A tank's hull is a
+            /// square prism circumscribing a cylinder, and a square is 27%
+            /// wider across its diagonal than the thing it stands for. Two
+            /// tanks side by side on a core, at 120 degrees to each other,
+            /// have corners that intersect where the metal never does — which
+            /// is why a ring of three boosters could not be built at all.
+            /// Positive radius = round about the local Z axis.
+            f32 roundRadius = 0.0f;
         };
+
+        /// The distance between two finite segments — the whole content of a
+        /// cylinder-vs-cylinder test once the radii are taken out of it.
+        [[nodiscard]] f32 segmentDistance(const Vec3& a0, const Vec3& a1, const Vec3& b0,
+                                          const Vec3& b1)
+        {
+            const Vec3 da = a1 - a0;
+            const Vec3 db = b1 - b0;
+            const Vec3 r = a0 - b0;
+            const f32 aa = glm::dot(da, da);
+            const f32 bb = glm::dot(db, db);
+            const f32 f = glm::dot(db, r);
+            f32 s = 0.0f;
+            f32 t = 0.0f;
+            constexpr f32 kEpsilon = 1.0e-8f;
+            if (aa <= kEpsilon && bb <= kEpsilon)
+            {
+                return glm::length(r);
+            }
+            if (aa <= kEpsilon)
+            {
+                t = std::clamp(f / bb, 0.0f, 1.0f);
+            }
+            else
+            {
+                const f32 c = glm::dot(da, r);
+                if (bb <= kEpsilon)
+                {
+                    s = std::clamp(-c / aa, 0.0f, 1.0f);
+                }
+                else
+                {
+                    const f32 b = glm::dot(da, db);
+                    const f32 denominator = aa * bb - b * b;
+                    s = (denominator > kEpsilon)
+                            ? std::clamp((b * f - c * bb) / denominator, 0.0f, 1.0f)
+                            : 0.0f;
+                    t = (b * s + f) / bb;
+                    if (t < 0.0f)
+                    {
+                        t = 0.0f;
+                        s = std::clamp(-c / aa, 0.0f, 1.0f);
+                    }
+                    else if (t > 1.0f)
+                    {
+                        t = 1.0f;
+                        s = std::clamp((b - c) / aa, 0.0f, 1.0f);
+                    }
+                }
+            }
+            return glm::length((a0 + da * s) - (b0 + db * t));
+        }
+
+        /// Two round hulls, as the cylinders they are rather than as the
+        /// squares they were written down as. Three tests, all of which have
+        /// to fail to separate them: the two end caps, and the skin.
+        ///
+        /// The cap tests are what a bare axis-distance would get wrong —
+        /// two tanks stacked end to end have their axes on the same line and
+        /// touch at exactly one face, which is what the whole VAB is built
+        /// out of and must not read as an overlap.
+        [[nodiscard]] bool roundOverlap(const ObbData& a, const ObbData& b)
+        {
+            const Vec3 axisA{a.axes[2]};
+            const Vec3 axisB{b.axes[2]};
+            const Vec3 between = b.center - a.center;
+            // Along each axis: the other cylinder's shadow is its own length
+            // tilted plus its radius across the tilt.
+            const f32 tilt = std::abs(glm::dot(axisA, axisB));
+            const f32 across = std::sqrt(std::max(1.0f - tilt * tilt, 0.0f));
+            if (std::abs(glm::dot(between, axisA)) >
+                a.halfExtents.z + b.halfExtents.z * tilt + b.roundRadius * across)
+            {
+                return false;
+            }
+            if (std::abs(glm::dot(between, axisB)) >
+                b.halfExtents.z + a.halfExtents.z * tilt + a.roundRadius * across)
+            {
+                return false;
+            }
+            const Vec3 endA = axisA * a.halfExtents.z;
+            const Vec3 endB = axisB * b.halfExtents.z;
+            return segmentDistance(a.center - endA, a.center + endA, b.center - endB,
+                                   b.center + endB) < a.roundRadius + b.roundRadius;
+        }
 
         /// Standard 15-axis OBB separating-axis test.
         [[nodiscard]] bool obbOverlap(const ObbData& a, const ObbData& b)
@@ -864,6 +957,22 @@ namespace sw::parts
             // says what it bumps into is not second-guessed.
             if (!definition.hitboxes.empty())
             {
+                // IS THIS PART ROUND? The hitbox format has no shape in it —
+                // it never needed one, because a box is a fine hull for
+                // resting on the ground and for a wake. It is not a fine hull
+                // for deciding whether two tanks touch. A hull whose x and y
+                // half-extents are equal, on a part whose colliders are round
+                // primitives, IS a cylinder written down as a box, and this is
+                // where it is read back as one. Nothing has to be re-authored
+                // and the format has not changed.
+                bool roundColliders = false;
+                bool boxColliders = false;
+                for (const PartShape& shape : definition.shapes)
+                {
+                    if (!shape.collider) { continue; }
+                    if (shape.kind == ShapeKind::Box) { boxColliders = true; }
+                    else { roundColliders = true; }
+                }
                 for (const HitBox& hit : definition.hitboxes)
                 {
                     ObbData box{};
@@ -871,6 +980,12 @@ namespace sw::parts
                     box.halfExtents =
                         glm::max(glm::abs(hit.halfExtents) - Vec3{margin}, Vec3{0.01f});
                     box.axes = glm::mat3_cast(rotation);
+                    if (roundColliders && !boxColliders &&
+                        std::abs(std::abs(hit.halfExtents.x) -
+                                 std::abs(hit.halfExtents.y)) < 1.0e-3f)
+                    {
+                        box.roundRadius = box.halfExtents.x;
+                    }
                     out.push_back(box);
                 }
                 return;
@@ -892,6 +1007,11 @@ namespace sw::parts
                 box.halfExtents =
                     glm::max(shapeBoxHalfExtents(shape) - Vec3{margin}, Vec3{0.01f});
                 box.axes = glm::mat3_cast(worldRotation);
+                if (shape.kind != ShapeKind::Box)
+                {
+                    // Straight from the primitive: no guessing needed here.
+                    box.roundRadius = std::max(box.halfExtents.x, box.halfExtents.y);
+                }
                 out.push_back(box);
             }
         };
@@ -904,12 +1024,153 @@ namespace sw::parts
         {
             for (const ObbData& b : boxesB)
             {
-                if (obbOverlap(a, b))
+                // Round against round is a cylinder test; anything else keeps
+                // the boxes, which are conservative in the direction that is
+                // safe — they refuse a placement rather than allowing one that
+                // would put metal through metal.
+                const bool round = a.roundRadius > 0.0f && b.roundRadius > 0.0f;
+                if (round ? roundOverlap(a, b) : obbOverlap(a, b))
                 {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    PlacementPiece symmetryClone(const PlacementPiece& piece, u32 index, u32 count)
+    {
+        if (count < 2 || index == 0)
+        {
+            return piece;
+        }
+        constexpr f32 kTwoPi = 6.28318530717958647692f;
+        const Quat spin = glm::angleAxis(
+            kTwoPi * static_cast<f32>(index % count) / static_cast<f32>(count),
+            Vec3{0.0f, 0.0f, 1.0f});
+        return {piece.definition, spin * piece.position, spin * piece.rotation};
+    }
+
+    bool placementCollides(std::span<const PlacementPiece> candidates,
+                           std::span<const PlacementPiece> placed,
+                           std::span<const i32> attachedTo, f32 margin, i32* outBlockedBy)
+    {
+        const auto isParent = [attachedTo](usize index) {
+            for (const i32 parent : attachedTo)
+            {
+                if (parent == static_cast<i32>(index)) { return true; }
+            }
+            return false;
+        };
+        for (const PlacementPiece& candidate : candidates)
+        {
+            if (candidate.definition == nullptr)
+            {
+                continue;
+            }
+            for (usize i = 0; i < placed.size(); ++i)
+            {
+                // THE PARTS IT IS BEING BOLTED TO ARE NOT OBSTACLES. See the
+                // header: this one test is the difference between a radial
+                // part that may be put anywhere round its parent and one that
+                // may only be put at four compass points.
+                if (isParent(i) || placed[i].definition == nullptr)
+                {
+                    continue;
+                }
+                if (partsOverlap(*candidate.definition, candidate.position,
+                                 candidate.rotation, *placed[i].definition,
+                                 placed[i].position, placed[i].rotation, margin))
+                {
+                    if (outBlockedBy != nullptr) { *outBlockedBy = static_cast<i32>(i); }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+} // namespace sw::parts
+
+namespace sw::parts
+{
+    namespace
+    {
+        /// One quad of the lathe, wound outward, with a flat normal — the
+        /// panels ARE flat, and smoothing their normals would draw a cone
+        /// where the part is a box.
+        void pushFairingQuad(MeshData& mesh, const Vec3& a, const Vec3& b, const Vec3& c,
+                             const Vec3& d, const Vec4& color)
+        {
+            Vec3 normal = glm::cross(c - a, d - b);
+            const f32 length = glm::length(normal);
+            if (!(length > 1.0e-9f))
+            {
+                return;
+            }
+            normal /= length;
+            const Vec3 centre = (a + b + c + d) * 0.25f;
+            if (glm::dot(normal, Vec3{centre.x, centre.y, 0.0f}) < 0.0f)
+            {
+                normal = -normal;
+            }
+            const u32 base = static_cast<u32>(mesh.vertices.size());
+            for (const Vec3& corner : {a, b, c, d})
+            {
+                mesh.vertices.push_back({corner, normal, color, Vec2{0.0f}});
+            }
+            const bool flipped = glm::dot(glm::cross(b - a, d - a), normal) < 0.0f;
+            if (flipped)
+            {
+                mesh.indices.insert(mesh.indices.end(),
+                                    {base, base + 3u, base + 2u, base, base + 2u,
+                                     base + 1u});
+            }
+            else
+            {
+                mesh.indices.insert(mesh.indices.end(),
+                                    {base, base + 1u, base + 2u, base, base + 2u,
+                                     base + 3u});
+            }
+        }
+
+        void buildFairingBand(MeshData& mesh, const FairingComponent& fairing, u32 side,
+                              const Vec4& color)
+        {
+            for (u32 ring = 1; ring < fairing.ringCount; ++ring)
+            {
+                pushFairingQuad(mesh, fairingCorner(fairing, ring - 1, side),
+                                fairingCorner(fairing, ring - 1, side + 1),
+                                fairingCorner(fairing, ring, side + 1),
+                                fairingCorner(fairing, ring, side), color);
+            }
+        }
+    } // namespace
+
+    MeshData buildFairingMesh(const FairingComponent& fairing, const Vec4& color)
+    {
+        MeshData mesh;
+        if (fairing.ringCount < 2)
+        {
+            return mesh;
+        }
+        const u32 sides = std::clamp(fairing.sides, FairingComponent::kMinSides,
+                                     FairingComponent::kMaxSides);
+        for (u32 side = 0; side < sides; ++side)
+        {
+            buildFairingBand(mesh, fairing, side, color);
+        }
+        return mesh;
+    }
+
+    MeshData buildFairingPanelMesh(const FairingComponent& fairing, u32 side,
+                                   const Vec4& color)
+    {
+        MeshData mesh;
+        if (fairing.ringCount < 2)
+        {
+            return mesh;
+        }
+        buildFairingBand(mesh, fairing, side, color);
+        return mesh;
     }
 } // namespace sw::parts

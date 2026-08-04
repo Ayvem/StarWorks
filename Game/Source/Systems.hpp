@@ -157,6 +157,28 @@ namespace game
         void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
     };
 
+    /// Physics lane: debris on a clock.
+    ///
+    /// A jettisoned shroud is worth watching for as long as it is still near
+    /// the rocket that threw it. Past that it is bodies to integrate, meshes to
+    /// draw and entities to save, for a picture nobody is looking at — so each
+    /// piece carries how long it has left and takes itself away.
+    class DebrisLifetimeSystem final : public sw::ecs::System
+    {
+    public:
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "DebrisLifetimeSystem";
+        }
+
+        [[nodiscard]] sw::ecs::SystemAccess access() const override
+        {
+            return sw::ecs::SystemAccess{}.write<DebrisComponent>();
+        }
+
+        void update(sw::ecs::World& world, sw::f32 deltaSeconds) override;
+    };
+
     /// Automation lane: solar wings trickle-charge their vessel's
     /// batteries (flat rate while deployed; eclipse awareness later).
     class SolarChargeSystem final : public sw::ecs::System

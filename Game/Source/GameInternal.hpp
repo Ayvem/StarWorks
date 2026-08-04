@@ -628,6 +628,80 @@ namespace game
             return palette;
         }
 
+        // ---- F49: the palette, in sections -----------------------------------
+        //
+        // Twenty-one vessel parts in one flat column, and the column had room
+        // for sixteen: the five ENDURANCE pieces past the bottom of it were
+        // not hard to find, they were IMPOSSIBLE to reach — no button was ever
+        // emitted for them. Sections fix the arithmetic and the finding at
+        // once: five headers plus whichever one is open is fifteen rows, and
+        // the ten-piece Endurance kit stops burying the rocket parts.
+        inline constexpr std::string_view kPaletteGroupNames[] = {
+            "COMMAND", "PROPULSION", "STRUCTURE", "POWER", "AERO", "ENDURANCE"};
+
+        /// What a part is FOR. The type in the file is nearly the same answer,
+        /// but not quite: a fin and a solar panel are different types and the
+        /// same shelf, and the Endurance kit is one shelf whatever its pieces
+        /// are made of.
+        [[nodiscard]] inline PaletteGroup paletteGroupOf(
+            const sw::parts::PartDefinition& definition)
+        {
+            if (definition.id >= sw::parts::kPartEnduranceHabitat)
+            {
+                return PaletteGroup::Endurance;
+            }
+            switch (definition.type)
+            {
+            case sw::parts::PartType::FuelTank:
+            case sw::parts::PartType::Engine:
+                return PaletteGroup::Propulsion;
+            case sw::parts::PartType::Battery:
+            case sw::parts::PartType::SolarPanel:
+                return PaletteGroup::Power;
+            case sw::parts::PartType::Wing:
+                return PaletteGroup::Aero;
+            case sw::parts::PartType::Structural:
+                return PaletteGroup::Command;
+            default:
+                return PaletteGroup::Structure;
+            }
+        }
+
+        /// One line of the palette: either a section header or a part in the
+        /// open section.
+        struct PaletteRow
+        {
+            const sw::parts::PartDefinition* part = nullptr; // null on a header
+            PaletteGroup group = PaletteGroup::Command;
+            bool header = false;
+        };
+
+        /// The rows as drawn, top to bottom. ONE function, called by the
+        /// layout and by the click handler, because a row index that meant
+        /// two different things is the bug this file already fixed once.
+        [[nodiscard]] inline std::vector<PaletteRow> paletteRows(PaletteGroup open)
+        {
+            const auto catalogue = rocketPartPalette();
+            std::vector<PaletteRow> rows;
+            for (sw::u32 g = 0; g < static_cast<sw::u32>(PaletteGroup::Count); ++g)
+            {
+                const auto group = static_cast<PaletteGroup>(g);
+                rows.push_back({nullptr, group, true});
+                if (group != open)
+                {
+                    continue;
+                }
+                for (const sw::parts::PartDefinition* definition : catalogue)
+                {
+                    if (paletteGroupOf(*definition) == group)
+                    {
+                        rows.push_back({definition, group, false});
+                    }
+                }
+            }
+            return rows;
+        }
+
         // ---- planetary surface palettes (per-vertex, deterministic) -----------
         enum class SurfaceStyle
         {

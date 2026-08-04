@@ -111,6 +111,19 @@ namespace sw::parts
             const BillOfMaterials bill = partCost(*definition);
             total.ironKg += bill.ironKg;
             total.copperKg += bill.copperKg;
+            // F48: A DRAWN SHELL IS METAL TOO, and it is the one part of a
+            // design whose bill is not in any file. Aluminium panel over ribs
+            // is structure, so it is priced the way structure is — and iron
+            // stays the remainder, which is what keeps the bill equal to the
+            // dry mass to the last gram.
+            if (fairingIsFlying(record.fairing))
+            {
+                const f64 shellMass = fairingMassKg(record.fairing);
+                const f64 copper =
+                    std::clamp(copperFraction(PartType::Fairing), 0.0, 1.0);
+                total.copperKg += shellMass * copper;
+                total.ironKg += shellMass - shellMass * copper;
+            }
         }
         return total;
     }
@@ -139,6 +152,10 @@ namespace sw::parts
             if (const PartDefinition* definition = findDefinition(record.definitionId))
             {
                 mass += definition->dryMassKg;
+            }
+            if (fairingIsFlying(record.fairing))
+            {
+                mass += fairingMassKg(record.fairing);
             }
         }
         return mass;
@@ -220,6 +237,36 @@ namespace sw::parts
                     static_cast<u8>(std::clamp(entry.number("childPoint", 0.0), 0.0, 255.0));
                 record.symmetryGroup =
                     static_cast<i32>(entry.number("symmetryGroup", -1.0));
+                // THE SHELL, as a flat list of height/radius pairs. Absent on
+                // every part that is not a fairing base, which is every part
+                // written before F48 — so an old design loads unchanged.
+                if (const json::Value* shell = entry.find("fairing"))
+                {
+                    record.fairing.sides = static_cast<u32>(
+                        std::clamp(shell->number("sides", 8.0), 3.0, 24.0));
+                    record.fairing.closed =
+                        (shell->number("closed", 0.0) != 0.0) ? 1u : 0u;
+                    if (const json::Value* rings = shell->find("rings"))
+                    {
+                        for (const json::Value& ring : rings->asArray())
+                        {
+                            if (record.fairing.ringCount >=
+                                parts::FairingComponent::kMaxRings)
+                            {
+                                break;
+                            }
+                            const json::Array& pair = ring.asArray();
+                            if (pair.size() < 2)
+                            {
+                                continue;
+                            }
+                            record.fairing.rings[record.fairing.ringCount] = {
+                                static_cast<f32>(pair[0].asNumber()),
+                                static_cast<f32>(pair[1].asNumber())};
+                            ++record.fairing.ringCount;
+                        }
+                    }
+                }
                 // A part is always written after its parent, so a parent
                 // index that does not point BACKWARDS is a broken file. It
                 // costs a loose part, never a read off the end of the vector
@@ -259,6 +306,23 @@ namespace sw::parts
             entry.set("childPoint", json::Value(static_cast<f64>(record.childPoint)));
             entry.set("symmetryGroup",
                       json::Value(static_cast<f64>(record.symmetryGroup)));
+            if (record.fairing.ringCount > 0)
+            {
+                json::Value shell = json::Value::makeObject();
+                shell.set("sides", json::Value(static_cast<f64>(record.fairing.sides)));
+                shell.set("closed",
+                          json::Value(static_cast<f64>(record.fairing.closed)));
+                json::Value rings = json::Value::makeArray();
+                for (u32 i = 0; i < record.fairing.ringCount; ++i)
+                {
+                    json::Value pair = json::Value::makeArray();
+                    pair.push(json::Value(static_cast<f64>(record.fairing.rings[i].x)));
+                    pair.push(json::Value(static_cast<f64>(record.fairing.rings[i].y)));
+                    rings.push(std::move(pair));
+                }
+                shell.set("rings", std::move(rings));
+                entry.set("fairing", std::move(shell));
+            }
             parts.push(std::move(entry));
         }
         root.set("parts", std::move(parts));

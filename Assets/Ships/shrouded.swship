@@ -1,0 +1,121 @@
+{
+ "name": "SHROUDED",
+ "parts": [
+  {
+   "definitionId": 1,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": -1,
+   "parentPoint": 0,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 2,
+   "position": [
+    0,
+    0,
+    3.2
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 0,
+   "parentPoint": 1,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 11,
+   "position": [
+    0,
+    0,
+    -2.52
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 0,
+   "parentPoint": 0,
+   "childPoint": 1,
+   "symmetryGroup": -1,
+   "fairing": {
+    "sides": 8,
+    "closed": 1,
+    "rings": [
+     [
+      0.42,
+      1.25
+     ],
+     [
+      1.4,
+      1.25
+     ],
+     [
+      3.2,
+      1.25
+     ],
+     [
+      4.6,
+      0.7
+     ],
+     [
+      5.6,
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "definitionId": 8,
+   "position": [
+    0,
+    0,
+    -4.04
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 2,
+   "parentPoint": 0,
+   "childPoint": 1,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 5,
+   "position": [
+    0.9,
+    0,
+    -4.04
+   ],
+   "rotation": [
+    0.7071068,
+    0,
+    0,
+    0.7071068
+   ],
+   "parent": 3,
+   "parentPoint": 2,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  }
+ ]
+}

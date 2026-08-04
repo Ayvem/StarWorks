@@ -135,6 +135,13 @@
       "direction": [0, 0, -1],
       "type": "stack",
       "size": 0.8999999761581421
+    },
+    {
+      "name": "bottom",
+      "position": [0, 0, 1.0],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 0.8500000238418579
     }
   ],
   "hitboxes": [

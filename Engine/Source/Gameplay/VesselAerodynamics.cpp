@@ -156,7 +156,8 @@ namespace sw::aero
                 m_parts.clear();
                 m_boxes.clear();
                 world.forEach<parts::PartComponent>(
-                    [this, entity](ecs::Entity, parts::PartComponent& part) {
+                    [this, entity, &world](ecs::Entity partEntity,
+                                           parts::PartComponent& part) {
                         if (part.vessel != entity)
                         {
                             return;
@@ -168,9 +169,11 @@ namespace sw::aero
                             return;
                         }
                         const u32 index = static_cast<u32>(m_parts.size());
-                        m_parts.push_back(
-                            PartEntry{findTable(part.definitionId), part.localPosition,
-                                      part.localRotation});
+                        PartEntry entry{findTable(part.definitionId), part.localPosition,
+                                        part.localRotation};
+                        entry.fairing =
+                            world.tryGetComponent<parts::FairingComponent>(partEntity);
+                        m_parts.push_back(entry);
 
                         auto cached = m_hullCache.find(part.definitionId);
                         if (cached == m_hullCache.end())
@@ -190,6 +193,41 @@ namespace sw::aero
                 if (m_parts.empty())
                 {
                     return;
+                }
+
+                // ---- WHO IS INSIDE A SHELL ---------------------------------
+                //
+                // Done once, here, rather than per part per tick inside the
+                // sum: the number of fairings on a craft is nought or one and
+                // the number of parts is dozens, so the loop that costs
+                // anything is the one over parts.
+                //
+                // A shielded part contributes NOTHING — not a reduced
+                // exposure, nothing. `exposure()` deliberately never returns
+                // zero, because a part in another part's wake still feels base
+                // pressure and a stage that goes weightless in the airstream
+                // reads as a bug; a part inside a sealed shroud is a different
+                // fact, and the honest number for it is zero.
+                for (usize p = 0; p < m_parts.size(); ++p)
+                {
+                    const PartEntry& shell = m_parts[p];
+                    if (shell.fairing == nullptr || shell.fairing->closed == 0 ||
+                        shell.fairing->jettisoned != 0)
+                    {
+                        continue;
+                    }
+                    const Quat inverseShell = glm::inverse(shell.localRotation);
+                    for (usize q = 0; q < m_parts.size(); ++q)
+                    {
+                        if (q == p || m_parts[q].shielded)
+                        {
+                            continue;
+                        }
+                        const Vec3 inShellFrame =
+                            inverseShell * (m_parts[q].localPosition - shell.localPosition);
+                        m_parts[q].shielded =
+                            parts::fairingEncloses(*shell.fairing, inShellFrame);
+                    }
                 }
 
                 // ---- sum the parts ---------------------------------------
@@ -237,6 +275,38 @@ namespace sw::aero
                 for (usize p = 0; p < m_parts.size(); ++p)
                 {
                     const PartEntry& part = m_parts[p];
+                    if (part.shielded)
+                    {
+                        continue; // inside a shroud: the air never reaches it
+                    }
+                    if (part.fairing != nullptr && part.fairing->closed != 0 &&
+                        part.fairing->jettisoned == 0)
+                    {
+                        // THE SHELL ANSWERS FROM ITS OWN PANELS. Same three
+                        // terms the offline forge integrates per pixel on every
+                        // other part — impact, base pressure, skin friction —
+                        // summed per flat quad instead, which a fairing is made
+                        // of and a nose cone is not.
+                        const Quat inverseFairing = glm::inverse(part.localRotation);
+                        const Vec3 flowPart =
+                            glm::normalize(inverseFairing * flowVessel);
+                        Vec3 shellForce{0.0f};
+                        Vec3 shellMoment{0.0f};
+                        parts::fairingAero(*part.fairing, flowPart, shellForce,
+                                           shellMoment);
+                        const f32 scale = static_cast<f32>(q);
+                        const Vec3 rotatedForce = (part.localRotation * shellForce) * scale;
+                        const Vec3 rotatedMoment =
+                            (part.localRotation * shellMoment) * scale;
+                        const Vec3 lever = part.localPosition - vessel.centreOfMass;
+                        force += rotatedForce;
+                        moment += rotatedMoment + glm::cross(lever, rotatedForce);
+                        exposedArea += parts::fairingAreaM2(*part.fairing) * 0.5;
+                        const f32 shellWeight = glm::length(rotatedForce);
+                        pressureWeighted += part.localPosition * shellWeight;
+                        pressureWeight += shellWeight;
+                        continue;
+                    }
                     if (part.table == nullptr)
                     {
                         continue; // no table: this part is aerodynamically absent

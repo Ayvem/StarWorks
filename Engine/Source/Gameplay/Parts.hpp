@@ -53,6 +53,10 @@ namespace sw::parts
         Decoupler,
         CargoBay,
         Structural,
+        /// A shell the player draws in the editor. Its geometry, its mass and
+        /// its drag all come from a profile rather than from this file — see
+        /// Gameplay/Fairing.hpp.
+        Fairing,
 
         Count
     };
@@ -420,6 +424,11 @@ namespace sw::parts
     /// F43 — the orbital instrument. Armed from a stable orbit, it fills in
     /// the survey under its own ground track.
     inline constexpr u32 kPartOrbitalSurveyor = 10;
+    /// F48: the base a drawn shell grows out of.
+    inline constexpr u32 kPartFairingBase = 11;
+    /// F49: the one that lets go SIDEWAYS — a booster on the flank of a core
+    /// is held by a surface joint, and the flat decoupler cannot cut one.
+    inline constexpr u32 kPartDecouplerRadial = 12;
 
     // Buildings share the same catalogue and the same stable-id space: they
     // are parts with an industrial block, edited in the same Part Studio.
@@ -728,22 +737,114 @@ namespace sw::parts
                              f64 strengthN, f64 breakForceN);
 
     /// Splits `parts` (and everything only connected through them) off
-    /// `vessel` into a NEW vessel root cloned from the old one (pose,
-    /// velocity + a gentle separation impulse along +Z of the vessel).
-    /// Returns the new root (null if nothing detached).
+    /// `vessel` into a NEW vessel root cloned from the old one (pose and
+    /// velocity), then pushes the two apart along `separationWorld` — the
+    /// direction the dropped piece leaves in, which is the severed joint's
+    /// own axis and NOT a fixed direction in the vessel's frame: a booster on
+    /// a radial decoupler has to go sideways or it takes the core with it.
+    /// A zero direction means no shove. Returns the new root (null if
+    /// nothing detached).
     ecs::Entity splitVessel(ecs::World& world, ecs::Entity vessel,
-                            std::span<const ecs::Entity> partsToDetach);
+                            std::span<const ecs::Entity> partsToDetach,
+                            const Vec3& separationWorld = Vec3{0.0f},
+                            f64 separationMps = 0.0);
 
-    /// KSP-style decoupling: severs the decoupler's TAIL-side joint (the
-    /// one leading away from the root part) and splits the disconnected
+    /// KSP-style decoupling: severs the joint on the decoupler's CHILD side
+    /// (the one leading away from the root part) and splits the disconnected
     /// component into a new vessel. Returns the new vessel root.
     ecs::Entity decoupleAt(ecs::World& world, ecs::Entity decouplerPart);
 
-    /// Docking: merges portB's whole vessel INTO portA's vessel (parts are
-    /// re-localized into A's frame, B's root entity is destroyed) and
-    /// joins the two ports. portA's vessel survives — pass the player's
-    /// side as A. Returns false if the ports belong to the same vessel.
-    bool dockVessels(ecs::World& world, ecs::Entity portPartA, ecs::Entity portPartB);
+    /// Is this engine's exhaust bolted shut? A part on the nozzle side of an
+    /// engine — a decoupler under it, the stage below — is a physical stop in
+    /// front of the flame, and an engine behind one produces nothing: no
+    /// thrust, no flow, no plume. It comes back the moment the obstruction is
+    /// staged away, because the answer is read from the JOINTS every tick
+    /// rather than stored anywhere.
+    ///
+    /// Which nodes count is geometry, not a flag in a file: the exhaust
+    /// leaves along -thrustDirection, so any node facing that way is a node
+    /// something can be bolted over.
+    [[nodiscard]] bool engineExhaustBlocked(const ecs::World& world, ecs::Entity part);
+
+    // ---- docking -----------------------------------------------------------------
+    //
+    // A DOCK IS A CAPTURE, NOT A PROXIMITY. The first version merged any two
+    // vessels whose ports came within four metres of each other, in any
+    // orientation, at any speed — so two craft passing at a kilometre a second
+    // with their ports back to back became one craft, and a ship that drifted
+    // near a station was swallowed sideways. What makes it a dock is that the
+    // two mating FACES touch, look at each other, are approached face-on, and
+    // are closing slowly. All four, or nothing happens.
+
+    /// What a dock has to clear. The defaults are a hand-flown approach: a
+    /// third of a metre of gap, eighteen degrees of misalignment, an approach
+    /// no more than thirty-seven degrees off the axis, and half a metre a
+    /// second of closing speed — which is brisk for a docking and impossible
+    /// to hit by accident while flying past.
+    struct DockingLimits
+    {
+        f32 gapM = 0.35f;
+        f32 facing = 0.95f;    // -dot of the two node directions
+        f32 onAxis = 0.80f;    // how face-on the approach is
+        f32 closingMps = 0.5f;
+    };
+
+    /// A possible dock between two ports, and the numbers it was judged on.
+    /// `valid` is the answer; the rest is there so a HUD can tell a pilot
+    /// WHICH of the four they are failing.
+    struct DockingCapture
+    {
+        ecs::Entity partA{};
+        ecs::Entity partB{};
+        u8 nodeA = 0;
+        u8 nodeB = 0;
+        f32 gapM = 0.0f;
+        f32 facing = -1.0f;
+        f32 onAxis = -1.0f;
+        /// Signed: positive is approaching, negative is drifting apart.
+        f32 closingMps = 0.0f;
+        bool valid = false;
+    };
+
+    /// Judges every free node pair between two ports and returns the best.
+    ///
+    /// A node already carrying a joint is not a candidate, which is what keeps
+    /// a docking ring's structural node — the one bolting it to its own rocket
+    /// — out of the running without any part file having to name its faces.
+    [[nodiscard]] DockingCapture dockingCapture(const ecs::World& world,
+                                                ecs::Entity portPartA,
+                                                ecs::Entity portPartB,
+                                                const DockingLimits& limits = {});
+
+    /// Docking: merges portB's whole vessel INTO portA's vessel and joins the
+    /// two ports at the nodes the capture chose.
+    ///
+    /// The absorbed craft is SNAPPED onto the mating face first — the latches
+    /// pull the two rings together — then re-localized into A's frame, so the
+    /// merged craft is aligned rather than frozen at whatever angle it drifted
+    /// in at. Roll is preserved: the snap is the shortest arc.
+    ///
+    /// MOMENTUM IS CONSERVED, linear and angular. The old merge kept A's
+    /// velocity and threw B's away, which made docking a perfectly inelastic
+    /// collision with A as an infinite-mass wall: a ten-tonne tug that docked a
+    /// five-hundred-tonne station taught the station the tug's velocity.
+    ///
+    /// portA's vessel survives and B's root entity is destroyed — so anything
+    /// the survivor needs from B's root (a game layer's control and autopilot
+    /// components, its map marker) must be taken BEFORE this is called.
+    bool dockVessels(ecs::World& world, const DockingCapture& capture);
+
+    /// Releases the docking joint on `portPart` and splits the craft along it.
+    /// The side holding `portPart` keeps the original root; the other side
+    /// becomes a new vessel, and the two are pushed apart with an equal and
+    /// opposite impulse so the pair's momentum is unchanged. Returns the new
+    /// root, or a null entity when that port is not docked to anything.
+    ecs::Entity undockAt(ecs::World& world, ecs::Entity portPart,
+                         f32 separationMps = 0.35f);
+
+    /// The docking joint a port is holding, or a null entity.
+    [[nodiscard]] ecs::Entity dockingJointOf(const ecs::World& world,
+                                             ecs::Entity portPart);
 
     // ---- systems -----------------------------------------------------------------
 

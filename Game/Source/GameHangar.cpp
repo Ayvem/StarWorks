@@ -204,6 +204,16 @@ namespace game
 
     void StarWorksGame::editorCursorRay(sw::Vec3& outOrigin, sw::Vec3& outDirection)
     {
+        // A CAPTURE HAS NO MOUSE, and the editor is nothing but a mouse. The
+        // hooks that photograph it aim this ray instead — everything
+        // downstream, the ghost, the symmetry, the red or green and the
+        // commit, is the code a click runs.
+        if (m_editorRayScripted)
+        {
+            outOrigin = m_editorRayOrigin;
+            outDirection = m_editorRayDirection;
+            return;
+        }
         sw::u32 width = 0;
         sw::u32 height = 0;
         window().framebufferSize(width, height);
@@ -222,6 +232,61 @@ namespace game
         const sw::Quat undo = glm::inverse(kHangarDisplay);
         outOrigin = undo * sw::Vec3(m_hangarCamera.position());
         outDirection = undo * glm::normalize(b - a);
+    }
+
+    void StarWorksGame::debugPlacePart(const char* spec)
+    {
+        if (spec == nullptr || !m_editorMode)
+        {
+            SW_LOG_ERROR("Game", "SW_PLACE: not in the hangar — set SW_HANGAR too");
+            return;
+        }
+        // <definitionId>[,<symmetry>[,<azimuthDeg>[,<height>]]]
+        char* cursor = nullptr;
+        const sw::u32 definitionId =
+            static_cast<sw::u32>(std::strtoul(spec, &cursor, 10));
+        const sw::u32 symmetry =
+            (*cursor == ',') ? static_cast<sw::u32>(std::strtoul(cursor + 1, &cursor, 10))
+                             : 1u;
+        const sw::f32 azimuth =
+            (*cursor == ',') ? std::strtof(cursor + 1, &cursor) : 0.0f;
+        const sw::f32 height = (*cursor == ',') ? std::strtof(cursor + 1, &cursor) : 0.0f;
+        if (sw::parts::findDefinition(definitionId) == nullptr)
+        {
+            SW_LOG_ERROR("Game", "SW_PLACE: no part with id {}", definitionId);
+            return;
+        }
+        m_heldDefinition = definitionId;
+        m_heldSubtree.clear();
+        m_heldRotation = sw::Quat{1.0f, 0.0f, 0.0f, 0.0f};
+        m_symmetryCount = std::max(symmetry, 1u);
+
+        // AIM AT THE STACK FROM OUTSIDE IT, along the azimuth asked for: the
+        // ray a player's cursor would cast standing on that side of the deck.
+        constexpr sw::f32 kDegrees = 3.14159265f / 180.0f;
+        const sw::Vec3 inward{-std::cos(azimuth * kDegrees), -std::sin(azimuth * kDegrees),
+                              0.0f};
+        m_editorRayScripted = true;
+        m_editorRayDirection = glm::normalize(inward);
+        m_editorRayOrigin = -inward * 40.0f + sw::Vec3{0.0f, 0.0f, height};
+        computeGhost();
+        const bool active = m_ghost.active;
+        const bool valid = m_ghost.valid;
+        commitGhost();
+        m_editorRayScripted = false;
+        if (!active || !valid)
+        {
+            SW_LOG_ERROR("Game",
+                         "SW_PLACE: part {} at {:.0f} deg x{} REFUSED (active {}, "
+                         "collides {}, overloaded {}, parent {}, blocked by {})",
+                         definitionId, static_cast<double>(azimuth), m_symmetryCount,
+                         active, m_ghostCollides, m_ghostOverloaded, m_ghost.parentIndex,
+                         m_ghostBlockedBy);
+            return;
+        }
+        SW_LOG_INFO("Game", "SW_PLACE: part {} placed at {:.0f} deg, symmetry x{} -> {} parts",
+                    definitionId, static_cast<double>(azimuth), m_symmetryCount,
+                    m_blueprint.size());
     }
 
     sw::f64 StarWorksGame::partWetMassKg(sw::u32 definitionId) const
@@ -373,61 +438,38 @@ namespace game
 
         // ---- validation: real compound-collider overlap + joint load -----------
         // The candidate set = held root (+ its grabbed subtree) (+ symmetry
-        // clones for radial placement). Every candidate is tested against
-        // every placed part with the SAME OBB test the game trusts.
-        struct Candidate
+        // clones for radial placement), tested by the engine's placement rule
+        // — which knows that the part you are bolting ON to is not something
+        // you can collide with.
+        std::vector<sw::parts::PlacementPiece> candidates;
+        std::vector<sw::parts::PlacementPiece> placed;
+        placed.reserve(m_blueprint.size());
+        for (const BlueprintPart& part : m_blueprint)
         {
-            const sw::parts::PartDefinition* definition;
-            sw::Vec3 position;
-            sw::Quat rotation;
-        };
-        std::vector<Candidate> candidates;
-        const bool surface = m_ghost.parentPoint == 255;
-        const sw::u32 cloneCount =
-            (surface && m_heldSubtree.empty()) ? m_symmetryCount : 1;
-        for (sw::u32 k = 0; k < cloneCount; ++k)
+            placed.push_back({sw::parts::findDefinition(part.definitionId),
+                              part.localPosition, part.localRotation});
+        }
+        for (sw::u32 k = 0; k < ghostCloneCount(); ++k)
         {
-            const sw::f32 angle =
-                2.0f * 3.14159265f * static_cast<sw::f32>(k) / cloneCount;
-            const sw::Quat spin = glm::angleAxis(angle, sw::Vec3{0, 0, 1});
-            candidates.push_back(
-                {held, spin * m_ghost.position, spin * m_ghost.rotation});
+            candidates.push_back(sw::parts::symmetryClone(
+                {held, m_ghost.position, m_ghost.rotation}, k, ghostCloneCount()));
             for (const BlueprintPart& rel : m_heldSubtree)
             {
                 const auto* relDef = sw::parts::findDefinition(rel.definitionId);
                 if (relDef != nullptr)
                 {
-                    candidates.push_back(
-                        {relDef,
-                         spin * (m_ghost.position + m_ghost.rotation * rel.localPosition),
-                         spin * (m_ghost.rotation * rel.localRotation)});
+                    candidates.push_back(sw::parts::symmetryClone(
+                        {relDef, m_ghost.position + m_ghost.rotation * rel.localPosition,
+                         m_ghost.rotation * rel.localRotation},
+                        k, ghostCloneCount()));
                 }
             }
         }
-        bool collides = false;
-        for (const Candidate& candidate : candidates)
-        {
-            for (const BlueprintPart& placed : m_blueprint)
-            {
-                const auto* placedDef = sw::parts::findDefinition(placed.definitionId);
-                if (placedDef == nullptr)
-                {
-                    continue;
-                }
-                if (sw::parts::partsOverlap(*candidate.definition, candidate.position,
-                                            candidate.rotation, *placedDef,
-                                            placed.localPosition, placed.localRotation,
-                                            0.05f))
-                {
-                    collides = true;
-                    break;
-                }
-            }
-            if (collides)
-            {
-                break;
-            }
-        }
+        const std::vector<sw::i32> parents = ghostParents(ghostCloneCount());
+        m_ghostBlockedBy = -1;
+        const bool collides = sw::parts::placementCollides(candidates, placed, parents,
+                                                           0.05f, &m_ghostBlockedBy);
+        m_ghostCollides = collides;
 
         sw::f64 childMass = partWetMassKg(m_heldDefinition);
         for (const BlueprintPart& rel : m_heldSubtree)
@@ -437,9 +479,69 @@ namespace game
         const auto* parentDef = sw::parts::findDefinition(
             m_blueprint[static_cast<sw::usize>(m_ghost.parentIndex)].definitionId);
         const bool overloaded =
+            parentDef != nullptr &&
             childMass * 12.0 >
-            std::min(held->breakingForceN, parentDef->breakingForceN);
+                std::min(held->breakingForceN, parentDef->breakingForceN);
+        m_ghostOverloaded = overloaded;
         m_ghost.valid = !collides && !overloaded;
+    }
+
+    /// How many copies this placement makes. Symmetry is a RADIAL idea — a
+    /// ring of boosters round a core — so it applies to surface attachment
+    /// only, and only to a part taken fresh from the palette: a grabbed
+    /// subtree already has a shape of its own to keep.
+    sw::u32 StarWorksGame::ghostCloneCount() const
+    {
+        return (m_ghost.parentPoint == 255 && m_heldSubtree.empty()) ? m_symmetryCount
+                                                                     : 1u;
+    }
+
+    /// WHAT EACH COPY BOLTS TO. Three decouplers round a core and then three
+    /// boosters on them is the shape this room exists to build, and hanging
+    /// all three boosters off the ONE decoupler the cursor touched makes a
+    /// rocket that looks right and stages wrong — firing that decoupler would
+    /// drop a booster from the far side. When the parent is itself part of a
+    /// ring of the same size, copy k goes on ring member k, counted from the
+    /// one under the cursor so the piece you aimed at is the piece you get.
+    ///
+    /// The validity test needs the same answer as the commit: every copy
+    /// touches ITS parent by construction, and excluding only the first makes
+    /// every other copy read as a collision with what it is mounted on.
+    std::vector<sw::i32> StarWorksGame::ghostParents(sw::u32 cloneCount) const
+    {
+        std::vector<sw::i32> parents(std::max(cloneCount, 1u), m_ghost.parentIndex);
+        if (cloneCount < 2 || m_ghost.parentIndex < 0)
+        {
+            return parents;
+        }
+        const sw::i32 parentGroup =
+            m_blueprint[static_cast<sw::usize>(m_ghost.parentIndex)].symmetryGroup;
+        if (parentGroup < 0)
+        {
+            return parents;
+        }
+        std::vector<sw::i32> ring;
+        for (sw::usize i = 0; i < m_blueprint.size(); ++i)
+        {
+            if (m_blueprint[i].symmetryGroup == parentGroup)
+            {
+                ring.push_back(static_cast<sw::i32>(i));
+            }
+        }
+        if (ring.size() != cloneCount)
+        {
+            return parents; // a ring of a different size: no sensible pairing
+        }
+        sw::usize first = 0;
+        for (sw::usize i = 0; i < ring.size(); ++i)
+        {
+            if (ring[i] == m_ghost.parentIndex) { first = i; }
+        }
+        for (sw::u32 k = 0; k < cloneCount; ++k)
+        {
+            parents[k] = ring[(first + k) % ring.size()];
+        }
+        return parents;
     }
 
     void StarWorksGame::commitGhost()
@@ -448,21 +550,19 @@ namespace game
         {
             return;
         }
-        const bool surface = m_ghost.parentPoint == 255;
-        const sw::u32 cloneCount =
-            (surface && m_heldSubtree.empty()) ? m_symmetryCount : 1;
+        const sw::u32 cloneCount = ghostCloneCount();
         const sw::i32 group =
             cloneCount > 1 ? m_symmetryNextGroup++ : -1;
+        const std::vector<sw::i32> parents = ghostParents(cloneCount);
         for (sw::u32 k = 0; k < cloneCount; ++k)
         {
-            const sw::f32 angle =
-                2.0f * 3.14159265f * static_cast<sw::f32>(k) / cloneCount;
-            const sw::Quat spin = glm::angleAxis(angle, sw::Vec3{0, 0, 1});
+            const sw::parts::PlacementPiece clone = sw::parts::symmetryClone(
+                {nullptr, m_ghost.position, m_ghost.rotation}, k, cloneCount);
             BlueprintPart part{};
             part.definitionId = m_heldDefinition;
-            part.localPosition = spin * m_ghost.position;
-            part.localRotation = spin * m_ghost.rotation;
-            part.parentIndex = m_ghost.parentIndex;
+            part.localPosition = clone.position;
+            part.localRotation = clone.rotation;
+            part.parentIndex = parents[k];
             part.parentPoint = m_ghost.parentPoint;
             part.childPoint = m_ghost.childPoint;
             part.symmetryGroup = group;
@@ -471,21 +571,33 @@ namespace game
             const sw::i32 subBase = rootIndex + 1;
             for (const BlueprintPart& rel : m_heldSubtree)
             {
+                const sw::parts::PlacementPiece relClone = sw::parts::symmetryClone(
+                    {nullptr, m_ghost.position + m_ghost.rotation * rel.localPosition,
+                     m_ghost.rotation * rel.localRotation},
+                    k, cloneCount);
                 BlueprintPart absolute = rel;
-                absolute.localPosition =
-                    spin * (m_ghost.position + m_ghost.rotation * rel.localPosition);
-                absolute.localRotation =
-                    spin * (m_ghost.rotation * rel.localRotation);
+                absolute.localPosition = relClone.position;
+                absolute.localRotation = relClone.rotation;
                 absolute.parentIndex =
                     rel.parentIndex < 0 ? rootIndex : subBase + rel.parentIndex;
                 absolute.symmetryGroup = -1;
                 m_blueprint.push_back(absolute);
             }
         }
+        const sw::u32 placed = m_heldDefinition;
         m_heldDefinition = 0;
         m_heldSubtree.clear();
         m_blueprintBackup.clear();
         m_ghost = {};
+        // PLACING THE BASE PUTS YOU IN THE TOOL, which is how KSP does it and
+        // is right for the same reason: a fairing base on its own is not a
+        // part anybody wants, it is the first half of one gesture.
+        if (const auto* definition = sw::parts::findDefinition(placed);
+            definition != nullptr && definition->type == sw::parts::PartType::Fairing &&
+            !m_blueprint.empty())
+        {
+            beginFairing(m_blueprint.size() - 1);
+        }
     }
 
     void StarWorksGame::grabPartAt(sw::usize index)
@@ -771,6 +883,14 @@ namespace game
                                            sw::parts::partBoundsRadius(*definition)});
             m_world.addComponent(part, MeshComponent{m_partMeshIds.at(bp.definitionId)});
             attachPartAnimation(part, bp.definitionId);
+            // THE SHELL IS GEOMETRY PER INSTANCE, which nothing else in this
+            // game is: two fairing bases off the same catalogue entry carry
+            // two different shells, so the mesh cannot come from the
+            // definition's table and is built and registered right here.
+            if (sw::parts::fairingIsFlying(bp.fairing))
+            {
+                m_world.addComponent(part, bp.fairing);
+            }
             // A PART THAT CAN BEND CARRIES SOMEWHERE TO PUT THE BEND. Only
             // the ones whose author gave them a stiffness: everything else is
             // rigid, which is what every part in the game was before this
@@ -785,6 +905,14 @@ namespace game
             component.localPosition = bp.localPosition;
             component.localRotation = bp.localRotation;
             m_world.addComponent(part, component);
+            // ...AND THE SHELL IS WELDED ON AFTER THAT, because the mesh
+            // builder asks the part which definition it is and a part that
+            // does not have its PartComponent yet cannot answer. It crashed
+            // exactly once, on the first design that shipped with a shell.
+            if (sw::parts::fairingIsFlying(bp.fairing))
+            {
+                buildFairingShellMesh(part, bp.fairing);
+            }
             // Rocket parts are solid too: you cannot walk through a fuel
             // tank, and a landed booster is furniture like anything else.
             {
@@ -861,6 +989,7 @@ namespace game
             part.parentPoint = record.parentPoint;
             part.childPoint = record.childPoint;
             part.symmetryGroup = record.symmetryGroup;
+            part.fairing = record.fairing;
             parts.push_back(part);
         }
         return parts;
@@ -881,6 +1010,7 @@ namespace game
             record.parentPoint = part.parentPoint;
             record.childPoint = part.childPoint;
             record.symmetryGroup = part.symmetryGroup;
+            record.fairing = part.fairing;
             design.parts.push_back(record);
         }
         return design;
@@ -935,6 +1065,12 @@ namespace game
 
     void StarWorksGame::updateEditor()
     {
+        // THE FAIRING TOOL TAKES THE FRAME. It owns the cursor, the left
+        // button and the right one, and leaving the ghost running underneath
+        // would put a part in your hand while you are drawing a shell with it.
+        // The camera still orbits, because you draw a shroud by looking at it
+        // from more than one side.
+        updateFairing();
         // Hangar camera: right-drag orbits, wheel zooms.
         if (input().isMouseButtonDown(sw::MouseButton::Right))
         {
@@ -1019,6 +1155,18 @@ namespace game
             m_showCenters = !m_showCenters;
         }
 
+        if (m_fairingPreviewDirty)
+        {
+            // OUTSIDE the draw-item collection: registering a mesh reallocates
+            // m_meshes, and every DrawItem already collected holds a raw
+            // pointer into it.
+            rebuildFairingPreview();
+        }
+        if (m_fairingDrawing)
+        {
+            m_ghost = {};
+            return;
+        }
         computeGhost();
     }
 
@@ -1123,23 +1271,21 @@ namespace game
                 !m_ghost.active ? sw::Vec4{0.75f, 0.8f, 0.9f, 0.4f}
                 : m_ghost.valid ? sw::Vec4{0.35f, 1.0f, 0.45f, 0.45f}
                                 : sw::Vec4{1.0f, 0.25f, 0.2f, 0.5f};
-            const bool surface = m_ghost.active && m_ghost.parentPoint == 255;
-            const sw::u32 cloneCount =
-                (surface && m_heldSubtree.empty()) ? m_symmetryCount : 1;
+            const sw::u32 cloneCount = m_ghost.active ? ghostCloneCount() : 1u;
             for (sw::u32 k = 0; k < cloneCount; ++k)
             {
-                const sw::f32 angle =
-                    2.0f * 3.14159265f * static_cast<sw::f32>(k) / cloneCount;
-                const sw::Quat spin = glm::angleAxis(angle, sw::Vec3{0, 0, 1});
-                pushPart(m_heldDefinition, spin * m_ghost.position,
-                         spin * m_ghost.rotation, ghostTint, true);
+                const sw::parts::PlacementPiece clone = sw::parts::symmetryClone(
+                    {nullptr, m_ghost.position, m_ghost.rotation}, k, cloneCount);
+                pushPart(m_heldDefinition, clone.position, clone.rotation, ghostTint,
+                         true);
                 for (const BlueprintPart& rel : m_heldSubtree)
                 {
-                    pushPart(rel.definitionId,
-                             spin * (m_ghost.position +
-                                     m_ghost.rotation * rel.localPosition),
-                             spin * (m_ghost.rotation * rel.localRotation), ghostTint,
-                             true);
+                    const sw::parts::PlacementPiece relClone = sw::parts::symmetryClone(
+                        {nullptr, m_ghost.position + m_ghost.rotation * rel.localPosition,
+                         m_ghost.rotation * rel.localRotation},
+                        k, cloneCount);
+                    pushPart(rel.definitionId, relClone.position, relClone.rotation,
+                             ghostTint, true);
                 }
             }
         }
@@ -1208,7 +1354,9 @@ namespace game
             }
         }
 
+        collectFairingPreview(cameraPosition, display);
         collectEditorUi();
+        collectFairingUi();
     }
 
     // ---- hangar UI: title, clickable part palette, action row, stats ------
@@ -1258,25 +1406,39 @@ namespace game
             m_drawItems.push_back(item);
         };
 
-        // ---- part palette: one clickable row per ROCKET catalog entry ------
+        // ---- part palette: sections, one open at a time ---------------------
         // Buildings share the catalogue since F1; they are placed on the
-        // ground, not stacked in the VAB, so they are filtered out here.
-        const auto partCatalog = rocketPartPalette();
-        constexpr sw::f32 kRowStride = 0.082f;
-        constexpr sw::f32 kRowHeight = 0.068f;
+        // ground, not stacked in the VAB, so they are filtered out here. What
+        // is left is sorted into shelves — press a header to open its shelf —
+        // because a flat list of twenty-one parts was both hard to read and,
+        // past the sixteenth row, impossible to click.
+        const auto rows = paletteRows(m_paletteGroup);
+        constexpr sw::f32 kRowStride = 0.070f;
+        constexpr sw::f32 kRowHeight = 0.058f;
         constexpr sw::f32 kRowWidth = 0.40f;
         sw::f32 rowY = -0.70f;
-        for (sw::usize i = 0; i < partCatalog.size() && i < 16; ++i)
+        for (sw::usize i = 0; i < rows.size(); ++i)
         {
-            const bool held = partCatalog[i]->id == m_heldDefinition;
-            panel(-0.98f, rowY, -0.98f + kRowWidth, rowY + kRowHeight,
-                  held ? sw::Vec4{0.20f, 0.52f, 0.30f, 0.85f}
-                       : sw::Vec4{0.13f, 0.19f, 0.28f, 0.60f});
-            hudText(partCatalog[i]->name, -0.962f, rowY + 0.017f, 0.030f,
-                    held ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f}
-                         : sw::Vec4{0.68f, 0.78f, 0.88f, 0.9f});
-            m_hudButtons.push_back({-0.98f, rowY, -0.98f + kRowWidth,
-                                    rowY + kRowHeight,
+            const bool open = rows[i].header && rows[i].group == m_paletteGroup;
+            const bool held = !rows[i].header && rows[i].part->id == m_heldDefinition;
+            const sw::f32 x0 = rows[i].header ? -0.98f : -0.955f;
+            panel(x0, rowY, -0.98f + kRowWidth, rowY + kRowHeight,
+                  held  ? sw::Vec4{0.20f, 0.52f, 0.30f, 0.85f}
+                  : rows[i].header
+                      ? (open ? sw::Vec4{0.22f, 0.30f, 0.42f, 0.90f}
+                              : sw::Vec4{0.10f, 0.14f, 0.20f, 0.75f})
+                      : sw::Vec4{0.13f, 0.19f, 0.28f, 0.60f});
+            const std::string label =
+                rows[i].header
+                    ? std::format("{} {}", open ? "-" : "+",
+                                  kPaletteGroupNames[static_cast<sw::usize>(
+                                      rows[i].group)])
+                    : std::string(rows[i].part->name);
+            hudText(label, x0 + 0.018f, rowY + 0.014f, rows[i].header ? 0.032f : 0.028f,
+                    held         ? sw::Vec4{0.9f, 1.0f, 0.9f, 1.0f}
+                    : rows[i].header ? sw::Vec4{0.85f, 0.92f, 1.0f, 1.0f}
+                                     : sw::Vec4{0.68f, 0.78f, 0.88f, 0.9f});
+            m_hudButtons.push_back({x0, rowY, -0.98f + kRowWidth, rowY + kRowHeight,
                                     100u + static_cast<sw::u32>(i)});
             rowY += kRowStride;
         }
@@ -1329,6 +1491,13 @@ namespace game
             const auto* definition =
                 sw::parts::findDefinition(blueprintPart.definitionId);
             costCredits += definition != nullptr ? definition->costCredits : 0.0;
+            // A SHELL IS AS HEAVY AS IT IS BIG, and the whole point of drawing
+            // one by hand is that the player can see that trade while drawing.
+            if (sw::parts::fairingIsFlying(blueprintPart.fairing))
+            {
+                wetMassKg += sw::parts::fairingMassKg(blueprintPart.fairing);
+                costCredits += sw::parts::fairingCostCredits(blueprintPart.fairing);
+            }
         }
         hudText(std::format("WET MASS {:.1f} T  COST {:.0f}  PARTS {}",
                             wetMassKg / 1000.0, costCredits, m_blueprint.size()),

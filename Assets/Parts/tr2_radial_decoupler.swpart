@@ -1,0 +1,85 @@
+{
+  "id": 12,
+  "type": "Decoupler",
+  "name": "TR-2 Radial Decoupler",
+  "dryMassKg": 55,
+  "costCredits": 320,
+  "volumeM3": 0.12,
+  "crashToleranceMps": 9,
+  "breakingForceN": 450000,
+  "dragCoefficientArea": 0.12,
+  "liftCoefficient": 0,
+  "thrustNewtons": 0,
+  "specificImpulseS": 0,
+  "chargeRateKw": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "box",
+      "position": [0.14000000059604645, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.14000000059604645, 0.2199999988079071, 0.3400000035762787],
+      "color": [0.7200000286102295, 0.6000000238418579, 0.23999999463558197],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 12,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "box",
+      "position": [0.014999999664723873, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.014999999664723873, 0.2800000011920929, 0.4000000059604645],
+      "color": [0.30000001192092896, 0.3100000023841858, 0.3400000035762787],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0.2800000011920929, 0, 0],
+      "rotationDeg": [0, 0, 0],
+      "size": [0.019999999552965164, 0.2800000011920929, 0.4000000059604645],
+      "color": [0.30000001192092896, 0.3100000023841858, 0.3400000035762787],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0.14000000059604645, 0, 0],
+      "rotationDeg": [0, 90, 0],
+      "size": [0.09000000357627869, 0.15000000596046448, 0],
+      "color": [0.800000011920929, 0.20000000298023224, 0.15000000596046448],
+      "emissive": 0,
+      "specular": 0.3199999928474426,
+      "gloss": 0.6000000238418579,
+      "segments": 16,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "radial",
+      "position": [0, 0, 0],
+      "direction": [-1, 0, 0],
+      "type": "radial",
+      "size": 0.4000000059604645
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0.14000000059604645, 0, 0],
+      "halfExtents": [0.14000000059604645, 0.2199999988079071, 0.3400000035762787]
+    }
+  ]
+}

@@ -10,10 +10,16 @@
 #include "TestFramework.hpp"
 
 #include <Core/FileSystem.hpp>
+#include <ECS/World.hpp>
 #include <Factory/Conveyor.hpp>
 #include <Gameplay/Construction.hpp>
+#include <Gameplay/PartGeometry.hpp>
+#include <Gameplay/Parts.hpp>
+
+#include <glm/gtx/quaternion.hpp> // glm::rotation, for the radial glue pose
 
 #include <cmath>
+#include <span>
 #include <vector>
 
 using namespace sw;
@@ -320,3 +326,210 @@ SW_TEST(ConveyorChainsAreTracedFromPortsThatMeet)
         SW_CHECK(chains[0].belts.empty());
     }
 }
+
+// ============================================================================
+// F49 — WHERE A RADIAL PART MAY GO
+//
+// The complaint was "radial placement barely works, and symmetry 3 is never
+// green". It was not a symmetry bug: a radial part was tested for overlap
+// against the very part it was being bolted to, and a round tank's hull is a
+// SQUARE prism circumscribing it — so a battery was inside its parent's
+// corner at every azimuth except the four compass points. Measured on the
+// shipped catalogue: 28% of azimuths legal at 1, 2 and 4, and none at all at
+// 3, 6 and 8, which put a copy at exactly 120°, 60° and 45°.
+// ============================================================================
+
+SW_TEST(ARadialPartMayBeGluedAllTheWayRoundItsParent)
+{
+    SW_CHECK(parts::loadCatalog(FileSystem::executableDirectory() / "Assets" / "Parts"));
+    const parts::PartDefinition* tank =
+        parts::findDefinition(parts::kPartFuelTankMedium);
+    const parts::PartDefinition* core =
+        parts::findDefinition(parts::kPartCoreStructural);
+    const parts::PartDefinition* engine =
+        parts::findDefinition(parts::kPartEngineVector);
+    const parts::PartDefinition* battery =
+        parts::findDefinition(parts::kPartBatteryPack);
+    SW_CHECK(tank != nullptr && core != nullptr && engine != nullptr &&
+             battery != nullptr);
+    if (battery == nullptr || tank == nullptr) { return; }
+
+    // The rocket every player builds first: core, tank, engine.
+    constexpr usize kTankIndex = 1;
+    std::vector<parts::PlacementPiece> placed{
+        {core, Vec3{0.0f, 0.0f, -3.4f}, Quat{1, 0, 0, 0}},
+        {tank, Vec3{0.0f}, Quat{1, 0, 0, 0}},
+        {engine, Vec3{0.0f, 0.0f, 3.2f}, Quat{1, 0, 0, 0}}};
+
+    i32 radialNode = -1;
+    for (u8 c = 0; c < static_cast<u8>(battery->nodes.size()); ++c)
+    {
+        if (battery->nodes[c].type == parts::NodeType::Radial) { radialNode = c; break; }
+    }
+    SW_CHECK(radialNode >= 0);
+    if (radialNode < 0) { return; }
+
+    // Where the editor would put the part for a click at this azimuth and
+    // height: on the tank's surface, its radial node facing into the hull.
+    const auto glue = [&](f32 azimuth, f32 height) {
+        const Vec3 normal{std::cos(azimuth), std::sin(azimuth), 0.0f};
+        const Vec3 hit = normal * tank->shapes[0].size.x + Vec3{0.0f, 0.0f, height};
+        const Quat rotation = glm::rotation(
+            glm::normalize(battery->nodes[static_cast<usize>(radialNode)].direction),
+            -normal);
+        return parts::PlacementPiece{
+            battery,
+            hit - rotation * battery->nodes[static_cast<usize>(radialNode)].position,
+            rotation};
+    };
+
+    for (const u32 symmetry : {1u, 2u, 3u, 4u, 6u, 8u})
+    {
+        for (i32 degrees = 0; degrees < 360; degrees += 5)
+        {
+            for (const f32 height : {-1.6f, -0.8f, 0.0f, 0.8f, 1.6f})
+            {
+                const parts::PlacementPiece piece =
+                    glue(static_cast<f32>(degrees) * 3.14159265f / 180.0f, height);
+                std::vector<parts::PlacementPiece> candidates;
+                for (u32 k = 0; k < symmetry; ++k)
+                {
+                    candidates.push_back(parts::symmetryClone(piece, k, symmetry));
+                }
+                const i32 parent = static_cast<i32>(kTankIndex);
+                SW_CHECK(!parts::placementCollides(candidates, placed,
+                                                   std::span{&parent, 1}, 0.05f));
+            }
+        }
+    }
+
+    // A RING OF BOOSTERS, which is the shape the complaint was really about.
+    // Three tanks strapped round a core at 120 degrees do not touch — the
+    // gaps are metres wide — but their hulls are SQUARE prisms circumscribing
+    // them, and two squares at 120 degrees intersect at the corners where the
+    // metal never does. Nothing but the geometry changed here: a hull whose x
+    // and y match, on a part built out of round primitives, is read as the
+    // cylinder it is.
+    {
+        const parts::PartDefinition* booster =
+            parts::findDefinition(parts::kPartFuelTankMedium);
+        std::vector<parts::PlacementPiece> ring;
+        for (i32 k = 0; k < 3; ++k)
+        {
+            const f32 azimuth = static_cast<f32>(k) * 2.0943951f;
+            const Vec3 outward{std::cos(azimuth), std::sin(azimuth), 0.0f};
+            // Rim to rim with a hand's width to spare, the way a decoupler
+            // holds one.
+            ring.push_back({booster, outward * 2.7f, Quat{1, 0, 0, 0}});
+        }
+        for (usize i = 0; i < ring.size(); ++i)
+        {
+            for (usize j = i + 1; j < ring.size(); ++j)
+            {
+                SW_CHECK(!parts::placementCollides(std::span{&ring[i], 1},
+                                                   std::span{&ring[j], 1},
+                                                   std::span<const i32>{}, 0.05f));
+            }
+            // ...and against the core they are strapped to, which is the
+            // placement the editor actually judges.
+            SW_CHECK(!parts::placementCollides(std::span{&ring[i], 1},
+                                               std::span<const parts::PlacementPiece>{placed},
+                                               std::span<const i32>{}, 0.05f));
+        }
+        // Round does not mean permissive: slide one in until the tubes really
+        // do overlap and it is refused again.
+        const parts::PlacementPiece jammed{booster, Vec3{2.0f, 0.0f, 0.0f},
+                                           Quat{1, 0, 0, 0}};
+        SW_CHECK(parts::placementCollides(std::span{&jammed, 1},
+                                          std::span<const parts::PlacementPiece>{placed},
+                                          std::span<const i32>{}, 0.05f));
+    }
+
+    // AND THE EXCLUSION IS EXACTLY ONE PART WIDE. The same spot, judged
+    // without naming a parent, still reads as a collision — that is the
+    // square hull the fix is working around, and it has not gone anywhere.
+    const parts::PlacementPiece diagonal = glue(0.7f, 0.0f);
+    SW_CHECK(parts::placementCollides(std::span{&diagonal, 1},
+                                      std::span<const parts::PlacementPiece>{placed},
+                                      std::span<const i32>{}, 0.05f));
+
+    // ...and a part already standing where you are aiming is still in the
+    // way, parent or no parent: shielding the parent must not shield the
+    // design.
+    placed.push_back(glue(0.0f, 0.0f));
+    const parts::PlacementPiece onTop = glue(0.02f, 0.05f);
+    const i32 tankIndex = static_cast<i32>(kTankIndex);
+    SW_CHECK(parts::placementCollides(std::span{&onTop, 1},
+                                      std::span<const parts::PlacementPiece>{placed},
+                                      std::span{&tankIndex, 1}, 0.05f));
+    // One step round the tank and it fits again.
+    const parts::PlacementPiece clear = glue(1.0f, 0.0f);
+    SW_CHECK(!parts::placementCollides(std::span{&clear, 1},
+                                       std::span<const parts::PlacementPiece>{placed},
+                                       std::span{&tankIndex, 1}, 0.05f));
+}
+
+SW_TEST(ARadialDecouplerDropsItsBoosterSideways)
+{
+    SW_CHECK(parts::loadCatalog(FileSystem::executableDirectory() / "Assets" / "Parts"));
+    ecs::World world;
+
+    const ecs::Entity root = world.createEntity();
+    TransformComponent rootTransform{};
+    rootTransform.position = {1.0e6, 0.0, 0.0};
+    world.addComponent(root, rootTransform);
+    world.addComponent(root, PreviousTransformComponent{});
+    world.addComponent(root, parts::VesselComponent{});
+    world.addComponent(root, phys::DynamicBodyComponent{{100.0, 0.0, 0.0}, 1.0});
+
+    const auto addPart = [&](u32 definitionId, const Vec3& position,
+                             const Quat& rotation = Quat{1.0f, 0.0f, 0.0f, 0.0f}) {
+        const ecs::Entity part = world.createEntity();
+        TransformComponent transform{};
+        transform.position = rootTransform.position + WorldVec3(position);
+        transform.rotation = rotation;
+        world.addComponent(part, transform);
+        world.addComponent(part, PreviousTransformComponent{});
+        parts::PartComponent component{};
+        component.definitionId = definitionId;
+        component.vessel = root;
+        component.localPosition = position;
+        component.localRotation = rotation;
+        world.addComponent(part, component);
+        return part;
+    };
+
+    // A core with one booster strapped to its +X flank on a TR-2. The
+    // decoupler's radial node looks -X, into the core.
+    const ecs::Entity core = addPart(parts::kPartFuelTankMedium, {0.0f, 0.0f, 0.0f});
+    const ecs::Entity tr2 = addPart(parts::kPartDecouplerRadial, {1.2f, 0.0f, 0.0f});
+    const ecs::Entity booster = addPart(parts::kPartFuelTankMedium, {3.0f, 0.0f, 0.0f});
+    const ecs::Entity boosterEngine =
+        addPart(parts::kPartEngineVector, {3.0f, 0.0f, 3.2f});
+    // Surface joints, exactly as the editor makes them: 255 on the parent,
+    // and on the child the radial node that FACES the surface — node 3 of a
+    // tank looks -X, which is the one a part glued to something on its -X
+    // side would present.
+    parts::connectParts(world, core, tr2, 255, 0, parts::JointType::Radial, 1.8e5, 1.8e5);
+    parts::connectParts(world, tr2, booster, 255, 3, parts::JointType::Radial, 1.8e5, 1.8e5);
+    parts::connectParts(world, booster, boosterEngine, 1, 0, parts::JointType::Stack, 4.0e5, 4.0e5);
+
+    const ecs::Entity dropped = parts::decoupleAt(world, tr2);
+    SW_CHECK(!dropped.isNull());
+    if (dropped.isNull()) { return; }
+    // THE BOOSTER LEAVES AND THE CORE DOES NOT — the old rule chose by height
+    // along the stack, and a booster beside its parent has no height to speak
+    // of, so it was a coin toss which side of the joint flew away.
+    SW_CHECK(world.getComponent<parts::PartComponent>(core).vessel == root);
+    SW_CHECK(world.getComponent<parts::PartComponent>(tr2).vessel == root);
+    SW_CHECK(world.getComponent<parts::PartComponent>(booster).vessel == dropped);
+    SW_CHECK(world.getComponent<parts::PartComponent>(boosterEngine).vessel == dropped);
+
+    // ...and it goes OUT, along the joint that broke, not down the stack: a
+    // booster shoved tail-ward grinds along the core it was bolted to.
+    const auto& body = world.getComponent<phys::DynamicBodyComponent>(dropped);
+    const WorldVec3 pushed = body.velocity - WorldVec3{100.0, 0.0, 0.0};
+    SW_CHECK(pushed.x > 1.0);
+    SW_CHECK(std::abs(pushed.z) < 0.1);
+}
+

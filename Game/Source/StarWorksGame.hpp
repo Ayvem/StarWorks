@@ -34,6 +34,20 @@ namespace game
 {
     class ThrustSystem; // Systems.hpp; the game keeps a pointer (creative mode)
 
+    /// The hangar palette's shelves (F49). Declared here rather than beside
+    /// its helpers in GameInternal.hpp only because the editor has to REMEMBER
+    /// which one is open, and the state lives on the game.
+    enum class PaletteGroup : sw::u32
+    {
+        Command = 0,   // pods, cores, the instrument that flies with them
+        Propulsion,    // tanks and engines
+        Structure,     // what holds a rocket together and lets it let go
+        Power,         // batteries and panels
+        Aero,          // the things that only matter inside an atmosphere
+        Endurance,     // the F15 kit: its own world, and it says so
+        Count,         // ...and every shelf shut, which is a legal state
+    };
+
     class StarWorksGame final : public sw::Application
     {
     public:
@@ -405,6 +419,9 @@ namespace game
             sw::u8 parentPoint = 0;    // parent node index; 255 = SURFACE attach
             sw::u8 childPoint = 0;     // child node index used by the joint
             sw::i32 symmetryGroup = -1;
+            /// F48: the shell drawn on this part, when it is a fairing base.
+            /// Empty on everything else, which is every other part there is.
+            sw::parts::FairingComponent fairing{};
         };
         struct GhostState
         {
@@ -427,6 +444,25 @@ namespace game
         /// Cursor ray in the BLUEPRINT frame (hangar display rotation undone).
         void editorCursorRay(sw::Vec3& outOrigin, sw::Vec3& outDirection);
         void computeGhost();   // ghost pose + validation for the held part
+        /// How many copies the current placement makes: the symmetry count on
+        /// a fresh radial part, one otherwise. Judging, committing and drawing
+        /// all ask this, so they cannot disagree about what is being placed.
+        [[nodiscard]] sw::u32 ghostCloneCount() const;
+        [[nodiscard]] std::vector<sw::i32> ghostParents(sw::u32 cloneCount) const;
+        /// Why the ghost is red, for the hook that photographs it: the
+        /// two reasons look identical on screen and are not the same bug.
+        bool m_ghostCollides = false;
+        bool m_ghostOverloaded = false;
+        sw::i32 m_ghostBlockedBy = -1;
+        /// SW_PLACE=<defId>[,<symmetry>[,<azimuthDeg>[,<height>]]]: put a part
+        /// on the design without a mouse, by aiming the editor's own ray at
+        /// the stack and pressing the real commit. Shouts when the placement
+        /// is refused, because a hook that quietly places nothing photographs
+        /// the same empty deck a broken editor would.
+        void debugPlacePart(const char* spec);
+        bool m_editorRayScripted = false;
+        sw::Vec3 m_editorRayOrigin{0.0f};
+        sw::Vec3 m_editorRayDirection{0.0f, 0.0f, 1.0f};
         void commitGhost();    // place the held part (and symmetry clones)
         void grabPartAt(sw::usize index); // lift a subtree into the hand
         [[nodiscard]] sw::f64 partWetMassKg(sw::u32 definitionId) const;
@@ -441,6 +477,48 @@ namespace game
         /// Stops the piloted vessel's gravity spin (F15). A no-op on
         /// anything that was not spinning, which is every rocket.
         void despinBoardedVessel();
+        // ---- F48: DRAWING A FAIRING -----------------------------------------
+        /// Placing a fairing base drops straight into this, as KSP does: the
+        /// wall follows the cursor, a left click plants a ring, a right click
+        /// takes one back, and closing the nose ends it.
+        void beginFairing(sw::usize blueprintIndex);
+        void endFairing(bool keep);
+        void updateFairing();
+        /// True when the click was the tool's rather than the placement's.
+        bool fairingClick();
+        [[nodiscard]] bool fairingCursor(sw::Vec2& outRing);
+        void rebuildFairingPreview();
+        void collectFairingPreview(const sw::WorldVec3& cameraPosition,
+                                   const sw::Quat& display);
+        void collectFairingUi();
+        /// Builds and registers the shell mesh for ONE fairing part, and hangs
+        /// it on a child entity of the craft — the base keeps its own mesh, and
+        /// the shell is the thing that later flies away in pieces.
+        void buildFairingShellMesh(sw::ecs::Entity fairingPart,
+                                   const sw::parts::FairingComponent& fairing);
+        /// The release: the shell becomes `sides` panels of debris, each with
+        /// a shove outward and a few seconds to live, and the payload feels the
+        /// wind from that instant.
+        void jettisonFairing(sw::ecs::Entity fairingPart);
+        /// SW_FAIRING=<h:r,h:r,…>: draw one, without a mouse. The rings are
+        /// fed to the SAME cursor the ray writes and clicked in with the SAME
+        /// handler a left button press calls — a hook that built a profile by
+        /// filling in the array would photograph a shape the tool cannot
+        /// actually draw.
+        void debugFairingScript(const char* spec);
+        bool m_fairingDrawing = false;
+        sw::usize m_fairingIndex = 0;
+        sw::parts::FairingComponent m_fairingDraft{};
+        sw::Vec2 m_fairingCursor{0.0f};
+        bool m_fairingCursorValid = false;
+        bool m_fairingCanClose = false;
+        bool m_fairingPreviewDirty = false;
+        sw::u32 m_fairingPreviewSlots[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+        sw::u32 m_fairingPreviewSlot = 0;
+        sw::u32 m_fairingPreviewIndexCount = 0;
+        std::vector<sw::Vec2> m_fairingScript;
+        bool m_fairingScripted = false;
+
         bool m_editorMode = false;
         bool m_pausedBeforeEditor = false;
         std::vector<BlueprintPart> m_blueprint;
@@ -453,6 +531,10 @@ namespace game
         sw::Quat m_heldRotation{1.0f, 0.0f, 0.0f, 0.0f};
         GhostState m_ghost;
         sw::u32 m_symmetryCount = 1; // 1/2/3/4/6/8, radial placements only
+        /// Which palette shelf is open. `Count` means all of them are shut,
+        /// which is a legal state: five headers and nothing else is the
+        /// fastest way to see what the room can build.
+        PaletteGroup m_paletteGroup = PaletteGroup::Command;
         sw::i32 m_symmetryNextGroup = 0;
         bool m_showCenters = true; // CoM / thrust markers
 
@@ -693,6 +775,9 @@ namespace game
         /// The thrust system instance, kept so the mode can reach it (same
         /// pattern as m_aerodynamics / m_bubbleSystem).
         ThrustSystem* m_thrustSystem = nullptr;
+        /// The assembly hall's system, kept for the same reason: creative mode
+        /// waives its bill of materials.
+        sw::factory::AssemblySystem* m_assemblySystem = nullptr;
         /// Pushes m_creativeMode into the systems that act on it.
         void applyCreativeMode();
         /// The title screen's own camera (see updateMenuCamera). Used as the
@@ -963,6 +1048,18 @@ namespace game
         sw::space::CelestialIndex m_celestialIndex;
         std::vector<sw::space::TrajectorySegment> m_prediction;
         sw::f64 m_lastPredictionSeconds = -1.0e9;
+        // ---- F46: DOCKING ---------------------------------------------------
+        /// Looks for a capture between every pair of free ports on different
+        /// craft, and merges the two when one clears all four limits.
+        void updateDocking();
+        /// Releases the docking joint on the part whose menu is open.
+        void undockPart(sw::ecs::Entity portPart);
+        /// Moves the root-level components a vessel needs to fly onto the
+        /// survivor of a merge, before the absorbed root is destroyed.
+        void adoptVesselRoot(sw::ecs::Entity survivor, sw::ecs::Entity absorbed);
+        /// What the pilot is being told about the nearest approach: empty when
+        /// no port of the controlled craft is near another craft's.
+        std::string m_dockStatus;
         sw::f64 m_lastDockCheckSeconds = 0.0;
 
         // Maneuver node (KSP-style planned burn). Edited in map view:
@@ -1020,10 +1117,22 @@ namespace game
         // so the target's future position lands on the orbit ring you can
         // see rather than in empty space along Terra's year.
         sw::i32 m_targetIndex = -1; // CelestialIndex body, -1 = none
+        /// ...or a CRAFT (F49). The two are exclusive: picking one clears the
+        /// other, because "the target" is one thing and a HUD with two of them
+        /// would have to say which it meant on every line.
+        sw::ecs::Entity m_targetVessel{};
         sw::space::ClosestApproach m_approach{};
         /// The same, for the trajectory AFTER the planned burn.
         sw::space::ClosestApproach m_nodeApproach{};
         void updateTargetPick();
+        [[nodiscard]] bool isTargetableCraft(sw::ecs::Entity entity) const;
+        [[nodiscard]] std::string targetName() const;
+        /// Where the target is right now, or false when there is not one (or
+        /// it has stopped existing).
+        [[nodiscard]] bool targetWorldPosition(sw::WorldVec3& outPosition) const;
+        /// How the target moves, for the closest-approach solver. Clears a
+        /// craft target that has been staged, docked or destroyed away.
+        [[nodiscard]] bool targetPath(sw::space::TargetPath& outPath);
 
         sw::ecs::Entity m_solEntity{};
         sw::ecs::Entity m_terraEntity{};
@@ -1192,7 +1301,17 @@ namespace game
         sw::u32 m_debugSweepDelay = 0;
         bool m_debugSpawned = false;
         bool m_debugHangarOpened = false;
+        bool m_debugFairingDrawn = false;
+        bool m_debugPlaced = false;
+        bool m_debugPaletteOpened = false;
+        bool m_debugCraftTargeted = false;
+        sw::u32 m_debugTargetDelay = 0;
+        sw::u32 m_debugStagesFired = 0;
+        sw::u32 m_debugStageDelay = 0;
+        bool m_debugDockSpawned = false;
+        sw::u32 m_debugDockDelay = 0;
         bool m_debugMachineOpened = false;
+        sw::u32 m_debugMachineRow = 0;
         sw::u32 m_debugMachineDelay = 0;
         bool m_debugGeologyOpened = false;
         bool m_debugGeologyChannel = false;

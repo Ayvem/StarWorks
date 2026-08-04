@@ -162,6 +162,21 @@ namespace sw::factory
     public:
         [[nodiscard]] std::string_view name() const override { return "AssemblySystem"; }
 
+        /// CREATIVE MODE: the hall builds the same airframe in the same time
+        /// and pays nothing for the metal.
+        ///
+        /// A flag on the SYSTEM, like the infinite fuel it is the sibling of,
+        /// because the mode belongs to the session rather than to any one
+        /// hall — it is chosen at NEW GAME, it rides in the save, and in
+        /// multiplayer the host owns it for the same reason it owns
+        /// everything else.
+        ///
+        /// The LABOUR is not waived. "No cost" is about the bill of
+        /// materials; a hall that finished instantly would stop being a
+        /// machine and become a spawner, and the panel that says RUNNING,
+        /// STARVED or BLOCKED would have nothing left to say.
+        void setFreeMaterials(bool on) { m_freeMaterials = on; }
+
         [[nodiscard]] ecs::SystemAccess access() const override
         {
             return ecs::SystemAccess{}
@@ -173,6 +188,9 @@ namespace sw::factory
         }
 
         void update(ecs::World& world, f32 deltaSeconds) override;
+
+    private:
+        bool m_freeMaterials = false;
     };
 
 } // namespace sw::factory

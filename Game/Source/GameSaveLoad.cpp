@@ -68,6 +68,11 @@ namespace game
         // be a game that cannot write a save at all.
         m_saveSchema.registerComponent<sw::parts::PartAnimationComponent>(
             "parts.PartAnimation", 1);
+        // F48: the shell the player drew. Its MESH is derived and rebuilt on
+        // load like the conveyor network is; the PROFILE is the only thing
+        // that has to survive, and it is nine numbers and a flag.
+        m_saveSchema.registerComponent<sw::parts::FairingComponent>("parts.Fairing", 1);
+        m_saveSchema.registerComponent<DebrisComponent>("game.Debris", 1);
         m_saveSchema.registerComponent<sw::parts::PartFlexComponent>(
             "sw.PartFlex", 1);
         // v2: + centre of mass, inertia and hull extents — what the
@@ -340,6 +345,28 @@ namespace game
         rebuildConveyorNetwork();
         rebuildPowerNetwork();
         rebuildHulls();
+
+        // F48: every shell's mesh, rebuilt from its profile. A fairing's
+        // geometry is per instance and lives in no catalogue, so a loaded
+        // world would draw the base and nothing over it.
+        {
+            std::vector<std::pair<sw::ecs::Entity, sw::parts::FairingComponent>> shells;
+            m_world.forEach<sw::parts::FairingComponent>(
+                [&](sw::ecs::Entity entity, sw::parts::FairingComponent& fairing) {
+                    if (sw::parts::fairingIsFlying(fairing))
+                    {
+                        shells.emplace_back(entity, fairing);
+                    }
+                });
+            for (const auto& [entity, fairing] : shells)
+            {
+                buildFairingShellMesh(entity, fairing);
+            }
+            if (!shells.empty())
+            {
+                SW_LOG_INFO("Game", "{} fairing shell(s) rebuilt on load", shells.size());
+            }
+        }
 
         // ...AND THE THIRD DERIVED THING, which nobody had noticed was one.
         //

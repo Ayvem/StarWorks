@@ -924,11 +924,12 @@ namespace game
             {
                 const sw::f64 progress = sw::factory::assemblyProgress(*assembly);
                 hudText(std::format("BUILDING {}   {:.0f}%   IRON {:.0f}/{:.0f}   "
-                                    "COPPER {:.0f}/{:.0f}   DONE {}",
+                                    "COPPER {:.0f}/{:.0f}   DONE {}{}",
                                     hud::caps(std::string(assembly->blueprint)),
                                     progress * 100.0, assembly->ironPaidKg,
                                     assembly->ironNeededKg, assembly->copperPaidKg,
-                                    assembly->copperNeededKg, assembly->completed),
+                                    assembly->copperNeededKg, assembly->completed,
+                                    m_creativeMode ? "   CREATIVE : FREE" : ""),
                         kLeft + kPad + 0.014f, rowY, 0.028f, hud::kText);
             }
         }
@@ -1073,17 +1074,33 @@ namespace game
                             columnLeft + 0.006f, columnY, 0.030f, hud::kText);
                     columnY += kStatLine;
                     // Each metal against what is IN THE BIN, because that is
-                    // the question the player is actually asking.
-                    hudText(std::format("IRON    {:.0f} KG   HAVE {:.0f}", bill.ironKg,
-                                        iron),
-                            columnLeft + 0.006f, columnY, 0.030f,
-                            (iron >= bill.ironKg) ? hud::kOk : hud::kWarn);
-                    columnY += kStatLine;
-                    hudText(std::format("COPPER  {:.0f} KG   HAVE {:.0f}", bill.copperKg,
-                                        copper),
-                            columnLeft + 0.006f, columnY, 0.030f,
-                            (copper >= bill.copperKg) ? hud::kOk : hud::kWarn);
-                    columnY += kStatLine;
+                    // the question the player is actually asking — unless the
+                    // session is creative, in which case the answer is that it
+                    // is not a question. A row reading IRON 9600 HAVE 0 in
+                    // amber, on a hall that is about to build the thing
+                    // anyway, is the panel contradicting the machine.
+                    if (m_creativeMode)
+                    {
+                        hudText(std::format("IRON    {:.0f} KG   FREE", bill.ironKg),
+                                columnLeft + 0.006f, columnY, 0.030f, hud::kOk);
+                        columnY += kStatLine;
+                        hudText(std::format("COPPER  {:.0f} KG   FREE", bill.copperKg),
+                                columnLeft + 0.006f, columnY, 0.030f, hud::kOk);
+                        columnY += kStatLine;
+                    }
+                    else
+                    {
+                        hudText(std::format("IRON    {:.0f} KG   HAVE {:.0f}",
+                                            bill.ironKg, iron),
+                                columnLeft + 0.006f, columnY, 0.030f,
+                                (iron >= bill.ironKg) ? hud::kOk : hud::kWarn);
+                        columnY += kStatLine;
+                        hudText(std::format("COPPER  {:.0f} KG   HAVE {:.0f}",
+                                            bill.copperKg, copper),
+                                columnLeft + 0.006f, columnY, 0.030f,
+                                (copper >= bill.copperKg) ? hud::kOk : hud::kWarn);
+                        columnY += kStatLine;
+                    }
                     const sw::f64 seconds =
                         (assembly->buildRateKgPerSecond > 0.0)
                             ? bill.totalKg() / assembly->buildRateKgPerSecond

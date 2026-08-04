@@ -256,10 +256,14 @@ SW_TEST(NineHundredMeansTheAssemblyCatalogueWhileItsPanelIsOpen)
     SW_CHECK(part.action == ui::HudAction::PartAnimation);
 
     // The part menu's range is BOUNDED at the number of animations a part can
-    // carry, so an id above it falls through exactly as it did before the fix
-    // rather than being eaten by a range that grew to fill the gap.
-    const ui::HudRoute beyond =
+    // carry. The very next id is the docked port's release — one more row on
+    // the same panel — and the one after THAT still falls through, which is
+    // the property that matters: the range did not grow to fill the gap.
+    const ui::HudRoute release =
         ui::routeHudClick(900u + ui::kHudPartAnimationSlots, false, false);
+    SW_CHECK(release.action == ui::HudAction::PartUndock);
+    const ui::HudRoute beyond =
+        ui::routeHudClick(902u + ui::kHudPartAnimationSlots, false, false);
     SW_CHECK(beyond.action == ui::HudAction::BuildArm);
 }
 
@@ -289,6 +293,9 @@ SW_TEST(HudRoutingIsOrderedByDescendingRange)
         {1003, false, false, ui::HudAction::NetAddress},
         {900, true, false, ui::HudAction::VabSelect},
         {900, false, false, ui::HudAction::PartAnimation},
+        {904, false, false, ui::HudAction::PartUndock},
+        {905, false, false, ui::HudAction::PartJettison},
+        {904, true, false, ui::HudAction::VabSelect}, // ...unless a hall is open
         {899, true, false, ui::HudAction::VabCancel},
         {898, true, false, ui::HudAction::VabProduce},
         {617, true, false, ui::HudAction::RecipeChoice},

@@ -3872,6 +3872,393 @@ the old default produces exactly nothing.
 miner recipe names one resource and naming it back returns the same recipe,
 STOP names nothing, and a smelter is not a mine.
 
+## Milestone 46 — two craft become one
+
+> « il faut faire un système de docking fonctionnel avec fusion des vaisseaux
+> en une entité quand deux docking port entrent en contact dans le bon sens »
+
+There was a `dockVessels` already, and it merged. What it did not have was any
+of "dans le bon sens".
+
+### A dock is a capture, not a proximity
+
+The old trigger was a 4 m centre-to-centre distance, polled twice a second,
+between any two ports on different craft. Nothing tested orientation and
+nothing tested speed — the comment above it said *"close and slow"* and the
+code only checked close. Two craft passing at a kilometre a second with their
+rings back to back became one craft. So did anything that drifted within four
+metres of a station, sideways.
+
+What makes it a dock is four things, and all four or nothing happens:
+
+| | | |
+|---|---|---:|
+| **touching** | the two mating faces, not the two part origins | 0.35 m |
+| **facing** | their outward normals opposed | cos 18° |
+| **on axis** | the other craft in FRONT of the face, not beside it | cos 37° |
+| **closing** | approaching, and slowly | 0 … 0.5 m/s |
+
+The third is the one a distance-and-facing test lets through: two rings side by
+side, normals perfectly opposed, touching — a near miss that reads as a perfect
+dock to anything that does not ask where the other craft actually is.
+
+### The fourth one has a sign, and that is the whole of it
+
+Measured as a *speed*, a release was re-captured on the very next search: the
+two rings are still touching at the instant they let go, and the separation
+impulse is well inside any sane speed limit, so the pair docked, undocked and
+docked again, forever — visible in the log as `DOCKED … UNDOCK … DOCKED` half a
+second apart. Two craft moving APART are not docking, and saying so takes a
+sign rather than a cool-down, a timer, or anything stored on the port. A
+sideways slide across the face is refused on the same line: arriving along the
+axis at a crawl while moving three metres a second across it is a scrape.
+
+### Which faces mate, without any part file saying so
+
+`connectParts(..., 1, 1, ...)` — the old merge hardcoded node index 1 on both
+sides, and it was wrong on both shipped ports: the DR-1's mating face is node 0
+in the shipped file and node 1 in the built-in fallback, and the Endurance's
+core hub has **twelve** nodes, six of them spokes.
+
+The rule is now geometric and needs no naming convention: **a node already
+carrying a joint is not a candidate**. A docking ring's other face is bolted to
+the rocket that carries it, so it is busy, and the only free face left is the
+one pointing out. Every free pair is scored and the best one wins.
+
+### The latches pull, and the momentum is conserved
+
+Two things happen at capture that did not before.
+
+The absorbed craft is **snapped onto the mating face** — position and
+orientation — so the merged craft is aligned rather than frozen at whatever
+angle it drifted in at. The snap is the *shortest arc*, which means roll is
+preserved: a ring has no up, and twisting a station about its axis at the
+moment of capture would be a rotation no pilot could account for.
+
+And the merged body gets **the momentum the two brought to it**, linear and
+angular. The old merge kept the survivor's velocity and discarded the other
+craft's, which is a perfectly inelastic collision with the survivor as an
+infinite-mass wall — and since the survivor was always the player's craft, a
+ten-tonne tug taught a five-hundred-tonne station its velocity. The maths is
+the ordinary two-body one, done in the surviving frame: linear momentum
+averaged by mass, and angular momentum about the NEW balance point, which needs
+each craft's inertia rotated into that frame (`R I Rᵀ` — a diagonal tensor is
+only diagonal in its own frame), the parallel-axis term for each centre's
+offset, and the `r × mv` of the two centres. The station now moves at under a
+centimetre a second when a tug arrives at 0.4.
+
+One line that is easy to miss and impossible to ignore on screen: the merged
+body's `previousVelocity` has to be rewritten too, or `PartFlexSystem`
+differentiates the jump from one velocity to the other, reads thousands of g,
+and bends every joint on the craft at the instant of capture.
+
+### A dock that cannot let go is a trap
+
+`undockAt` is the mirror, and it is not `decoupleAt`. That one seeds its
+connectivity search from **the nose-most part by local Z**, which is a
+rocket-stack assumption; a docked pair is two stacks nose to nose and has no
+nose. Seeding from the port the button was pressed on needs no assumption at
+all, and it is what a pilot means: *the other craft leaves*. The two sides are
+pushed apart with an equal and opposite impulse split by mass, so the pair's
+momentum is unchanged — `splitVessel`'s own tail-ward shove is right for a
+spent stage and wrong here, because it pushes one side only, in the wrong
+frame, and invents momentum out of nothing.
+
+The button lives on the port's own menu, because a craft can carry several
+ports and only one of them is holding the thing you want to let go of. Getting
+it there needed the part menu to stop requiring a `PartAnimationComponent`: a
+docking ring has no animations, so the one part in the game whose menu has
+something urgent on it was the one part whose menu closed the instant it
+opened.
+
+### What the pilot is told
+
+Four limits fail in four ways and three of them look identical from the
+cockpit: nothing happens. One HUD line names the one that is stopping you —
+`DOCK: ROLL IN, PORTS NOT FACING 0.87`, `OFF AXIS`, `TOO FAST 1.40 M/S`,
+`DRIFTING APART`, and `LINED UP 0.42 M` when the only thing left is to close
+the gap.
+
+### What is pinned
+
+`ADockNeedsContactFacingAndPatience` builds the approach seven times: the one
+that works, and six that must not — too far, crooked by thirty degrees, side by
+side, arriving at ten metres a second, drifting apart, sliding across the face
+— plus a seventh where the face is already bolted to a fuel tank and is
+therefore not a candidate. `DockingMergesTheCraftAndSnapsTheFacesTogether`
+arrives eight degrees out and measures the two faces afterwards: coincident to a
+millimetre and anti-parallel to four nines. `ADockedPairKeepsTheMomentum…`
+docks a 10 t tug into a 500 t station and checks the pair's momentum to within
+a newton-second, that the station is left under a centimetre a second, and that
+the flex memory moved with it. `UndockingSplitsTheCraftAndPushesBothWaysEqually`
+takes the round trip apart part by part and requires the momentum after the
+release to equal the momentum before it.
+
+`SW_DOCK=<design>` parks a craft two metres off the player's free port,
+squared up and drifting in at a fifth of a metre a second — and then stops. The
+capture, the limits, the merge and the momentum are the real feature's, running
+on the real approach, because a hook that called `dockVessels` itself would
+photograph nothing but itself. The new `TUG` design is what flies it: a command
+core, a DR-1 on the nose, a tank, an engine and a battery.
+
+## Milestone 47 — the creative hall pays nothing
+
+> « modifie le mode créatif pour que le VAB produise des vaisseaux sans coût en
+> créatif »
+
+Creative mode already gave the engines infinite fuel, and stopped there. So a
+creative session still had to found a base, site a mine on ore, smelt the ore,
+belt the metal to an assembly hall and wait for twelve tonnes of it before it
+could fly a design — which is creative in name only. The mode exists to put a
+craft in the air, and the craft is the one thing the factory stood between the
+player and.
+
+**One line changes, and it is the line where the metal comes from.** The
+slipway is credited with what the tick's budget could work and the bin is not
+touched. Everything around it is untouched too: the build rate, the power draw,
+the room for the crate, the eight-hull apron, the states the panel reports. A
+creative hall is the same machine running on a free supply rather than a
+different machine.
+
+**The labour is not waived**, and that is deliberate. "Sans coût" is about the
+bill of materials; a hall that finished instantly would stop being a machine
+and become a spawner, and the panel that says RUNNING, STARVED or BLOCKED would
+have nothing left to say. A 3.5 t Starling still takes its eighty-nine seconds
+at full power.
+
+The flag lives on the **system**, like the infinite fuel it is the sibling of,
+because the mode belongs to the session rather than to any one hall: it is
+chosen at NEW GAME, it rides in the save, and in multiplayer the host owns it
+for the same reason it owns everything else. `applyCreativeMode` pushes it, and
+now pushes two things instead of one.
+
+**And the panel stops contradicting the machine.** A row reading `IRON 9600
+HAVE 0` in amber, on a hall that is about to build the thing anyway, is the
+display arguing with the simulation. In creative the two metals read
+`3010 KG FREE` and `540 KG FREE` in green, and the progress line ends
+`CREATIVE : FREE`. The menu's mode row says what it now covers:
+`MODE - CREATIVE - NO FUEL, FREE HULLS`.
+
+`ACreativeHallBuildsOnAnEmptyBinAndStillTakesTheTime` runs the same hall three
+ways on the real `AssemblySystem`: survival on an empty bin builds nothing and
+reports STARVED; creative on the same empty bin produces hulls, one crate each,
+at a count set by the rate and nothing else — and cannot finish one in a single
+second, which is the assertion that fails the day somebody makes the mode
+instant; and a creative hall standing on 500 kg of iron still has 500 kg of iron
+afterwards, because free means the metal is never taken rather than taken from a
+stock allowed to go negative.
+
+## Milestone 48 — a part whose shape is not in any file
+
+> « nous allons ajouter une nouvelle pièce un peu spéciale : le casing. Comme
+> sur KSP il faut pour le placer (il ressemble à un cylindre) puis ensuite on
+> peut tracer avec la souris la forme que l'on souhaite en le refermant en haut
+> et ensuite toutes les pièces dans le casing reçoivent 0 de vent »
+
+Every other part in this game is a file. Its shapes, its nodes, its mass and its
+drag table are authored once and every instance of it is identical, which is why
+the catalogue can be a flat array of definitions and why a `DrawItem` can hold a
+raw pointer into a shared mesh. A fairing cannot be any of that, because its
+whole purpose is to be **the shape of whatever is inside it** — and what is
+inside it is a design that did not exist when the part was made.
+
+**What KSP actually does**, since the brief was to reproduce it rather than to
+invent something adjacent: placing the base drops you straight into construct
+mode, with no tool to go and find; the wall follows the cursor; a left click
+plants a section where the cursor is; a right click takes the last one back off
+and, with nothing left to take back, leaves the mode; bringing the radius in
+towards the axis changes the prompt from PLACE SECTION to CLOSE FAIRING, and
+that click caps the nose and ends the job; and the shell may not grow past
+roughly the base's own diameter. All five rules are in `GameFairing.cpp`, and the
+last one is `kMaxRadiusFactor = 2.0`.
+
+**A fairing is a base part plus a PROFILE**, and the profile is twelve rings of
+`(height, radius)` — nothing else. Everything the shell is is derived from that
+list: the mesh, lathed into `sides` flat panels per band; the mass and the cost,
+from the wetted area, because a bigger shell is more aluminium and there is
+nothing else it could be; what is inside it; and the drag. Fixed-size and
+trivially copyable, because it rides on an entity and the save is a column
+memcpy. Closing the nose is a ring of **zero radius** rather than a special cap,
+so the lathe, the mass, the shielding and the aerodynamics all keep working off
+one list with no case for "the last one".
+
+**What the cursor means** is the one piece of arithmetic worth naming. The shell
+is a solid of revolution, so a point on it is (height along the stack, radius
+from the axis) and nothing more; the cursor's ray is intersected with the plane
+that *contains the stack axis* and turns to face the camera. That is what makes
+the wall track the mouse the same way from any angle the hangar has been orbited
+to, and it is why the tool needs no camera-relative special cases.
+
+**Zero wind inside, and zero means zero.** `exposure()` — the older machinery
+that lets a part hide in another part's wake — deliberately never returns zero,
+because a part in a wake still feels base pressure and a stage that goes
+weightless in the airstream reads as a bug. A part inside a sealed shroud is a
+different fact, and the honest number for it is nothing at all: it is skipped
+before its table is ever consulted. The test that guards this measures a
+**difference** rather than comparing two shapes — adding the payload under a
+closed shell changes the vessel's drag by exactly nothing, and adding the same
+payload under a profile that is still an open draft changes it by kilonewtons.
+
+The enclosure test takes a **point**, not a bounding box, and takes it whole. A
+part half in and half out of a fairing is a build nobody should be flying, and
+pretending to shield half of it would be a number invented to paper over that.
+
+**The drag of a stack of flat plates.** A fairing has no `.aero.json` and cannot
+have one: the offline forge photographs a part's silhouette from four hundred
+directions, and this part's silhouette is drawn by the player five minutes
+before it flies. It does not need one. The forge integrates three terms per
+pixel because an arbitrary mesh is what it is given; a fairing is a stack of
+truncated cones cut into flat quads, and the same three terms — impact
+`Cp = Cp_max cos²θ`, base pressure −0.20, skin friction 0.004 — integrate per
+PANEL in closed form. Same constants, same physics, one loop. So a fairing and a
+nose cone are priced by the same law rather than by two laws that happen to
+agree.
+
+That closed form is also what makes the numbers checkable without a wind tunnel.
+`AFairingsDragIsTheTextbookConeItIsShapedLike` works out what Newtonian impact
+theory says a cone of half-angle *a* should have — `sin²a` plus the friction
+along the slant — and holds the panel sum to within five per cent of it for four
+shapes from a flat cap to a needle. Nothing in `Fairing.hpp` has ever been told
+what a cone is; it adds up quads. A cylinder in axial flow is the other half of
+the same check: every panel is edge-on, the base pressure cancels round the
+axis, and what is left is `Cf × wetted area` and no side force at all — which is
+where a single flipped normal would show up and nowhere else.
+
+**The shell weighs something, and not where the base is.** Eleven kilograms a
+square metre of panel, ribs and separation hardware puts a three-metre shroud
+over a two-metre payload at a few hundred kilograms — the right order for the
+real thing. It goes into the vessel as its **own mass point**, at the profile's
+area-weighted centroid, metres ahead of the base it bolts to. That is what makes
+the release worth flying: the SHROUDED demo craft's stability margin moves from
+−0.79 to −0.19 the instant the panels come off, without a single line anywhere
+knowing that a jettison had happened. The scalar `dragCoefficientArea` gets
+nothing, deliberately: a flying shell answers the wind through its own panels,
+and adding it there as well would charge the same shroud twice.
+
+**The release** was specified as « on simule les morceaux pendant quelques
+centaines de frames avant de les supprimer », and that is exactly what it is:
+`sides` panels become debris entities, each with the vessel's velocity plus six
+metres a second outward and a metre and a half up the stack — a real shroud
+hinges off its base and is thrown clear, and a panel that fell straight down the
+stack would hit the payload it was protecting. `DebrisComponent` gives each one
+eight seconds, which is four hundred physics ticks, after which
+`DebrisLifetimeSystem` collects and destroys them — collected first, destroyed
+after, because removing an entity from inside the iteration visiting it is the
+one thing this ECS asks you not to do. The sweep says so in the log, because
+"the panels are gone" and "the panels were never there" look identical in a
+screenshot.
+
+**Two bugs, both found by looking rather than by thinking.** The catalogue's
+built-in fallback had nine parts for nine part types, and `PartType::Fairing`
+made ten — so the test that says every type exists failed the moment the enum
+grew, which is exactly what it is for. And the first design that shipped with a
+drawn shell segfaulted on spawn: `instantiateBlueprint` built the welded
+base+shell mesh **before** it added the `PartComponent` the mesh builder asks
+which part it is. The call moved four lines down, and the builder now shouts
+instead of dereferencing nothing.
+
+**The hook draws it, it does not fill it in.** `SW_FAIRING=<h:r,h:r,…>` feeds
+rings into the same `m_fairingCursor` the ray writes and clicks each one in
+through the same `fairingClick()` a left button press calls; a bare `1` draws the
+usual shroud. A hook that wrote the profile straight into the component would
+photograph a shape the tool might not be able to draw — which is the failure
+this project has already paid for twice. A script that runs out with the nose
+still open leaves the tool exactly as a player who stopped to think leaves it,
+which is how the half-drawn picture gets taken.
+
+## Milestone 49 — the square hull that would not let a booster on
+
+> « il faut pouvoir sélectionner dans la map les autres vaisseaux comme cible ;
+> il faut pouvoir placer des pièces en dessous des moteurs ; il faut ajouter des
+> séparateurs radiaux ; le placement radial ne marche que très peu, souvent
+> rouge alors qu'il devrait être vert, particulièrement la symétrie 3 qui n'est
+> jamais verte ; les pièces dans le Hangar doivent être placées dans des
+> catégories »
+
+Five requests, and the interesting one is the fourth, because it was reported as
+a symmetry bug and there was nothing wrong with the symmetry.
+
+**Measure first.** A battery glued round a fuel tank, at every azimuth, at every
+symmetry count, judged by the editor's own rule: **28% of azimuths legal at 1, 2
+and 4, and none at all at 3, 6 and 8.** That shape of answer is not a bug in a
+loop over copies — a loop that placed the copies wrongly would fail at 2 and 4
+as well. Four-fold symmetry surviving and three-fold dying says the obstruction
+is itself four-fold, and there is exactly one four-fold thing in the picture: a
+**square**.
+
+Every round part's collision hull is a square prism circumscribing it, because
+a hull is a list of boxes and a box is a perfectly good hull for standing on the
+ground and for hiding in a wake. A square is 41% wider across its diagonal than
+the circle it stands for, so a radial part was inside its parent's *corner* at
+every azimuth except the four compass points — and 120°, 60° and 45° are exactly
+where those corners are.
+
+**Two fixes, one conceptual and one geometric.**
+
+The conceptual one is that *a joint IS contact*. Asking whether a bolt is inside
+the plate it is bolted to is not a question with a useful answer, so the part
+being attached to is not something the placement can collide with. That alone
+takes the same measurement to **100% at every azimuth, height and symmetry
+count**. And the exclusion is exactly one part wide: something already standing
+where you are aiming is still in the way.
+
+The geometric one arrived when the first ring of boosters was built. Three tanks
+strapped round a core do not touch — the gaps are metres — but their squares do,
+at 120° to each other, and this time the parent exclusion could not help because
+the obstruction was the *core*, three parts away. So the overlap test learned
+what a cylinder is: a hull whose x and y half-extents match, on a part built out
+of round primitives, is read as the cylinder it always was, and two round hulls
+are compared as two capped tubes — end caps included, or two tanks stacked flush
+would read as interpenetrating and the whole VAB would stop working. The format
+did not change and nothing was re-authored. `partsOverlap` is used by the editor
+and by nothing else, so the blast radius of being right about circles is exactly
+the screen where it matters.
+
+**Symmetry then had a second bug hiding behind the first**, visible only once a
+ring could be built at all: every copy was bolted to the ONE parent under the
+cursor. Three decouplers round a core and then three boosters on them made a
+rocket that looked right and staged wrong — firing one decoupler would drop a
+booster from the far side. Copy *k* now goes on ring member *k*, counted from the
+piece under the cursor, and the validity test uses the same list as the commit,
+because every copy touches its own parent by construction.
+
+**A radial decoupler** (TR-2) is the part that makes any of that worth building,
+and it needed two changes behind it. `decoupleAt` chose which joint to cut by
+looking for the neighbour furthest along +Z — right for a vertical stack, a coin
+toss for a booster that sits *beside* its parent at no particular height. It now
+cuts on the **child side** (`partA` is the root-ward half of every joint the
+editor makes), which is the same answer on a stack and the correct one on a
+flank. And the separation shove followed the vessel's +Z at a fixed 1.5 m/s;
+it now goes **along the severed joint's own face**, so a booster leaves sideways
+instead of grinding down the core it was bolted to.
+
+**Parts under engines** are a one-line rule with a node behind it. The V-400 had
+one attach node, at its top: nothing could be bolted below a bell. It has a tail
+node now, and an engine whose exhaust node carries a joint is **off** — no
+thrust, no flow, no torque, no plume, and a part menu that says `EXHAUST BLOCKED`
+instead of offering a switch that would do nothing. It comes back by itself when
+the obstruction stages away, because the answer is read from the joints every
+tick rather than stored anywhere. Staging also stopped being arbitrary while we
+were here: `fireNextDecoupler` took whichever decoupler the ECS visited first,
+which was an implementation detail on any craft with two — and radial decouplers
+make two ordinary. Tail-most first, as the comment above it always claimed.
+
+**Targeting a craft** costs less than it looks, because the closest-approach
+solver never cared what a target was: all it asks is where you will be at time
+*t*, a few hundred times across the plan. A body answers from its catalogue
+conic; a craft answers from a conic fitted to its state vectors — the same orbit
+the map already draws round it, so the number and the ring cannot disagree. What
+a craft's answer is NOT is a promise: it is where the target would be if it
+coasted, which is the same caveat the player's own dotted line carries. The
+target is now a body index or an entity, exclusively, and a craft that is staged,
+docked or destroyed away clears it rather than answering for a dead entity.
+
+**And the palette had a bug nobody had reported**: twenty-one vessel parts, a
+column with room for sixteen, and no scrolling — the five ENDURANCE pieces past
+the bottom were not hard to find, they were *impossible to reach*, because no
+button was ever emitted for them. Six shelves, one open at a time, and the
+arithmetic is fixed as a side effect of making the list readable.
+
 ### Milestone 32+ — candidates (remaining)
 Parallelise the LOD sphere builds across the thread pool (fourteen relief worlds
 serialised on one core is most of the boot bar). Land on Venus (a ground under the

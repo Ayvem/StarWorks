@@ -345,42 +345,10 @@ namespace game
             fireNextDecoupler();
         }
 
-        // ---- docking: ports of different vessels, close and slow ---------------
-        if (!m_editorMode && clock().totalSeconds() - m_lastDockCheckSeconds > 0.5)
+        // ---- docking: two faces that touch, look at each other, and are slow --
+        if (!m_editorMode && !m_geologyMode)
         {
-            m_lastDockCheckSeconds = clock().totalSeconds();
-            struct Port { sw::ecs::Entity part; sw::ecs::Entity vessel; sw::WorldVec3 pos; };
-            std::vector<Port> ports;
-            m_world.forEach<sw::parts::PartComponent, TransformComponent>(
-                [&](sw::ecs::Entity entity, sw::parts::PartComponent& part,
-                    TransformComponent& transform) {
-                    const auto* definition =
-                        sw::parts::findDefinition(part.definitionId);
-                    if (definition != nullptr &&
-                        definition->type == sw::parts::PartType::DockingPort)
-                    {
-                        ports.push_back({entity, part.vessel, transform.position});
-                    }
-                });
-            for (sw::usize a = 0; a < ports.size(); ++a)
-            {
-                for (sw::usize b = a + 1; b < ports.size(); ++b)
-                {
-                    if (ports[a].vessel == ports[b].vessel ||
-                        glm::length(ports[a].pos - ports[b].pos) > 4.0)
-                    {
-                        continue;
-                    }
-                    // The player's vessel absorbs the other one.
-                    const bool shipIsA = ports[a].vessel == m_shipEntity;
-                    if (sw::parts::dockVessels(m_world,
-                                               shipIsA ? ports[a].part : ports[b].part,
-                                               shipIsA ? ports[b].part : ports[a].part))
-                    {
-                        SW_LOG_INFO("Game", "DOCKING: vessels merged");
-                    }
-                }
-            }
+            updateDocking();
         }
 
         // ---- SAS: T cycles OFF -> SAS -> PGD -> RTG -> RAD/NML -> NODE -------
@@ -776,6 +744,12 @@ namespace game
         }
         if (m_editorMode)
         {
+            // ...and the same for the hangar, for the same reason the geology
+            // screen does it above: this branch returns before the frame
+            // reaches the hooks, so a capture that opened the design office
+            // could never press anything IN it — including a palette shelf,
+            // whose button only exists once the panel has been collected once.
+            applyDebugJump();
             // Belt and braces: the hangar returns early, so if a menu were
             // ever opened from in here it would be invisible AND would have
             // frozen the update loop — a soft lock. Nothing opens one today

@@ -727,15 +727,22 @@ namespace game
         }
 
         // ---- the target, and the closest approach to it -----------------------
-        if (m_targetIndex >= 0 &&
-            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        // A world or a craft (F49): the only thing the readout needs from it
+        // is where it is and, for the impact test, how big it is — and a
+        // craft's radius is zero, which is the honest answer to "would I hit
+        // it": you cannot crash into something you can dock with.
+        sw::WorldVec3 targetPosition{};
+        if (targetWorldPosition(targetPosition))
         {
-            const auto& target =
-                m_celestialIndex.body(static_cast<sw::usize>(m_targetIndex));
+            const sw::f64 targetRadius =
+                (m_targetIndex >= 0 &&
+                 static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+                    ? m_celestialIndex.body(static_cast<sw::usize>(m_targetIndex))
+                          .bodyRadius
+                    : 0.0;
             constexpr sw::Vec4 kTargetColor{1.0f, 0.55f, 0.88f, 0.95f};
-            const sw::f64 distanceNow =
-                glm::length(m_celestialIndex.positionAt(m_targetIndex, time) - position);
-            hudText(std::format("TGT {}  {}", target.name, formatDistance(distanceNow)),
+            const sw::f64 distanceNow = glm::length(targetPosition - position);
+            hudText(std::format("TGT {}  {}", targetName(), formatDistance(distanceNow)),
                     kX, y, kLine, kTargetColor);
             y += kLine * 1.3f;
 
@@ -749,7 +756,7 @@ namespace game
                 // enough to be about the surface: 380 km above Luna and
                 // 2 117 km from its centre are the same fact, and only one
                 // of them tells you whether you hit it.
-                const sw::f64 altitude = approach.distanceM - target.bodyRadius;
+                const sw::f64 altitude = approach.distanceM - targetRadius;
                 const bool hits = altitude <= 0.0;
                 hudText(std::format("{} {}  T-{}  REL {:.0f} M/S", label,
                                     hits ? std::string("IMPACT")
@@ -762,6 +769,22 @@ namespace game
             approachLine(m_approach, "APPROACH", kTargetColor);
             approachLine(m_nodeApproach, "AFTER BURN",
                          sw::Vec4{0.85f, 0.75f, 1.0f, 0.95f});
+        }
+
+        // ---- docking ----------------------------------------------------------
+        //
+        // FOUR LIMITS FAIL IN FOUR WAYS AND THREE OF THEM LOOK THE SAME from
+        // the cockpit: nothing happens. One line, naming the one that is
+        // stopping you, is the difference between an approach you can correct
+        // and a feature that appears not to work.
+        if (!m_dockStatus.empty())
+        {
+            const bool good = m_dockStatus.find("LINED UP") != std::string::npos ||
+                              m_dockStatus.find("DOCKED") != std::string::npos;
+            hudText(m_dockStatus, kX, y, kLine,
+                    good ? sw::Vec4{0.45f, 0.95f, 0.6f, 0.95f}
+                         : sw::Vec4{0.95f, 0.75f, 0.35f, 0.95f});
+            y += kLine * 1.3f;
         }
 
         // ---- the orbital survey ----------------------------------------------
@@ -1303,6 +1326,13 @@ namespace game
                 power->priority = (power->priority + 1u) % 5u;
             }
             return true;
+        case sw::ui::HudAction::PartUndock:
+            undockPart(m_menuPart);
+            return true;
+        case sw::ui::HudAction::PartJettison:
+            jettisonFairing(m_menuPart);
+            m_menuPart = {};
+            return true;
         case sw::ui::HudAction::PartAnimation:
             togglePartAnimation(route.index);
             return true;
@@ -1358,18 +1388,29 @@ namespace game
             return true;
         case sw::ui::HudAction::PalettePart:
         {
-            const auto partCatalog = rocketPartPalette();
-            if (route.index < partCatalog.size())
+            // The SAME row list the palette drew, so an index cannot mean one
+            // thing on screen and another here.
+            const auto rows = paletteRows(m_paletteGroup);
+            if (route.index >= rows.size())
             {
-                if (!m_blueprintBackup.empty())
-                {
-                    m_blueprint = m_blueprintBackup; // drop a pending grab
-                    m_blueprintBackup.clear();
-                }
-                m_heldDefinition = partCatalog[route.index]->id;
-                m_heldSubtree.clear();
-                m_heldRotation = {1.0f, 0.0f, 0.0f, 0.0f};
+                return true;
             }
+            if (rows[route.index].header)
+            {
+                // A shelf: open it, or shut it by pressing the open one.
+                m_paletteGroup = (rows[route.index].group == m_paletteGroup)
+                                     ? PaletteGroup::Count
+                                     : rows[route.index].group;
+                return true;
+            }
+            if (!m_blueprintBackup.empty())
+            {
+                m_blueprint = m_blueprintBackup; // drop a pending grab
+                m_blueprintBackup.clear();
+            }
+            m_heldDefinition = rows[route.index].part->id;
+            m_heldSubtree.clear();
+            m_heldRotation = {1.0f, 0.0f, 0.0f, 0.0f};
             return true;
         }
         case sw::ui::HudAction::SasMode:
@@ -1423,6 +1464,13 @@ namespace game
             {
                 geologyToggleBeacon(direction);
             }
+            return;
+        }
+
+        // ---- the fairing tool, before anything else the hangar does ------------
+        if (m_editorMode && m_fairingDrawing)
+        {
+            static_cast<void>(fairingClick());
             return;
         }
 

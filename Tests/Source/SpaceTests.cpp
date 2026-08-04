@@ -1082,3 +1082,77 @@ SW_TEST(SpacingSamplesByAnomalyStillCatchesTheSoiExit)
     phys::kepler::evaluate(plan[0].orbit, plan[0].endTime, exitPoint);
     SW_CHECK(std::abs(glm::length(exitPoint) - 9.24e8) < 9.24e8 * 1.0e-4);
 }
+
+// ============================================================================
+// F49 — AND THE TARGET DOES NOT HAVE TO BE A WORLD
+//
+// A rendezvous is with a craft far more often than with a planet, and the
+// minimiser never cared which: all it asks is where the target will be. A
+// body answers from its catalogue; a craft answers from a conic fitted to its
+// state vectors, which is the same orbit the map already draws round it.
+// ============================================================================
+SW_TEST(ACraftIsAsTargetableAsAWorld)
+{
+    SystemFixture fixture;
+    CelestialIndex index;
+    index.rebuild(fixture.world);
+    const i32 terraIndex = index.indexOf(fixture.terra);
+
+    WorldVec3 terraPosition{};
+    WorldVec3 terraVelocity{};
+    index.stateAt(terraIndex, 0.0, terraPosition, &terraVelocity);
+
+    // A station in a circular orbit, and a ship in the SAME orbit a quarter
+    // of a revolution behind it: the classic rendezvous geometry, where the
+    // separation is constant and the two never meet without a burn.
+    const f64 radius = kLeoRadius + 200.0e3;
+    const f64 speed = phys::kepler::circularOrbitSpeed(kMuTerra, radius);
+    const WorldVec3 stationPosition = terraPosition + WorldVec3{radius, 0.0, 0.0};
+    const WorldVec3 stationVelocity = terraVelocity + WorldVec3{0.0, 0.0, -speed};
+    const TargetPath station =
+        craftTargetPath(index, terraIndex, stationPosition, stationVelocity, 0.0);
+    SW_CHECK(station.hasOrbit);
+    SW_CHECK(station.primaryIndex == terraIndex);
+    SW_CHECK(station.bodyRadius == 0.0); // you dock with it, you do not crash into it
+
+    std::vector<TrajectorySegment> plan;
+    predictTrajectory(index, terraPosition + WorldVec3{0.0, 0.0, radius},
+                      terraVelocity + WorldVec3{speed, 0.0, 0.0}, 0.0,
+                      PredictionSettings{}, plan);
+    SW_CHECK(!plan.empty());
+
+    const ClosestApproach approach = closestApproachToPath(index, plan, station);
+    SW_CHECK(approach.valid);
+    // A quarter turn apart on the same ring: the closest they ever come is
+    // the chord, r*sqrt(2), and no burn in this test changes that.
+    const f64 chord = radius * 1.41421356;
+    SW_CHECK(std::abs(approach.distanceM - chord) < chord * 0.02);
+    // Same ring, same speed: the separation never closes, so the approach is
+    // not a near miss and the relative speed is the chord's, not zero.
+    SW_CHECK(approach.relativeSpeedMps > 1.0);
+    // The marker is placed in the target's own frame, so the map draws it on
+    // the ring rather than out in the world.
+    SW_CHECK(approach.targetPrimaryIndex == terraIndex);
+    SW_CHECK(std::abs(glm::length(approach.targetRelativePosition) - radius) <
+             radius * 0.01);
+
+    // A CRAFT SITTING STILL IN NO FRAME AT ALL still answers, rather than
+    // inventing an orbit: this is the state a landed craft is in for the
+    // instant before the ground rotates it.
+    const TargetPath adrift = craftTargetPath(index, -1, stationPosition,
+                                              WorldVec3{0.0}, 0.0);
+    SW_CHECK(!adrift.hasOrbit);
+    SW_CHECK(glm::length(adrift.staticPosition - stationPosition) < 1.0);
+
+    // ...and a body's path through the same entry point is the body's own
+    // orbit, so the two kinds of target cannot drift apart in behaviour.
+    const TargetPath luna = bodyTargetPath(index, index.indexOf(fixture.luna));
+    SW_CHECK(luna.hasOrbit);
+    SW_CHECK(luna.primaryIndex == terraIndex);
+    SW_CHECK(luna.bodyRadius > 1.0e6);
+    const ClosestApproach viaPath = closestApproachToPath(index, plan, luna);
+    const ClosestApproach viaBody =
+        closestApproachToBody(index, plan, index.indexOf(fixture.luna));
+    SW_CHECK(viaPath.valid == viaBody.valid);
+    SW_CHECK(std::abs(viaPath.distanceM - viaBody.distanceM) < 1.0);
+}

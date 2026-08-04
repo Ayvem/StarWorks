@@ -19,7 +19,7 @@ using namespace sw::parts;
 
 SW_TEST(PartCatalogCoversEveryTypeWithSaneData)
 {
-    // Every one of the 9 part types exists, ids are unique and stable,
+    // Every one of the 10 part types exists, ids are unique and stable,
     // and every definition exposes the full property sheet.
     bool typeSeen[static_cast<usize>(PartType::Count)] = {};
     u32 seenIds[64] = {};
@@ -163,60 +163,435 @@ SW_TEST(DecouplingSplitsTheVesselAlongTheJoint)
     SW_CHECK_EQ(jointCount, 2u);
 }
 
-SW_TEST(DockingMergesVesselsAndReroutesParts)
-{
-    ecs::World world;
+// ============================================================================
+// F49 — WHAT IS BOLTED UNDER AN ENGINE, AND WHAT LETS GO SIDEWAYS
+// ============================================================================
 
-    auto makeVessel = [&](const WorldVec3& position, const Quat& rotation) {
-        const ecs::Entity vessel = world.createEntity();
-        TransformComponent transform{};
-        transform.position = position;
-        transform.rotation = rotation;
-        world.addComponent(vessel, transform);
-        world.addComponent(vessel, PreviousTransformComponent{});
-        world.addComponent(vessel, VesselComponent{});
-        world.addComponent(vessel, phys::DynamicBodyComponent{{0.0, 0.0, 0.0}, 1.0});
-        return vessel;
-    };
-    auto addPort = [&](ecs::Entity vessel, f32 z) {
+SW_TEST(AnEngineWithSomethingBoltedOverItsNozzleIsOff)
+{
+    // The V-400 has a tail node now, so a decoupler can be stacked under it —
+    // which is what the player asked for and also a plate in front of the
+    // flame. The engine has to notice.
+    //
+    // On the BUILT-IN catalogue, deliberately: this file is the one that
+    // checks the fallback, and loading the shipped catalogue here would
+    // replace the registry under every test that follows.
+    ecs::World world;
+    VesselAssemblySystem assembly;
+
+    const ecs::Entity root = world.createEntity();
+    world.addComponent(root, TransformComponent{});
+    world.addComponent(root, VesselComponent{});
+    world.addComponent(root, phys::DynamicBodyComponent{});
+
+    const auto addPart = [&](u32 definitionId, f32 z) {
         const ecs::Entity part = world.createEntity();
         world.addComponent(part, TransformComponent{});
-        world.addComponent(part, PreviousTransformComponent{});
         PartComponent component{};
-        component.definitionId = kPartDockingRing;
-        component.vessel = vessel;
+        component.definitionId = definitionId;
+        component.vessel = root;
         component.localPosition = {0.0f, 0.0f, z};
         world.addComponent(part, component);
         return part;
     };
+    const ecs::Entity tank = addPart(kPartFuelTankMedium, 0.0f);
+    const ecs::Entity engine = addPart(kPartEngineVector, 3.2f);
+    connectParts(world, tank, engine, 1, 0, JointType::Stack, 4.0e5, 4.0e5);
 
-    const ecs::Entity vesselA = makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
-    const ecs::Entity vesselB = makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0});
-    const ecs::Entity portA = addPort(vesselA, -1.0f);
-    const ecs::Entity portB = addPort(vesselB, 1.0f);
+    // Nothing under it: the engine is an engine.
+    SW_CHECK(!engineExhaustBlocked(world, engine));
+    assembly.update(world, 0.02f);
+    const f64 openThrust = world.getComponent<VesselComponent>(root).maxThrustNewtons;
+    SW_CHECK(openThrust > 1.0e5);
 
-    // Attachment pass gives both ports their WORLD poses before docking.
-    PartAttachmentSystem attachment;
-    attachment.update(world, 0.02f);
+    // ...and with a decoupler on its tail node it is a paperweight: no
+    // thrust, no flow, no torque, whatever the pilot's switch says.
+    const ecs::Entity decoupler = addPart(kPartDecouplerFlat, 4.45f);
+    const ecs::Entity joint =
+        connectParts(world, engine, decoupler, 1, 0, JointType::Stack, 2.5e5, 2.5e5);
+    SW_CHECK(engineExhaustBlocked(world, engine));
+    world.getComponent<VesselComponent>(root) = VesselComponent{};
+    assembly.update(world, 0.02f);
+    const VesselComponent& blocked = world.getComponent<VesselComponent>(root);
+    SW_CHECK(blocked.maxThrustNewtons == 0.0);
+    SW_CHECK(blocked.maxMassFlowKgps == 0.0);
+    SW_CHECK(glm::length(blocked.thrustForceN) < 1.0e-3f);
+    // The DECOUPLER is not blocked by the engine it hangs off: this is about
+    // an engine's own exhaust, not about parts touching.
+    SW_CHECK(!engineExhaustBlocked(world, decoupler));
 
-    SW_CHECK(dockVessels(world, portA, portB));
-    // B's port now belongs to vessel A, re-localized into A's frame
-    // (B root was at z=-3, its port at local +1 -> world -2 -> A-local -2).
-    const auto& merged = world.getComponent<PartComponent>(portB);
-    SW_CHECK(merged.vessel == vesselA);
-    SW_CHECK(std::abs(merged.localPosition.z - (-2.0f)) < 1.0e-3f);
-    SW_CHECK(!world.isAlive(vesselB)); // absorbed root destroyed
-    // A docking joint now links the two ports.
+    // Stage it away and the engine comes back, because the answer was never
+    // stored anywhere — it is read from the joints.
+    world.destroyEntity(joint);
+    SW_CHECK(!engineExhaustBlocked(world, engine));
+    world.getComponent<VesselComponent>(root) = VesselComponent{};
+    assembly.update(world, 0.02f);
+    SW_CHECK(std::abs(world.getComponent<VesselComponent>(root).maxThrustNewtons -
+                      openThrust) < 1.0);
+}
+
+// ============================================================================
+// DOCKING (F46)
+//
+// The built-in DR-1 carries two stack faces: node 0 at z = +0.4 looking +Z,
+// node 1 at z = -0.4 looking -Z. Two rings nose to nose therefore mate node 1
+// to node 0 — which is not the pair the first version hardcoded, and is the
+// reason the choice is now geometric.
+// ============================================================================
+namespace
+{
+    struct DockFixture
+    {
+        ecs::World world;
+
+        ecs::Entity makeVessel(const WorldVec3& position, const Quat& rotation,
+                               f64 mass = 1000.0, const WorldVec3& velocity = {},
+                               const Vec3& spin = {})
+        {
+            const ecs::Entity vessel = world.createEntity();
+            TransformComponent transform{};
+            transform.position = position;
+            transform.rotation = rotation;
+            world.addComponent(vessel, transform);
+            world.addComponent(vessel, PreviousTransformComponent{});
+            VesselComponent aggregate{};
+            aggregate.partCount = 1;
+            aggregate.totalMassKg = mass;
+            aggregate.inertiaKgM2 = Vec3{static_cast<f32>(mass), static_cast<f32>(mass),
+                                         static_cast<f32>(mass)};
+            world.addComponent(vessel, aggregate);
+            phys::DynamicBodyComponent body{};
+            body.velocity = velocity;
+            body.angularVelocity = spin;
+            body.mass = mass;
+            world.addComponent(vessel, body);
+            return vessel;
+        }
+
+        ecs::Entity addPart(ecs::Entity vessel, u32 definitionId, const Vec3& local)
+        {
+            const ecs::Entity part = world.createEntity();
+            world.addComponent(part, TransformComponent{});
+            world.addComponent(part, PreviousTransformComponent{});
+            PartComponent component{};
+            component.definitionId = definitionId;
+            component.vessel = vessel;
+            component.localPosition = local;
+            world.addComponent(part, component);
+            return part;
+        }
+
+        void settle()
+        {
+            PartAttachmentSystem attachment;
+            attachment.update(world, 0.02f);
+        }
+    };
+} // namespace
+
+SW_TEST(ADockNeedsContactFacingAndPatience)
+{
+    // The approach that works: two rings nose to nose, faces 0.2 m apart,
+    // drifting together at a tenth of a metre a second.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b =
+            fixture.makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0}, 1000.0, {0.0, 0.0, 0.1});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+        SW_CHECK(capture.valid);
+        // THE FACES IT CHOSE, not the indices anybody assumed: A's -Z face
+        // (node 1) against B's +Z face (node 0).
+        SW_CHECK_EQ(capture.nodeA, static_cast<u8>(1));
+        SW_CHECK_EQ(capture.nodeB, static_cast<u8>(0));
+        SW_CHECK(std::abs(capture.gapM - 0.2f) < 1.0e-3f);
+        SW_CHECK(capture.facing > 0.999f);
+        SW_CHECK(capture.onAxis > 0.999f);
+    }
+
+    // TOO FAR. Four metres apart was the old rule and it is not a dock.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b = fixture.makeVessel({0.0, 0.0, -6.0}, {1, 0, 0, 0});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+        SW_CHECK(!capture.valid);
+        SW_CHECK(capture.gapM > 3.0f);
+    }
+
+    // CROOKED. The faces are a fifth of a metre apart and dead on the axis,
+    // and the arriving craft is thirty degrees out of alignment. A ring cannot
+    // latch onto a ring it is looking at from an angle, and eighteen degrees is
+    // where this one gives up.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const Quat tilt = glm::angleAxis(0.5236f, Vec3{1.0f, 0.0f, 0.0f}); // 30 deg
+        // Placed so that the tilt costs alignment and nothing else: B's +Z
+        // face lands exactly 0.2 m beyond A's, on the axis.
+        const WorldVec3 root =
+            WorldVec3{0.0, 0.0, -1.6} - WorldVec3(tilt * Vec3{0.0f, 0.0f, 1.4f});
+        const ecs::Entity b = fixture.makeVessel(root, tilt);
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+        SW_CHECK(!capture.valid);
+        SW_CHECK(std::abs(capture.facing - 0.866f) < 0.01f); // cos 30
+    }
+
+    // ROLLED, WHICH IS FINE. Turning about the mating axis changes nothing
+    // physical — a docking ring has no up — so a craft arriving forty degrees
+    // rolled captures exactly like one that is square.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b = fixture.makeVessel(
+            {0.0, 0.0, -3.0}, glm::angleAxis(0.6981f, Vec3{0.0f, 0.0f, 1.0f}));
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        SW_CHECK(dockingCapture(fixture.world, portA, portB).valid);
+    }
+
+    // SIDE BY SIDE. Perfectly anti-parallel faces, touching distance, and the
+    // approach is across the face rather than into it. This is the one a
+    // distance-and-facing test would have accepted.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b = fixture.makeVessel({0.3, 0.0, -1.2}, {1, 0, 0, 0});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+        SW_CHECK(!capture.valid);
+        SW_CHECK(capture.onAxis < 0.8f);
+    }
+
+    // TOO FAST. Lined up, touching, and closing at ten metres a second: that
+    // is a collision, and the same geometry at a tenth of that is a dock.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b =
+            fixture.makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0}, 1000.0, {0.0, 0.0, 10.0});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+        SW_CHECK(!capture.valid);
+        SW_CHECK(capture.closingMps > 9.0f);
+    }
+
+    // DRIFTING APART. The same geometry, touching, moving away from each
+    // other: this is the state a release leaves behind, and measuring the
+    // closing speed as a SPEED rather than as a signed approach docked it
+    // again on the next search — forever.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b = fixture.makeVessel({0.0, 0.0, -2.8}, {1, 0, 0, 0}, 1000.0,
+                                                 {0.0, 0.0, -0.3});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+        SW_CHECK(!capture.valid);
+        SW_CHECK(capture.closingMps < 0.0f);
+        SW_CHECK(capture.gapM < 0.35f); // it fails on the sign and nothing else
+    }
+
+    // SLIDING ACROSS THE FACE. Arriving along the axis at a crawl while
+    // moving sideways at three metres a second is a scrape, not a capture.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b = fixture.makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0}, 1000.0,
+                                                 {3.0, 0.0, 0.05});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        SW_CHECK(!dockingCapture(fixture.world, portA, portB).valid);
+    }
+
+    // A NODE THAT IS ALREADY CARRYING A JOINT IS NOT A CANDIDATE. Bolt A's
+    // -Z face to its own rocket and the only mating face left points the
+    // other way — so this same approach no longer captures.
+    {
+        DockFixture fixture;
+        const ecs::Entity a = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+        const ecs::Entity b = fixture.makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0});
+        const ecs::Entity portA = fixture.addPart(a, kPartDockingRing, {0, 0, -1.0f});
+        const ecs::Entity tank = fixture.addPart(a, kPartFuelTankMedium, {0, 0, 1.0f});
+        const ecs::Entity portB = fixture.addPart(b, kPartDockingRing, {0, 0, 1.0f});
+        fixture.settle();
+        connectParts(fixture.world, portA, tank, 1, 0, JointType::Stack, 2.0e5, 2.0e5);
+        SW_CHECK(!dockingCapture(fixture.world, portA, portB).valid);
+    }
+}
+
+SW_TEST(DockingMergesTheCraftAndSnapsTheFacesTogether)
+{
+    DockFixture fixture;
+    const ecs::Entity vesselA = fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0});
+    // Arriving 0.2 m short and eight degrees out of alignment: inside the
+    // limits, and the latches are expected to pull the rest of it straight.
+    const Quat tilt = glm::angleAxis(0.14f, glm::normalize(Vec3{0.3f, 1.0f, 0.0f}));
+    const WorldVec3 rootB =
+        WorldVec3{0.0, 0.0, -1.6} - WorldVec3(tilt * Vec3{0.0f, 0.0f, 1.4f});
+    const ecs::Entity vesselB = fixture.makeVessel(rootB, tilt);
+    const ecs::Entity portA = fixture.addPart(vesselA, kPartDockingRing, {0, 0, -1.0f});
+    const ecs::Entity portB = fixture.addPart(vesselB, kPartDockingRing, {0, 0, 1.0f});
+    const ecs::Entity tailB = fixture.addPart(vesselB, kPartFuelTankMedium, {0, 0, 3.0f});
+    fixture.settle();
+
+    const DockingCapture capture = dockingCapture(fixture.world, portA, portB);
+    SW_CHECK(capture.valid);
+    SW_CHECK(dockVessels(fixture.world, capture));
+
+    // Every part of B belongs to A now, and B's root is gone.
+    SW_CHECK(fixture.world.getComponent<PartComponent>(portB).vessel == vesselA);
+    SW_CHECK(fixture.world.getComponent<PartComponent>(tailB).vessel == vesselA);
+    SW_CHECK(!fixture.world.isAlive(vesselB));
+
+    // THE FACES ARE TOUCHING AND SQUARE. Run the attachment pass and measure
+    // the two nodes in the world: a merge that only reparented would have left
+    // the arrival gap and the eight degrees in place forever.
+    fixture.settle();
+    const auto& transformA = fixture.world.getComponent<TransformComponent>(portA);
+    const auto& transformB = fixture.world.getComponent<TransformComponent>(portB);
+    const PartDefinition* ring = findDefinition(kPartDockingRing);
+    const WorldVec3 faceA =
+        transformA.position + WorldVec3(transformA.rotation * ring->nodes[capture.nodeA].position);
+    const WorldVec3 faceB =
+        transformB.position + WorldVec3(transformB.rotation * ring->nodes[capture.nodeB].position);
+    SW_CHECK(glm::length(faceA - faceB) < 1.0e-3);
+    const Vec3 directionA = transformA.rotation * ring->nodes[capture.nodeA].direction;
+    const Vec3 directionB = transformB.rotation * ring->nodes[capture.nodeB].direction;
+    SW_CHECK(glm::dot(directionA, directionB) < -0.9999f);
+
+    // One docking joint, on the faces the capture chose.
     u32 dockingJoints = 0;
-    world.forEach<JointComponent>([&](ecs::Entity, JointComponent& joint) {
-        if (joint.type == JointType::Docking &&
-            ((joint.partA == portA && joint.partB == portB) ||
-             (joint.partA == portB && joint.partB == portA)))
+    fixture.world.forEach<JointComponent>([&](ecs::Entity, JointComponent& joint) {
+        if (joint.type == JointType::Docking)
         {
             ++dockingJoints;
+            SW_CHECK_EQ(joint.attachPointA, capture.nodeA);
+            SW_CHECK_EQ(joint.attachPointB, capture.nodeB);
         }
     });
     SW_CHECK_EQ(dockingJoints, 1u);
+}
+
+SW_TEST(ADockedPairKeepsTheMomentumTheTwoCraftBroughtToIt)
+{
+    // A TEN-TONNE TUG DOES NOT TEACH A FIVE-HUNDRED-TONNE STATION ITS
+    // VELOCITY. The old merge kept the survivor's velocity and threw the other
+    // craft's away, which is a perfectly inelastic collision with the survivor
+    // as an infinite-mass wall — and it ran with the STATION as the absorbed
+    // side whenever the player arrived in the smaller craft.
+    DockFixture fixture;
+    constexpr f64 kStation = 500000.0;
+    constexpr f64 kTug = 10000.0;
+    const ecs::Entity station =
+        fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0}, kStation, {0.0, 0.0, 0.0});
+    const ecs::Entity tug = fixture.makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0}, kTug,
+                                               {0.0, 0.0, 0.4});
+    const ecs::Entity portStation =
+        fixture.addPart(station, kPartDockingRing, {0, 0, -1.0f});
+    const ecs::Entity portTug = fixture.addPart(tug, kPartDockingRing, {0, 0, 1.0f});
+    fixture.settle();
+
+    const WorldVec3 momentumBefore =
+        fixture.world.getComponent<phys::DynamicBodyComponent>(station).velocity * kStation +
+        fixture.world.getComponent<phys::DynamicBodyComponent>(tug).velocity * kTug;
+
+    const DockingCapture capture = dockingCapture(fixture.world, portStation, portTug);
+    SW_CHECK(capture.valid);
+    SW_CHECK(dockVessels(fixture.world, capture));
+
+    const auto& merged = fixture.world.getComponent<phys::DynamicBodyComponent>(station);
+    SW_CHECK(std::abs(merged.mass - (kStation + kTug)) < 1.0);
+    const WorldVec3 momentumAfter = merged.velocity * merged.mass;
+    SW_CHECK(glm::length(momentumAfter - momentumBefore) < 1.0);
+    // ...and the station has barely moved: 0.4 m/s of tug into fifty times
+    // its own mass is under a centimetre a second.
+    SW_CHECK(merged.velocity.z > 0.0);
+    SW_CHECK(merged.velocity.z < 0.01);
+
+    // The memory PartFlexSystem differentiates has to be the merged body's, or
+    // the jump from one velocity to the other reads as thousands of g and
+    // bends every joint on the craft at the instant of capture.
+    const auto& aggregate = fixture.world.getComponent<VesselComponent>(station);
+    SW_CHECK(glm::length(aggregate.previousVelocity - merged.velocity) < 1.0e-9);
+}
+
+SW_TEST(UndockingSplitsTheCraftAndPushesBothWaysEqually)
+{
+    DockFixture fixture;
+    const ecs::Entity vesselA =
+        fixture.makeVessel({0.0, 0.0, 0.0}, {1, 0, 0, 0}, 4000.0, {0.0, 0.0, 100.0});
+    const ecs::Entity vesselB =
+        fixture.makeVessel({0.0, 0.0, -3.0}, {1, 0, 0, 0}, 4000.0, {0.0, 0.0, 100.0});
+    const ecs::Entity portA = fixture.addPart(vesselA, kPartDockingRing, {0, 0, -1.0f});
+    const ecs::Entity tankA = fixture.addPart(vesselA, kPartFuelTankMedium, {0, 0, 2.0f});
+    const ecs::Entity portB = fixture.addPart(vesselB, kPartDockingRing, {0, 0, 1.0f});
+    const ecs::Entity tankB = fixture.addPart(vesselB, kPartFuelTankMedium, {0, 0, 3.0f});
+    fixture.settle();
+    connectParts(fixture.world, portA, tankA, 0, 0, JointType::Stack, 2.0e5, 2.0e5);
+    connectParts(fixture.world, portB, tankB, 1, 0, JointType::Stack, 2.0e5, 2.0e5);
+    SW_CHECK(dockVessels(fixture.world,
+                         dockingCapture(fixture.world, portA, portB)));
+
+    const f64 massBefore =
+        fixture.world.getComponent<phys::DynamicBodyComponent>(vesselA).mass;
+    const WorldVec3 momentumBefore =
+        fixture.world.getComponent<phys::DynamicBodyComponent>(vesselA).velocity *
+        massBefore;
+
+    // PRESS IT ON YOUR OWN PORT AND THE OTHER CRAFT LEAVES.
+    const ecs::Entity leaving = undockAt(fixture.world, portA);
+    SW_CHECK(!leaving.isNull());
+    SW_CHECK(leaving != vesselA);
+
+    // The two sides went back to where they came from, part for part.
+    SW_CHECK(fixture.world.getComponent<PartComponent>(portA).vessel == vesselA);
+    SW_CHECK(fixture.world.getComponent<PartComponent>(tankA).vessel == vesselA);
+    SW_CHECK(fixture.world.getComponent<PartComponent>(portB).vessel == leaving);
+    SW_CHECK(fixture.world.getComponent<PartComponent>(tankB).vessel == leaving);
+    // ...and the joint they were holding hands with is gone, while the two
+    // structural ones are untouched.
+    u32 docking = 0;
+    u32 structural = 0;
+    fixture.world.forEach<JointComponent>([&](ecs::Entity, JointComponent& joint) {
+        if (joint.type == JointType::Docking) { ++docking; }
+        else { ++structural; }
+    });
+    SW_CHECK_EQ(docking, 0u);
+    SW_CHECK_EQ(structural, 2u);
+
+    // EQUAL AND OPPOSITE. The pair's momentum is what it was — a release is
+    // two craft pushing off each other, not one of them being given a shove.
+    const WorldVec3 keptVelocity =
+        fixture.world.getComponent<phys::DynamicBodyComponent>(vesselA).velocity;
+    const WorldVec3 leftVelocity =
+        fixture.world.getComponent<phys::DynamicBodyComponent>(leaving).velocity;
+    const f64 half = massBefore * 0.5;
+    SW_CHECK(glm::length(keptVelocity * half + leftVelocity * half - momentumBefore) <
+             1.0e-6 * massBefore);
+    // They are moving apart, not together.
+    SW_CHECK(glm::length(leftVelocity - keptVelocity) > 0.1);
+    SW_CHECK((leftVelocity.z - keptVelocity.z) < 0.0);
+
+    // An undocked port is not docked: pressing again does nothing.
+    SW_CHECK(undockAt(fixture.world, portA).isNull());
 }
 
 SW_TEST(PartsRideTheirVesselRigidly)
@@ -285,7 +660,8 @@ SW_TEST(ShippedCatalogLoadsWithNodesOnColliderSurfaces)
     // + the ten ENDURANCE pieces (F15): five module kinds, the connecting
     // tunnel, the core hub and its spoke, and the two support craft — all
     // ordinary vessel parts.
-    SW_CHECK_EQ(rocketParts, static_cast<usize>(20)); // + the OS-1 surveyor
+    // + the OS-1 surveyor, + the FR-1 fairing base, + the TR-2 radial decoupler
+    SW_CHECK_EQ(rocketParts, static_cast<usize>(22));
     // + CV-1, BT-1, PL-1, CW-1, and F5's VB-1 hall and LP-1 pad
     SW_CHECK_EQ(buildings, static_cast<usize>(12));
     // CR-1 crate, EV-1 suit, CR-2 vehicle cradle

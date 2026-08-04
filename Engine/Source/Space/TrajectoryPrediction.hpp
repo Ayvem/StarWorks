@@ -213,6 +213,51 @@ namespace sw::space
         const CelestialIndex& index, const std::vector<TrajectorySegment>& segments,
         i32 targetIndex, u32 samplesPerSegment = 256);
 
+    // ------------------------------------------------------------------------
+    // ...AND THE TARGET DOES NOT HAVE TO BE A WORLD (F49)
+    //
+    // A rendezvous is with a CRAFT far more often than with a planet, and the
+    // arithmetic above never cared which: all it asks of a target is "where
+    // are you at time t", and it asks that a few hundred times across the
+    // whole plan. A body answers from its own conic about its parent; a craft
+    // answers from a conic taken off its state vectors — which is exactly the
+    // orbit the map already draws round it, so the marker and the number
+    // cannot disagree.
+    //
+    // What a craft's answer is NOT is a promise: it is where the target would
+    // be if it coasted, and a target under thrust will not be there. That is
+    // the same caveat the player's own dotted line carries, and it is why this
+    // is a conic rather than a second integration.
+    // ------------------------------------------------------------------------
+    struct TargetPath
+    {
+        /// Whose frame `orbit` is in, or -1 when `staticPosition` is already
+        /// a world position.
+        i32 primaryIndex = -1;
+        bool hasOrbit = false;
+        phys::KeplerOrbit orbit{};
+        WorldVec3 staticPosition{0.0};
+        /// Radius of the thing, for the "is that an impact?" test. Zero for a
+        /// craft, which you can hit but not crash into.
+        f64 bodyRadius = 0.0;
+    };
+
+    /// How a catalogued body moves — the path `closestApproachToBody` uses.
+    [[nodiscard]] TargetPath bodyTargetPath(const CelestialIndex& index, i32 targetIndex);
+
+    /// How a coasting craft moves, from where it is and how fast it is going.
+    /// `primaryIndex` is the body it is bound to (its SOI); a state that has
+    /// no conic (radial, parabolic) comes back as a fixed point, which is
+    /// honest for the second or two before it does.
+    [[nodiscard]] TargetPath craftTargetPath(const CelestialIndex& index, i32 primaryIndex,
+                                             const WorldVec3& worldPosition,
+                                             const WorldVec3& worldVelocity,
+                                             f64 nowSeconds);
+
+    [[nodiscard]] ClosestApproach closestApproachToPath(
+        const CelestialIndex& index, const std::vector<TrajectorySegment>& segments,
+        const TargetPath& target, u32 samplesPerSegment = 256);
+
     /// THE BURN STILL TO FLY.
     ///
     /// What is left of a planned dv while the engine is lit — the number a

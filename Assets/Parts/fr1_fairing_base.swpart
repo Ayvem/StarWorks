@@ -1,0 +1,94 @@
+{
+  "id": 11,
+  "type": "Fairing",
+  "name": "FR-1 Fairing Base",
+  "dryMassKg": 180,
+  "costCredits": 900,
+  "volumeM3": 1,
+  "crashToleranceMps": 8,
+  "breakingForceN": 260000,
+  "dragCoefficientArea": 0.35,
+  "maxSlopeTangent": 0,
+  "minOreDensity": 0,
+  "capacities": [],
+  "shapes": [
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0],
+      "rotation": [0.7071068, 0.7071068, 0, 0],
+      "scale": [1.25, 0.34, 1.25],
+      "color": [0.82, 0.83, 0.86, 1],
+      "emissive": 0,
+      "segments": 24,
+      "visible": true,
+      "collider": true
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 0, -0.36],
+      "rotation": [0.7071068, 0.7071068, 0, 0],
+      "scale": [1.31, 0.06, 1.31],
+      "color": [0.55, 0.57, 0.6, 1],
+      "emissive": 0,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "cylinder",
+      "position": [0, 0, 0.36],
+      "rotation": [0.7071068, 0.7071068, 0, 0],
+      "scale": [1.31, 0.06, 1.31],
+      "color": [0.55, 0.57, 0.6, 1],
+      "emissive": 0,
+      "segments": 24,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [0.95, 0, 0],
+      "rotation": [1, 0, 0, 0],
+      "scale": [0.28, 0.2, 0.5],
+      "color": [0.3, 0.32, 0.36, 1],
+      "emissive": 0,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    },
+    {
+      "kind": "box",
+      "position": [-0.95, 0, 0],
+      "rotation": [1, 0, 0, 0],
+      "scale": [0.28, 0.2, 0.5],
+      "color": [0.3, 0.32, 0.36, 1],
+      "emissive": 0,
+      "segments": 12,
+      "visible": true,
+      "collider": false
+    }
+  ],
+  "nodes": [
+    {
+      "name": "top",
+      "position": [0, 0, -0.42],
+      "direction": [0, 0, -1],
+      "type": "stack",
+      "size": 1.25
+    },
+    {
+      "name": "bottom",
+      "position": [0, 0, 0.42],
+      "direction": [0, 0, 1],
+      "type": "stack",
+      "size": 1.25
+    }
+  ],
+  "hitboxes": [
+    {
+      "center": [0, 0, 0],
+      "halfExtents": [1.25, 1.25, 0.42]
+    }
+  ],
+  "animations": []
+}

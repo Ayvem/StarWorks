@@ -24,6 +24,7 @@ add_executable(StarWorksTests
     Source/ConstructionTests.cpp
     Source/BlueprintTests.cpp
     Source/AeroTests.cpp
+    Source/FairingTests.cpp
     Source/PrimitivesTests.cpp
     Source/SaveTests.cpp
     Source/ScreenMarkerTests.cpp

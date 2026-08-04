@@ -27,6 +27,7 @@
 // twelve-tonne rocket comes out of it, and `BlueprintTests` weighs it.
 // ============================================================================
 
+#include "Gameplay/Fairing.hpp"
 #include "Gameplay/Parts.hpp"
 
 #include <filesystem>
@@ -56,6 +57,9 @@ namespace sw::parts
         /// design round-trips through disk and back into the editor without
         /// losing the grouping its UNDO depends on.
         i32 symmetryGroup = -1;
+        /// F48: the profile of the shell drawn on this part, when it is a
+        /// fairing base. Zero rings on everything else.
+        parts::FairingComponent fairing{};
     };
 
     struct ShipBlueprint

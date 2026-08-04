@@ -385,3 +385,107 @@ SW_TEST(TheShippedDesignsLoadAndArePriced)
         }
     }
 }
+
+// ============================================================================
+// F47: CREATIVE MODE PAYS NOTHING FOR THE METAL — and waits the same.
+//
+// A creative session that still had to mine, smelt and belt twelve tonnes
+// before it could fly a design is creative in name only: the mode exists to
+// put a craft in the air, and the craft is the one thing the factory stood
+// between the player and. What it does NOT waive is the labour, because a hall
+// that finished instantly would stop being a machine.
+// ============================================================================
+SW_TEST(ACreativeHallBuildsOnAnEmptyBinAndStillTakesTheTime)
+{
+    const ShipBlueprint design = threePartStack();
+    const BillOfMaterials bill = blueprintCost(design);
+    SW_CHECK(bill.totalKg() > 1.0); // the fixture has to cost something
+
+    auto makeHall = [&](ecs::World& world) {
+        const ecs::Entity hall = world.createEntity();
+        factory::AssemblyComponent assembly{};
+        factory::assemblyOrder(assembly, design.name, bill.ironKg, bill.copperKg);
+        assembly.buildRateKgPerSecond = 100.0;
+        world.addComponent(hall, assembly);
+        world.addComponent(hall, factory::VehicleQueueComponent{});
+        factory::InventoryComponent inventory{};
+        // Room for every crate the rate could possibly finish, so that what
+        // this test measures is the RATE and not the size of the bin: a
+        // 60 m^3 crate fills a 200 m^3 apron in three hulls and the hall goes
+        // BLOCKED, which is correct and is a different fact.
+        inventory.volumeCapacityM3 = 1.0e6;
+        world.addComponent(hall, inventory); // EMPTY: not a gram of metal
+        return hall;
+    };
+
+    // Survival: an empty bin builds nothing, forever, and says why.
+    {
+        ecs::World world;
+        const ecs::Entity hall = makeHall(world);
+        factory::AssemblySystem system;
+        for (int i = 0; i < 200; ++i)
+        {
+            system.update(world, 1.0f);
+        }
+        const auto& built = world.getComponent<factory::AssemblyComponent>(hall);
+        SW_CHECK_EQ(built.completed, 0u);
+        SW_CHECK_EQ(built.state, factory::RecipeStateComponent::kStarved);
+    }
+
+    // Creative: the same hall, the same empty bin, and a rocket comes out.
+    {
+        ecs::World world;
+        const ecs::Entity hall = makeHall(world);
+        factory::AssemblySystem system;
+        system.setFreeMaterials(true);
+
+        // ...AND THE TIME IS THE SAME. One second of a 100 kg/s hall cannot
+        // finish a bill of several tonnes, free or not: if this ever passes,
+        // the mode has turned the hall into a spawner.
+        system.update(world, 1.0f);
+        SW_CHECK_EQ(world.getComponent<factory::AssemblyComponent>(hall).completed, 0u);
+        SW_CHECK(factory::assemblyProgress(
+                     world.getComponent<factory::AssemblyComponent>(hall)) > 0.0);
+
+        for (int i = 0; i < 200; ++i)
+        {
+            system.update(world, 1.0f);
+        }
+        const auto& built = world.getComponent<factory::AssemblyComponent>(hall);
+        const auto& after = world.getComponent<factory::InventoryComponent>(hall);
+        SW_CHECK(built.completed >= 1u);
+        SW_CHECK_EQ(built.state, factory::RecipeStateComponent::kRunning);
+        // One crate per hull, exactly as in survival.
+        SW_CHECK(std::abs(factory::inventoryCount(after, res::Resource::Vehicle) -
+                          static_cast<f64>(built.completed)) < 1.0e-9);
+        // AND THE BIN IS UNTOUCHED. Free means the metal is never taken, not
+        // that it is taken from a stock allowed to go negative.
+        SW_CHECK_EQ(factory::inventoryCount(after, res::Resource::Iron), 0.0);
+        SW_CHECK_EQ(factory::inventoryCount(after, res::Resource::Copper), 0.0);
+        // The number of hulls is set by the RATE and nothing else: 201 seconds
+        // of budget at 100 kg/s, divided by the bill.
+        const f64 possible = std::floor(201.0 * 100.0 / bill.totalKg());
+        SW_CHECK(static_cast<f64>(built.completed) <= possible);
+        SW_CHECK(static_cast<f64>(built.completed) >= possible - 1.0);
+    }
+
+    // ...and metal that IS in the bin stays there. A creative hall standing on
+    // a working supply chain must not quietly drain it.
+    {
+        ecs::World world;
+        const ecs::Entity hall = makeHall(world);
+        auto& inventory = world.getComponent<factory::InventoryComponent>(hall);
+        factory::inventoryAdd(inventory, res::Resource::Iron, 500.0);
+        factory::AssemblySystem system;
+        system.setFreeMaterials(true);
+        for (int i = 0; i < 200; ++i)
+        {
+            system.update(world, 1.0f);
+        }
+        SW_CHECK(world.getComponent<factory::AssemblyComponent>(hall).completed >= 1u);
+        SW_CHECK_EQ(factory::inventoryCount(
+                        world.getComponent<factory::InventoryComponent>(hall),
+                        res::Resource::Iron),
+                    500.0);
+    }
+}

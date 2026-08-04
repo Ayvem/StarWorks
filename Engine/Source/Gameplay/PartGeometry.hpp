@@ -17,7 +17,10 @@
 // ============================================================================
 
 #include "Assets/MeshData.hpp"
+#include "Gameplay/Fairing.hpp"
 #include "Gameplay/Parts.hpp"
+
+#include <span>
 
 namespace sw::parts
 {
@@ -88,6 +91,18 @@ namespace sw::parts
     /// Conservative bounding-sphere radius around the part origin
     /// (all shapes, visible or not).
     [[nodiscard]] f32 partBoundsRadius(const PartDefinition& definition);
+
+    /// THE SHELL THE PLAYER DREW, lathed into flat panels.
+    ///
+    /// One quad per (band, side), plus a fan closing the nose when the last
+    /// ring has a radius. `side` selects ONE panel column instead of the whole
+    /// shell — which is what a jettisoned fairing breaks into, and the reason
+    /// the two share a builder rather than agreeing by hand about where the
+    /// seams are.
+    [[nodiscard]] MeshData buildFairingMesh(const FairingComponent& fairing,
+                                            const Vec4& color);
+    [[nodiscard]] MeshData buildFairingPanelMesh(const FairingComponent& fairing,
+                                                 u32 side, const Vec4& color);
 
     /// True when the definition AUTHORS its collision hull as hitboxes.
     /// False means "derive it from the collider shapes", which is what every
@@ -168,4 +183,54 @@ namespace sw::parts
     [[nodiscard]] bool partsOverlap(const PartDefinition& definitionA, const Vec3& positionA,
                                     const Quat& rotationA, const PartDefinition& definitionB,
                                     const Vec3& positionB, const Quat& rotationB, f32 margin);
+
+    // ------------------------------------------------------------------------
+    // WHETHER A PLACEMENT FITS
+    //
+    // The editor's red/green light, as a function rather than as a hundred
+    // lines inside the ghost. It is here and not in the game because it was
+    // WRONG in a way only a test could have caught: a radial part was tested
+    // for overlap against the very part it was being bolted to, and the hull
+    // it was tested against is a SQUARE prism circumscribing a round tank. So
+    // a battery glued anywhere except the four compass points was inside its
+    // parent's corner, and read red. Measured on the shipped catalogue: 28% of
+    // azimuths legal at symmetry 1, 2 and 4 — and NONE AT ALL at 3, 6 and 8,
+    // because those put a clone at 120°, 60° or 45°, which is exactly where
+    // the square's corners are.
+    //
+    // A joint IS contact. Asking whether a bolt is inside the plate it is
+    // bolted to is not a question with a useful answer, so the part being
+    // attached to is not something the placement can collide with.
+    // ------------------------------------------------------------------------
+
+    /// One piece of a judgement: a definition and its pose in the design frame.
+    struct PlacementPiece
+    {
+        const PartDefinition* definition = nullptr;
+        Vec3 position{0.0f};
+        Quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    };
+
+    /// The k-th radial-symmetry copy of a pose, turned about the design's own
+    /// axis (+Z). One place, because the editor needs the same arithmetic to
+    /// judge a placement, to commit it and to draw it, and three copies of it
+    /// is three chances to disagree.
+    [[nodiscard]] PlacementPiece symmetryClone(const PlacementPiece& piece, u32 index,
+                                               u32 count);
+
+    /// Does this placement (the held part, its grabbed subtree and every
+    /// symmetry copy) intersect anything already on the design? `attachedTo`
+    /// holds the indices in `placed` of the parts it is being bolted to —
+    /// those are skipped, because a joint means they touch. There is more
+    /// than one because a ring of boosters lands on a ring of decouplers:
+    /// every copy has its own parent, and excluding only the one under the
+    /// cursor makes every other copy read as a collision with the very thing
+    /// it is being mounted on.
+    /// `outBlockedBy`, when given, receives the index of the first placed
+    /// part that stood in the way — which is the one thing a red ghost cannot
+    /// tell you and the first thing you want to know.
+    [[nodiscard]] bool placementCollides(std::span<const PlacementPiece> candidates,
+                                         std::span<const PlacementPiece> placed,
+                                         std::span<const i32> attachedTo, f32 margin,
+                                         i32* outBlockedBy = nullptr);
 } // namespace sw::parts

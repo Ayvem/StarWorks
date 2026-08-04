@@ -13,6 +13,8 @@ add_executable(StarWorks
     Source/GameFlight.cpp
     Source/GameParts.cpp
     Source/GameStars.cpp
+    Source/GameDocking.cpp
+    Source/GameFairing.cpp
     Source/GameGeology.cpp
     Source/GameHangar.cpp
     Source/GameHud.cpp

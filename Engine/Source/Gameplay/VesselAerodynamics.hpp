@@ -25,6 +25,7 @@
 // ============================================================================
 
 #include "ECS/System.hpp"
+#include "Gameplay/Fairing.hpp"
 #include "Gameplay/Parts.hpp"
 #include "Physics/Aerodynamics.hpp"
 
@@ -93,6 +94,14 @@ namespace sw::aero
             const AeroTable* table = nullptr;
             Vec3 localPosition{0.0f};
             Quat localRotation{1.0f, 0.0f, 0.0f, 0.0f};
+            /// F48: the shell this part carries, if it is a fairing base. A
+            /// fairing has no table and cannot have one — its silhouette is
+            /// drawn by the player minutes before it flies — so it answers
+            /// from its own panels instead.
+            const parts::FairingComponent* fairing = nullptr;
+            /// F48: inside somebody's shell. Contributes nothing at all: no
+            /// force, no moment, no exposed area.
+            bool shielded = false;
         };
 
         f64 m_timeSeconds = 0.0;

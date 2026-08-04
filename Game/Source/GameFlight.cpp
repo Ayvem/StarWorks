@@ -245,9 +245,10 @@ namespace game
                     const auto* state =
                         m_world.tryGetComponent<sw::parts::PartAnimationComponent>(part);
                     if (sw::parts::animationGate(*definition, state,
-                                                 sw::parts::AnimationGates::Thrust) <= 0.5)
+                                                 sw::parts::AnimationGates::Thrust) <= 0.5 ||
+                        sw::parts::engineExhaustBlocked(m_world, part))
                     {
-                        return;
+                        return; // shut down, or bolted shut: no flame either way
                     }
                     // HOW FAR BACK THE BELL ENDS, from the part's own hull
                     // rather than from a constant: the flame starts where the
@@ -474,32 +475,61 @@ namespace game
         const sw::WorldVec3 cameraPosition = m_mapCamera.position();
         constexpr sw::f32 kPickRadiusNdc = 0.06f;
 
-        sw::i32 picked = -1;
-        sw::f32 pickedDistance = kPickRadiusNdc;
-        for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
-        {
-            const sw::WorldVec3 world =
-                m_celestialIndex.positionAt(static_cast<sw::i32>(i), time);
+        const auto nearer = [&](const sw::WorldVec3& world, sw::f32& best) {
             const sw::ui::MarkerPlacement placement = sw::ui::placeScreenMarker(
                 viewProjection, sw::Vec3(world - cameraPosition), m_mapCamera.right(),
                 m_mapCamera.up(), m_mapCamera.forward());
             if (placement.offScreen)
             {
-                continue; // clamped to the border: that is a pointer, not a body
+                return false; // clamped to the border: a pointer, not a thing
             }
             const sw::f32 distance = glm::length(placement.ndc - cursor);
-            if (distance < pickedDistance)
+            if (distance >= best)
             {
-                pickedDistance = distance;
+                return false;
+            }
+            best = distance;
+            return true;
+        };
+
+        sw::i32 picked = -1;
+        sw::ecs::Entity pickedCraft{};
+        sw::f32 pickedDistance = kPickRadiusNdc;
+        for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
+        {
+            if (nearer(m_celestialIndex.positionAt(static_cast<sw::i32>(i), time),
+                       pickedDistance))
+            {
                 picked = static_cast<sw::i32>(i);
             }
         }
-        if (picked < 0)
+        // ...AND CRAFT ARE THINGS TOO (F49). Everything the map draws a beacon
+        // for can be aimed at: the rendezvous a player actually flies is with
+        // a station or a tug, not with a planet, and the machinery below never
+        // cared which — all it asks a target is where it will be.
+        m_world.forEach<TransformComponent, MapMarkerComponent>(
+            [&](sw::ecs::Entity entity, TransformComponent& transform,
+                MapMarkerComponent&) {
+                if (entity == controlledEntity() || !isTargetableCraft(entity))
+                {
+                    return; // yourself, the worlds, and things that do not fly
+                }
+                if (nearer(transform.position, pickedDistance))
+                {
+                    picked = -1;
+                    pickedCraft = entity;
+                }
+            });
+        if (picked < 0 && pickedCraft.isNull())
         {
             return; // empty space: keep whatever was targeted
         }
 
-        m_targetIndex = (picked == m_targetIndex) ? -1 : picked;
+        const bool sameCraft = !pickedCraft.isNull() && pickedCraft == m_targetVessel;
+        const bool sameBody = picked >= 0 && picked == m_targetIndex;
+        m_targetIndex = (picked >= 0 && !sameBody) ? picked : -1;
+        m_targetVessel = (!pickedCraft.isNull() && !sameCraft) ? pickedCraft
+                                                              : sw::ecs::Entity{};
         m_approach = {};
         m_nodeApproach = {};
         m_lastPredictionSeconds = -1.0e9; // answer the new question now
@@ -508,10 +538,112 @@ namespace game
             SW_LOG_INFO("Game", "TARGET: {}",
                         m_celestialIndex.body(static_cast<sw::usize>(m_targetIndex)).name);
         }
+        else if (!m_targetVessel.isNull())
+        {
+            SW_LOG_INFO("Game", "TARGET: {}", targetName());
+        }
         else
         {
             SW_LOG_INFO("Game", "TARGET cleared");
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // WHAT IS TARGETED, AND WHERE IT WILL BE
+    // ------------------------------------------------------------------------
+
+    /// Can this entity be aimed at? A map marker alone is not enough — the
+    /// outpost's beacons wear one and so does every world — so a target is
+    /// something that MOVES: under physics, or on rails. That rules out the
+    /// ground, and rules in a spent stage, a station and the Endurance.
+    bool StarWorksGame::isTargetableCraft(sw::ecs::Entity entity) const
+    {
+        auto& world = const_cast<sw::ecs::World&>(m_world);
+        if (world.tryGetComponent<MapMarkerComponent>(entity) == nullptr ||
+            world.tryGetComponent<sw::phys::GravitySourceComponent>(entity) != nullptr)
+        {
+            return false;
+        }
+        return world.tryGetComponent<sw::phys::DynamicBodyComponent>(entity) != nullptr ||
+               world.tryGetComponent<sw::phys::OnRailsComponent>(entity) != nullptr;
+    }
+
+    std::string StarWorksGame::targetName() const
+    {
+        if (m_targetIndex >= 0 &&
+            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        {
+            return m_celestialIndex.body(static_cast<sw::usize>(m_targetIndex)).name;
+        }
+        if (m_targetVessel.isNull())
+        {
+            return {};
+        }
+        // A craft has no name of its own yet, so it is described by what it
+        // is: parts and, if it carries a pilot's seat, the fact that it is a
+        // ship rather than a piece of one.
+        auto& world = const_cast<sw::ecs::World&>(m_world);
+        const auto* vessel = world.tryGetComponent<sw::parts::VesselComponent>(m_targetVessel);
+        if (vessel == nullptr || vessel->partCount == 0)
+        {
+            return std::format("CRAFT {}", m_targetVessel.index);
+        }
+        return std::format("CRAFT {} ({} PARTS)", m_targetVessel.index,
+                           vessel->partCount);
+    }
+
+    bool StarWorksGame::targetWorldPosition(sw::WorldVec3& outPosition) const
+    {
+        const sw::f64 time = m_physicsLane->presentSeconds();
+        if (m_targetIndex >= 0 &&
+            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        {
+            outPosition = m_celestialIndex.positionAt(m_targetIndex, time);
+            return true;
+        }
+        auto& world = const_cast<sw::ecs::World&>(m_world);
+        if (const auto* transform =
+                world.tryGetComponent<TransformComponent>(m_targetVessel))
+        {
+            outPosition = transform->position;
+            return true;
+        }
+        return false;
+    }
+
+    /// The target's coasting path, whichever kind of thing it is. A craft that
+    /// has been staged away, docked into something else or otherwise stopped
+    /// existing clears the target rather than answering for a dead entity.
+    bool StarWorksGame::targetPath(sw::space::TargetPath& outPath)
+    {
+        if (m_targetIndex >= 0 &&
+            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        {
+            outPath = sw::space::bodyTargetPath(m_celestialIndex, m_targetIndex);
+            return true;
+        }
+        if (m_targetVessel.isNull())
+        {
+            return false;
+        }
+        const auto* transform = m_world.tryGetComponent<TransformComponent>(m_targetVessel);
+        const auto* body =
+            m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(m_targetVessel);
+        if (transform == nullptr)
+        {
+            m_targetVessel = {};
+            m_approach = {};
+            m_nodeApproach = {};
+            return false;
+        }
+        const sw::f64 time = m_physicsLane->presentSeconds();
+        outPath = sw::space::craftTargetPath(
+            m_celestialIndex,
+            m_celestialIndex.soiPrimaryAt(transform->position,
+                                          m_physicsLane->presentSeconds()),
+            transform->position,
+            body != nullptr ? body->velocity : sw::WorldVec3{0.0}, time);
+        return true;
     }
 
     // ------------------------------------------------------------------------
@@ -676,13 +808,17 @@ namespace game
                                      m_prediction);
 
         // ---- how close does this plan pass the target? ---------------------
+        // A world or a craft: both answer the same question, so both go down
+        // the same path — the one asks its catalogue, the other its own state
+        // vectors, and neither is a promise about a target under thrust.
         m_approach = {};
         m_nodeApproach = {};
-        if (m_targetIndex >= 0 &&
-            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        sw::space::TargetPath target{};
+        const bool haveTarget = targetPath(target);
+        if (haveTarget)
         {
-            m_approach = sw::space::closestApproachToBody(m_celestialIndex, m_prediction,
-                                                          m_targetIndex);
+            m_approach =
+                sw::space::closestApproachToPath(m_celestialIndex, m_prediction, target);
         }
 
         // ---- the planned burn: dv applied in the orbital frame at the node ----
@@ -772,12 +908,12 @@ namespace game
         sw::space::predictTrajectory(m_celestialIndex, nodePosition,
                                      m_nodePostBurnVelocity, m_nodeTime, nodeSettings,
                                      m_nodePrediction);
-        if (m_targetIndex >= 0)
+        if (haveTarget)
         {
             // What the PLANNED burn would achieve, which is the number the
             // player is actually dialling the node for.
-            m_nodeApproach = sw::space::closestApproachToBody(
-                m_celestialIndex, m_nodePrediction, m_targetIndex);
+            m_nodeApproach = sw::space::closestApproachToPath(
+                m_celestialIndex, m_nodePrediction, target);
         }
     }
 
@@ -862,17 +998,26 @@ namespace game
     // STAGING: fire the ship's next decoupler, nose-most last.
     void StarWorksGame::fireNextDecoupler()
     {
+        // TAIL-MOST FIRST, which is what "the next stage" means on a rocket
+        // and what the comment above this function has always claimed. It
+        // used to take whichever decoupler the ECS happened to visit first,
+        // so on a craft with more than one the firing order was an
+        // implementation detail — and a craft with more than one is exactly
+        // what radial decouplers made ordinary.
         sw::ecs::Entity decoupler{};
+        sw::f32 tailmost = -1.0e9f;
         m_world.forEach<sw::parts::PartComponent>(
             [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
-                if (part.vessel != m_shipEntity || !decoupler.isNull())
+                if (part.vessel != m_shipEntity)
                 {
                     return;
                 }
                 const auto* definition = sw::parts::findDefinition(part.definitionId);
                 if (definition != nullptr &&
-                    definition->type == sw::parts::PartType::Decoupler)
+                    definition->type == sw::parts::PartType::Decoupler &&
+                    part.localPosition.z > tailmost)
                 {
+                    tailmost = part.localPosition.z;
                     decoupler = entity;
                 }
             });

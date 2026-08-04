@@ -53,6 +53,8 @@ namespace sw::ui
         RecipeStop,
         PowerPriority,
         PartAnimation, // index: an animation on the part whose menu is open
+        PartUndock,    // the release button on a docked port's own menu
+        PartJettison,  // the release button on a closed fairing's own menu
         BuildArm,      // index: a building definition to place
         MapCycleVessel,
         MapWarpToNode,
@@ -108,6 +110,18 @@ namespace sw::ui
         if (id >= 900 && id < 900u + kHudPartAnimationSlots)
         {
             return {HudAction::PartAnimation, id - 900u};
+        }
+        // ...and the row after the last animation slot is the docked port's
+        // release. It sits INSIDE the part menu's block rather than in a range
+        // of its own because it is one more row on that same panel, and it is
+        // bounded above for the same reason the animations are.
+        if (id == 900u + kHudPartAnimationSlots)
+        {
+            return {HudAction::PartUndock, id};
+        }
+        if (id == 901u + kHudPartAnimationSlots)
+        {
+            return {HudAction::PartJettison, id};
         }
         if (id == 898 && hasConfigTarget) { return {HudAction::VabProduce, id}; }
         if (id == 899 && hasConfigTarget) { return {HudAction::VabCancel, id}; }

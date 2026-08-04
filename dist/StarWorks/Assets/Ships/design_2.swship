@@ -20,22 +20,13 @@
       "symmetryGroup": -1
     },
     {
-      "definitionId": 5,
-      "position": [0.33735227584838867, 1.047001838684082, 0.7060971260070801],
-      "rotation": [0.5887777805328369, 0, 0, -0.808294951915741],
+      "definitionId": 6,
+      "position": [0, 0, -1.6999999284744263],
+      "rotation": [1, 0, 0, 0],
       "parent": 0,
-      "parentPoint": 255,
-      "childPoint": 0,
-      "symmetryGroup": 0
-    },
-    {
-      "definitionId": 5,
-      "position": [-0.3373521566390991, -1.047001838684082, 0.7060971260070801],
-      "rotation": [0.808294951915741, 0, 0, 0.5887778401374817],
-      "parent": 0,
-      "parentPoint": 255,
-      "childPoint": 0,
-      "symmetryGroup": 0
+      "parentPoint": 0,
+      "childPoint": 1,
+      "symmetryGroup": -1
     }
   ]
 }

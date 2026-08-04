@@ -5,6 +5,8 @@
 
 #include "StarWorksGame.hpp"
 
+#include <glm/gtx/quaternion.hpp> // glm::rotation: the shortest arc between two vectors
+
 #include <cstdio>
 
 #include "GameInternal.hpp"
@@ -110,6 +112,8 @@ namespace game
         // burn, and extends it to every dynamic body rather than only the
         // thing the player is flying — so crates and debris can topple too.
         physics.addSystem(std::make_unique<AngularIntegrationSystem>());
+        // ...and the pieces of anything that came apart, counting down.
+        physics.addSystem(std::make_unique<DebrisLifetimeSystem>());
         {
             auto thrust = std::make_unique<ThrustSystem>();
             m_thrustSystem = thrust.get();
@@ -163,7 +167,11 @@ namespace game
         // ...and the assembly hall, which is the executor's sibling: same
         // lane, same power, same bulk catch-up, but its bill of materials
         // comes from a design the player drew rather than from a recipe.
-        automation.addSystem(std::make_unique<sw::factory::AssemblySystem>());
+        {
+            auto assembly = std::make_unique<sw::factory::AssemblySystem>();
+            m_assemblySystem = assembly.get();
+            automation.addSystem(std::move(assembly));
+        }
         automation.addSystem(std::make_unique<sw::factory::MinerSystem>());
         automation.addSystem(std::make_unique<sw::factory::RefinerySystem>());
 
@@ -321,6 +329,19 @@ namespace game
             noGlare != nullptr && *noGlare != '\0' && *noGlare != '0')
         {
             m_debugNoGlare = true;
+        }
+        // SW_CREATIVE=1 starts the session in creative mode.
+        //
+        // It sets the same flag the menu's MODE row toggles, before newGame
+        // runs — which is the only place it CAN be set, because the mode is
+        // chosen on a title screen a capture never renders and is fixed for
+        // the session afterwards. What it skips is a click on a menu; what it
+        // presses is the session state itself, and applyCreativeMode is what
+        // pushes that into the systems either way.
+        if (const char* creative = std::getenv("SW_CREATIVE");
+            creative != nullptr && *creative != '\0' && *creative != '0')
+        {
+            m_creativeMode = true;
         }
         const char* spec = std::getenv("SW_SHOT");
         if (spec == nullptr || *spec == '\0')
@@ -814,6 +835,50 @@ namespace game
             {
                 c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             }
+            // SW_TARGET=CRAFT aims at the nearest OTHER vessel, which is the
+            // half of this a body name cannot express — and the half a
+            // rendezvous is actually about.
+            // ...and it waits, because the craft to aim at is usually one
+            // SW_SPAWN has not put there yet when this line first runs.
+            if (wantedBody == "CRAFT" && !m_debugCraftTargeted &&
+                ++m_debugTargetDelay > 30)
+            {
+                sw::ecs::Entity nearest{};
+                sw::f64 nearestRange = 1.0e30;
+                const auto* mine =
+                    m_world.tryGetComponent<TransformComponent>(controlledEntity());
+                m_world.forEach<TransformComponent, MapMarkerComponent>(
+                    [&](sw::ecs::Entity entity, TransformComponent& transform,
+                        MapMarkerComponent&) {
+                        if (entity == controlledEntity() || mine == nullptr ||
+                            !isTargetableCraft(entity))
+                        {
+                            return;
+                        }
+                        const sw::f64 range =
+                            glm::length(transform.position - mine->position);
+                        if (range < nearestRange)
+                        {
+                            nearestRange = range;
+                            nearest = entity;
+                        }
+                    });
+                if (nearest.isNull())
+                {
+                    // Loud and once: "there was nothing to aim at" and "aiming
+                    // is broken" are different bugs.
+                    SW_LOG_ERROR("Game", "SW_TARGET=CRAFT: no other craft in the world");
+                }
+                else
+                {
+                    m_debugCraftTargeted = true;
+                    m_targetIndex = -1;
+                    m_targetVessel = nearest;
+                    m_lastPredictionSeconds = -1.0e9;
+                    SW_LOG_INFO("Game", "SW_TARGET: {} at {:.0f} m", targetName(),
+                                nearestRange);
+                }
+            }
             for (sw::usize i = 0; i < m_celestialIndex.size(); ++i)
             {
                 std::string candidate = m_celestialIndex.body(i).name;
@@ -824,6 +889,7 @@ namespace game
                 if (candidate == wantedBody)
                 {
                     m_targetIndex = static_cast<sw::i32>(i);
+                    m_targetVessel = {};
                     SW_LOG_INFO("Game", "SW_TARGET: {}", candidate);
                     break;
                 }
@@ -869,6 +935,173 @@ namespace game
                 SW_LOG_INFO("Game", "SW_ESCAPE: {} bn km out, 120 km/s outbound",
                             billions);
                 return;
+            }
+        }
+        if (m_debugMachineRow != 0u && !m_configTarget.isNull())
+        {
+            const HudButton* button = nullptr;
+            for (const HudButton& candidate : m_hudButtons)
+            {
+                if (candidate.id == m_debugMachineRow) { button = &candidate; break; }
+            }
+            if (button != nullptr)
+            {
+                static_cast<void>(applyHudClick(*button));
+                m_debugMachineRow = 0u;
+                m_debugMachineOpened = true;
+            }
+            else if (std::FILE* miss = std::fopen("/tmp/sw_buttonprobe.txt", "w"))
+            {
+                std::fprintf(miss, "MACHINE ROW %u IS NOT IN THE TABLE: %zu ids",
+                             m_debugMachineRow, m_hudButtons.size());
+                for (const HudButton& candidate : m_hudButtons)
+                {
+                    std::fprintf(miss, " %u", candidate.id);
+                }
+                std::fprintf(miss, "\n");
+                std::fclose(miss);
+            }
+        }
+        // SW_DOCK=<design>: put that craft on a docking approach.
+        //
+        // WHAT IT PRESSES AND WHAT IT DOES NOT. It spawns a second craft and
+        // parks it a couple of metres off the player's free port, squared up
+        // and drifting in at a fifth of a metre a second — and then it stops.
+        // The capture, the four limits, the merge and the momentum are the
+        // real feature's, running on the real approach, which is the only way
+        // a picture of a dock is evidence that docking works. A hook that
+        // called dockVessels itself would photograph nothing but itself.
+        if (const char* dockDesign = std::getenv("SW_DOCK");
+            dockDesign != nullptr && !m_debugDockSpawned && ++m_debugDockDelay > 60)
+        {
+            m_debugDockSpawned = true;
+            // The player's own free docking face.
+            sw::ecs::Entity myPort{};
+            sw::u8 myNode = 0;
+            m_world.forEach<sw::parts::PartComponent>(
+                [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
+                    if (!myPort.isNull() || part.vessel != m_shipEntity)
+                    {
+                        return;
+                    }
+                    const auto* definition = sw::parts::findDefinition(part.definitionId);
+                    if (definition == nullptr ||
+                        definition->type != sw::parts::PartType::DockingPort)
+                    {
+                        return;
+                    }
+                    for (sw::usize i = 0; i < definition->nodes.size(); ++i)
+                    {
+                        bool taken = false;
+                        m_world.forEach<sw::parts::JointComponent>(
+                            [&](sw::ecs::Entity, sw::parts::JointComponent& joint) {
+                                if ((joint.partA == entity &&
+                                     joint.attachPointA == static_cast<sw::u8>(i)) ||
+                                    (joint.partB == entity &&
+                                     joint.attachPointB == static_cast<sw::u8>(i)))
+                                {
+                                    taken = true;
+                                }
+                            });
+                        if (!taken)
+                        {
+                            myPort = entity;
+                            myNode = static_cast<sw::u8>(i);
+                            break;
+                        }
+                    }
+                });
+            const sw::parts::ShipBlueprint* design = sw::parts::findBlueprint(dockDesign);
+            if (myPort.isNull() || design == nullptr)
+            {
+                SW_LOG_ERROR("Game",
+                             "SW_DOCK: {} — the craft needs a free docking port and "
+                             "'{}' must be a shipped design",
+                             myPort.isNull() ? "no free port on the ship" : "no design",
+                             dockDesign);
+            }
+            else
+            {
+                const auto& portTransform =
+                    m_world.getComponent<TransformComponent>(myPort);
+                const auto* myDefinition = sw::parts::findDefinition(
+                    m_world.getComponent<sw::parts::PartComponent>(myPort).definitionId);
+                const sw::parts::AttachNode& face = myDefinition->nodes[myNode];
+                const sw::WorldVec3 facePosition =
+                    portTransform.position +
+                    sw::WorldVec3(portTransform.rotation * face.position);
+                const sw::Vec3 faceDirection =
+                    glm::normalize(portTransform.rotation * face.direction);
+
+                std::vector<BlueprintPart> saved;
+                saved.swap(m_blueprint);
+                m_blueprint = partsFromDesign(*design);
+                const sw::ecs::Entity vessel = instantiateBlueprint({});
+                m_blueprint.swap(saved);
+
+                // Find the newcomer's own free face and place the craft so the
+                // two look at each other across a two-metre gap.
+                sw::ecs::Entity itsPort{};
+                sw::u8 itsNode = 0;
+                m_world.forEach<sw::parts::PartComponent>(
+                    [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
+                        if (!itsPort.isNull() || part.vessel != vessel)
+                        {
+                            return;
+                        }
+                        const auto* definition =
+                            sw::parts::findDefinition(part.definitionId);
+                        if (definition != nullptr &&
+                            definition->type == sw::parts::PartType::DockingPort)
+                        {
+                            itsPort = entity;
+                            itsNode = 0; // the nose face of a ring
+                        }
+                    });
+                auto* spawned = m_world.tryGetComponent<TransformComponent>(vessel);
+                const auto* itsPart =
+                    itsPort.isNull()
+                        ? nullptr
+                        : m_world.tryGetComponent<sw::parts::PartComponent>(itsPort);
+                const auto* itsDefinition =
+                    (itsPart != nullptr) ? sw::parts::findDefinition(itsPart->definitionId)
+                                         : nullptr;
+                if (spawned != nullptr && itsDefinition != nullptr)
+                {
+                    // Turn it to face the player's port, then slide it back so
+                    // its own face sits `gap` metres in front.
+                    constexpr sw::f64 kGap = 2.0;
+                    const sw::parts::AttachNode& itsFace = itsDefinition->nodes[itsNode];
+                    const sw::Quat aim =
+                        glm::rotation(itsFace.direction, -faceDirection);
+                    spawned->rotation = glm::normalize(aim);
+                    const sw::Vec3 offset =
+                        aim * (itsPart->localPosition +
+                               itsPart->localRotation * itsFace.position);
+                    spawned->position = facePosition +
+                                        sw::WorldVec3(faceDirection) * kGap -
+                                        sw::WorldVec3(offset);
+                    if (auto* moving =
+                            m_world.tryGetComponent<sw::phys::DynamicBodyComponent>(vessel))
+                    {
+                        const auto& mineBody =
+                            m_world.getComponent<sw::phys::DynamicBodyComponent>(
+                                m_shipEntity);
+                        // Drifting in, slowly enough to be captured.
+                        moving->velocity = mineBody.velocity -
+                                           sw::WorldVec3(faceDirection) * 0.2;
+                        moving->angularVelocity = sw::Vec3{0.0f};
+                    }
+                    if (auto* previous =
+                            m_world.tryGetComponent<PreviousTransformComponent>(vessel))
+                    {
+                        previous->position = spawned->position;
+                        previous->rotation = spawned->rotation;
+                    }
+                }
+                rebuildHulls();
+                SW_LOG_INFO("Game", "SW_DOCK: '{}' on approach -> vessel {}", dockDesign,
+                            vessel.index);
             }
         }
         if (const char* designName = std::getenv("SW_SPAWN");
@@ -1043,7 +1276,17 @@ namespace game
             machineSpec != nullptr && !m_debugMachineOpened && ++m_debugMachineDelay > 60)
         {
             m_debugMachineOpened = true;
-            const sw::u32 wanted = static_cast<sw::u32>(std::strtoul(machineSpec, nullptr, 10));
+            // SW_MACHINE=<definitionId>[,<row>] — and the optional row presses
+            // a catalogue line on the panel THROUGH the button table, because
+            // a VAB with no design picked draws no bill, and the bill is the
+            // whole subject of a picture about what a hull costs.
+            char* machineCursor = nullptr;
+            const sw::u32 wanted =
+                static_cast<sw::u32>(std::strtoul(machineSpec, &machineCursor, 10));
+            const bool wantRow = machineCursor != nullptr && *machineCursor == ',';
+            const sw::u32 row =
+                wantRow ? static_cast<sw::u32>(std::strtoul(machineCursor + 1, nullptr, 10))
+                        : 0u;
             sw::ecs::Entity found{};
             m_world.forEach<sw::factory::BuildingComponent>(
                 [&](sw::ecs::Entity entity, sw::factory::BuildingComponent& building) {
@@ -1061,6 +1304,11 @@ namespace game
             {
                 m_configTarget = found;
                 SW_LOG_INFO("Game", "SW_MACHINE: panel open on building {}", found.index);
+                if (wantRow)
+                {
+                    m_debugMachineOpened = false; // the row needs the panel's own frame
+                    m_debugMachineRow = 900u + row;
+                }
             }
         }
         // SW_GEOLOGY=[channel]: open the survey screen, on that channel.
@@ -1229,6 +1477,87 @@ namespace game
             }
             SW_LOG_INFO("Game", "SW_HANGAR: design office open, {} parts",
                         m_blueprint.size());
+        }
+        // SW_PALETTE=<n>: open the n-th shelf of the hangar palette, through
+        // the header BUTTON that is actually on the panel — and shout to the
+        // probe file when that button is not in the table, because a shelf
+        // that will not open and a shelf that was never drawn photograph the
+        // same.
+        if (const char* paletteSpec = std::getenv("SW_PALETTE");
+            paletteSpec != nullptr && m_editorMode && !m_debugPaletteOpened &&
+            !m_hudButtons.empty())
+        {
+            const auto wanted =
+                static_cast<PaletteGroup>(std::strtoul(paletteSpec, nullptr, 10));
+            const auto rows = paletteRows(m_paletteGroup);
+            sw::u32 id = 0;
+            for (sw::usize i = 0; i < rows.size(); ++i)
+            {
+                if (rows[i].header && rows[i].group == wanted)
+                {
+                    id = 100u + static_cast<sw::u32>(i);
+                    break;
+                }
+            }
+            const HudButton* row = nullptr;
+            for (const HudButton& candidate : m_hudButtons)
+            {
+                if (candidate.id == id) { row = &candidate; break; }
+            }
+            m_debugPaletteOpened = true;
+            if (row != nullptr)
+            {
+                static_cast<void>(applyHudClick(*row));
+                SW_LOG_INFO("Game", "SW_PALETTE: shelf {} opened", paletteSpec);
+            }
+            else if (std::FILE* miss = std::fopen("/tmp/sw_buttonprobe.txt", "w"))
+            {
+                std::fprintf(miss, "PALETTE HEADER %u IS NOT IN THE TABLE: %zu ids", id,
+                             m_hudButtons.size());
+                for (const HudButton& candidate : m_hudButtons)
+                {
+                    std::fprintf(miss, " %u", candidate.id);
+                }
+                std::fprintf(miss, "\n");
+                std::fclose(miss);
+            }
+        }
+        // SW_STAGE=<n>: press the staging key n times, one firing every ten
+        // frames so the pieces are somewhere by the time the shutter opens.
+        // It calls what the key calls; there is no second path.
+        if (const char* stageSpec = std::getenv("SW_STAGE");
+            stageSpec != nullptr && !m_editorMode && !m_shipEntity.isNull())
+        {
+            const sw::u32 wanted = static_cast<sw::u32>(std::strtoul(stageSpec, nullptr, 10));
+            if (m_debugStagesFired < std::max(wanted, 1u) && ++m_debugStageDelay > 10)
+            {
+                m_debugStageDelay = 0;
+                m_debugStagesFired += 1;
+                fireNextDecoupler();
+            }
+        }
+        if (const char* placeSpec = std::getenv("SW_PLACE");
+            placeSpec != nullptr && !m_debugPlaced && m_editorMode)
+        {
+            m_debugPlaced = true;
+            // Several placements, semicolon separated: a ring of boosters is
+            // one press per booster and the picture wants all of them.
+            std::string remaining(placeSpec);
+            while (!remaining.empty())
+            {
+                const sw::usize split = remaining.find(';');
+                debugPlacePart(remaining.substr(0, split).c_str());
+                if (split == std::string::npos) { break; }
+                remaining = remaining.substr(split + 1);
+            }
+        }
+        if (const char* fairingSpec = std::getenv("SW_FAIRING");
+            fairingSpec != nullptr && !m_debugFairingDrawn && m_editorMode)
+        {
+            // ONE FRAME AFTER THE HANGAR OPENED, because the deck's design is
+            // loaded up there and the tool has to find a base on it.
+            m_debugFairingDrawn = true;
+            debugFairingScript(fairingSpec);
         }
         if (std::getenv("SW_BOARD") != nullptr && m_shipEntity.isNull())
         {
@@ -1399,10 +1728,13 @@ namespace game
                 (cursor != nullptr && *cursor == ',')
                     ? static_cast<sw::u32>(std::strtoul(cursor + 1, nullptr, 10))
                     : 0u;
-            m_world.forEach<sw::parts::PartComponent,
-                            sw::parts::PartAnimationComponent>(
-                [&](sw::ecs::Entity entity, sw::parts::PartComponent& part,
-                    sw::parts::PartAnimationComponent&) {
+            // NOT ONLY ANIMATED PARTS. This query used to require a
+            // PartAnimationComponent, which quietly excluded the one part
+            // whose menu matters most: a docking ring has no animations, and
+            // its RELEASE button was unreachable from a capture for exactly
+            // that reason.
+            m_world.forEach<sw::parts::PartComponent>(
+                [&](sw::ecs::Entity entity, sw::parts::PartComponent& part) {
                     if (!m_menuPart.isNull() || part.vessel != m_shipEntity ||
                         (wantedDefinition != 0u && part.definitionId != wantedDefinition))
                     {
@@ -1892,6 +2224,15 @@ namespace game
         {
             m_thrustSystem->setInfiniteFuel(m_creativeMode);
         }
+        // ...and the assembly hall builds for nothing. A creative session that
+        // still had to mine, smelt and belt twelve tonnes of metal before it
+        // could fly a design is a creative session in name only: the mode
+        // exists to put a craft in the air, and the craft is the one thing the
+        // factory stood between the player and.
+        if (m_assemblySystem != nullptr)
+        {
+            m_assemblySystem->setFreeMaterials(m_creativeMode);
+        }
     }
 
     void StarWorksGame::newGame()
@@ -2254,7 +2595,7 @@ namespace game
                 // only reports: the mode is part of the save, and flipping a
                 // survival world to creative from the pause menu is the kind
                 // of decision a save file should not have made behind it.
-                row(m_creativeMode ? "MODE - CREATIVE - NO FUEL BURN"
+                row(m_creativeMode ? "MODE - CREATIVE - NO FUEL, FREE HULLS"
                                    : "MODE - SURVIVAL",
                     2006u, !m_hasSession);
                 row("LOAD GAME", 2002u, !m_saveSlots.empty());

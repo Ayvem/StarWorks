@@ -12,7 +12,149 @@ An industrial space simulation game — mine, automate, build ships and stations
 <img width="1920" height="998" alt="mars-close-orbit" src="https://github.com/user-attachments/assets/817e47e9-c4b9-4838-8d81-0a05d560ab3f" />
 <img width="1914" height="993" alt="mars-sun-orbit" src="https://github.com/user-attachments/assets/6bd32046-2c16-44be-b572-778cdbe0f174" />
 
-## Current state — F43/F44/F45: The orbital survey, the geology screen, and the ore that was never running out
+## Current state — F49: The square hull that would not let a booster on
+
+**Reported as a symmetry bug; there was nothing wrong with the symmetry.** A
+radial part read RED nearly everywhere, and symmetry 3 was never green.
+Measured on the shipped catalogue — a battery glued round a tank at every
+azimuth, at every symmetry count — **28% of azimuths legal at 1, 2 and 4, and
+none at all at 3, 6 and 8**. That shape of answer is not a broken loop over
+copies: four-fold surviving while three-fold dies says the obstruction is itself
+four-fold, and there is exactly one four-fold thing in the picture. **A square.**
+
+Every round part's collision hull is a square prism circumscribing it — fine for
+standing on the ground, hopeless for deciding whether two tanks touch, and 41%
+too wide across the diagonal. So a radial part sat inside its parent's *corner*
+at every azimuth except the four compass points, and 120°, 60° and 45° are
+exactly where those corners are.
+
+Two fixes. **A joint IS contact** — asking whether a bolt is inside the plate it
+is bolted to is not a question with a useful answer, so the part you are
+attaching to is not something you can collide with. That takes the same
+measurement to **100% at every azimuth, height and symmetry count**, and the
+exclusion is exactly one part wide: something already standing where you are
+aiming is still in the way. Then, once a ring could be built at all, the *core*
+three parts away was still square — so the overlap test learned what a cylinder
+is. A hull whose x and y match, on a part built out of round primitives, is read
+as the cylinder it always was, and two round hulls are compared as capped tubes.
+No file was re-authored and the format did not change.
+
+**Symmetry had a second bug hiding behind the first**: every copy bolted to the
+one parent under the cursor, so three boosters on three decouplers made a rocket
+that looked right and staged wrong. Copy *k* now goes on ring member *k*.
+
+**A radial decoupler (TR-2)** is what makes that worth building. Behind it,
+staging learned two things: which joint to cut — the **child side**, which is
+the same answer on a stack and the correct one for a booster that sits beside
+its parent at no particular height — and which way to push, **along the severed
+joint's own face**, so a booster leaves sideways instead of grinding down the
+core.
+
+**Engines take parts under them now.** The V-400 had one node, at its top:
+nothing could be bolted below a bell. It has a tail node, and an engine whose
+exhaust node carries a joint is **off** — no thrust, no flow, no torque, no
+plume, and a menu that says `EXHAUST BLOCKED` rather than offering a switch that
+would do nothing. It comes back by itself when the obstruction stages away.
+
+**Craft are targets too.** The closest-approach solver never cared what a target
+was — all it asks is where you will be at time *t*. A body answers from its
+catalogue conic, a craft from a conic fitted to its state vectors: the same
+orbit the map already draws round it.
+
+**And the hangar palette had a bug nobody had reported**: twenty-one parts, a
+column with room for sixteen, no scrolling — the five ENDURANCE pieces past the
+bottom were not hard to find, they were *unreachable*. Six shelves now, one open
+at a time.
+
+**294/294 tests, both build types, `PARITY OK`, both scale checkers at zero
+discrepancies.**
+
+## Previously — F48: A part whose shape is not in any file
+
+**Every other part in this game is a file.** Its geometry, its nodes, its mass
+and its drag table are authored once and every instance is identical. A fairing
+cannot be any of that, because its whole purpose is to be *the shape of whatever
+is inside it* — and what is inside it is a design that did not exist when the
+part was made.
+
+So the **FR-1** is a base plus a profile the player draws, reproducing KSP's own
+rules rather than something adjacent to them: placing the base drops you
+straight into drawing, the wall follows the cursor, **left click plants a
+section**, **right click takes the last one back** and leaves the mode when
+there is nothing left to take, and bringing the radius in to the axis turns the
+prompt into **CLOSE FAIRING** — that click caps the nose. Twelve rings of
+(height, radius), and everything the shell is comes out of that list: the mesh
+lathed into flat panels, the mass and the cost from the wetted area, what is
+inside it, and the drag. Closing is a ring of radius zero rather than a special
+cap, so nothing downstream needs a case for "the last one".
+
+**Zero wind inside, and zero means zero.** The older machinery that lets a part
+hide in another part's wake never returns zero exposure, deliberately — a part
+in a wake still feels base pressure. A part inside a sealed shroud is a
+different fact: it is skipped before its table is ever read. The test measures a
+*difference* rather than comparing two rockets — adding the payload under a
+closed shell changes the vessel's drag by exactly nothing, and adding the same
+payload under a profile still open changes it by kilonewtons.
+
+**A shell has no `.aero.json` and cannot have one**, because the offline forge
+photographs a silhouette that here is drawn five minutes before it flies. It
+does not need one: the forge integrates three terms per pixel because it is
+handed an arbitrary mesh, and a fairing is a stack of truncated cones cut into
+flat quads, so the same three terms — impact `Cp = Cp_max cos²θ`, base pressure
+−0.20, skin friction 0.004 — integrate per PANEL in closed form. Same constants,
+same physics. Which also makes it checkable without a wind tunnel: the panel sum
+lands within 5% of what Newtonian impact theory says a cone of that half-angle
+should have, for four shapes from a flat cap to a needle, and nothing in the
+code has ever been told what a cone is.
+
+**And it comes off.** JETTISON on the base's own menu turns the shell into one
+panel per side, each thrown outward and up the stack — a real shroud hinges off
+its base, and a panel dropped down the stack would hit the payload it was
+protecting — simulated for a few hundred ticks and then swept up. Because the
+shell rides as its own mass point at the profile's centroid, metres ahead of the
+base, the demo craft's stability margin moves from −0.79 to −0.19 the instant
+the panels leave, with nothing anywhere aware that a jettison happened.
+
+## Previously — F46/F47: Two craft become one, and a creative hall that pays nothing
+
+**A dock is a capture, not a proximity.** The old trigger merged any two craft
+whose ports came within four metres of each other, in any orientation, at any
+speed — so two ships passing at a kilometre a second with their rings back to
+back became one ship. Four conditions now, and all four or nothing happens: the
+two mating **faces** touching (0.35 m), their normals **facing** each other
+(within 18°), the other craft **on axis** in front of the ring rather than
+beside it, and **closing slowly** — under half a metre a second, and
+*approaching*. That last sign is not a detail: measured as a speed, a release
+was re-captured on the next search, and the pair docked and undocked forever,
+half a second apart.
+
+Which faces mate is geometric and needs no part file to say so: **a node already
+carrying a joint is not a candidate**, so a ring's other face — bolted to the
+rocket that carries it — is busy, and the only free face left is the one
+pointing out. The old code hardcoded node index 1 on both sides, which was
+wrong on both shipped ports.
+
+At capture the latches **pull the two craft square** — shortest arc, so the roll
+you arrived with is the roll you keep — and the merged body gets **the momentum
+both brought to it**, linear and angular, worked out about the new balance
+point. The old merge kept the survivor's velocity and threw the other's away,
+which made docking a perfectly inelastic collision with the player's craft as an
+infinite-mass wall: a ten-tonne tug taught a five-hundred-tonne station its
+velocity. The station now moves at under a centimetre a second.
+
+And a dock that cannot let go is a trap, so **UNDOCK** sits on the port's own
+menu — a craft carries several rings and only one of them is holding the thing
+you want to release. The side you pressed on keeps the ship; the other becomes
+its own craft again, and the two push off each other with an equal and opposite
+impulse, so the pair's momentum is what it was.
+
+And **creative mode stopped charging for hulls** (F47): the slipway is credited
+with what the tick's budget could work and the bin is never touched. The labour
+is not waived — a hall that finished instantly would stop being a machine — so a
+3.5 t Starling still takes its eighty-nine seconds, and the panel reads
+`IRON 3010 KG FREE` in green instead of arguing with the simulation.
+
+## Previously — F43/F44/F45: The orbital survey, the geology screen, and the ore that was never running out
 
 **Where the ore is stopped being something you find out by landing on it.** The
 **OS-1 Orbital Surveyor** is a 180 kg instrument with one dish and one rule:
@@ -80,6 +222,9 @@ discrepancies.**
 
 ## Previously — F40/F41/F42: A ship that bends, and bends at the joint
 
+> *« une fusée trop longue se courbe sous l'accélération ; un atterrissage dur
+> tord une jambe de train ; un grand panneau solaire vibre. »*
+
 Three milestones on one report, and each of the three was a different way of
 being wrong about where a force acts.
 
@@ -115,6 +260,9 @@ rather than disappointing.
 
 ## Previously — F36/F37/F38/F39: The freeze at fifty kilometres a second, and the two tonnes that turned a ship
 
+> *« quand j'accélère beaucoup le jeu se met à freeze puis à faire des à-coups
+> pourtant le nombre de fps affiché reste à plus de 200 »*
+
 A frame-rate counter averages over a second and cannot see a single frame that
 took a sixth of one, which is exactly what a player means by that sentence. So
 the frame got **nine phase timers** — simulation, celestial index, streaming,
@@ -145,6 +293,10 @@ the game is rebuilt — and from the outside those two look exactly alike."*
 
 ## Previously — Milestone 35: Parts that move, and a way to make them move
 
+> *« il faut que certaines pièces puissent être activées pendant le vol ou aient
+> des animations… pour cela il faut ajouter au logiciel de développement des
+> pièces un moyen de développer des animations. »*
+
 The blocker was the mesh: a part was ONE welded mesh with every shape's pose
 baked into its vertices, and `DrawItem` carries one mesh, one matrix, one tint,
 with nowhere to put a bone. So the feature is a **splitting** and not a skinning
@@ -167,6 +319,10 @@ vibrated on Proxima b and then kept vibrating back on Terra, which is how you
 know the fault is global rather than local.
 
 ## Previously — Milestone 34: Twelve light-years, and the origin that moves with you
+
+> *« ajoute les étoiles proches ainsi que leurs planètes (taille et distances
+> réelles) et ajoute warp x100M et x1B qui ne peuvent s'activer que quand on sort
+> de la SOI du soleil. »*
 
 Twenty-four systems, thirty-six stars and twenty-five confirmed planets inside
 twelve light-years, with J2000 positions, modern parallaxes and interferometric
@@ -243,7 +399,7 @@ It is the film's own parts list, not a guess at one: twelve modules of five kind
 
 ## Previously — F14b: Creative mode
 
-**A second way to play, chosen on the title screen.** `MODE - CREATIVE - NO FUEL BURN` under NEW GAME: engines produce full thrust and the tanks are never consulted. The skip sits exactly at the burn in `ThrustSystem` — not a refill afterwards, which would jiggle the vessel's mass every tick — and the flag lives on the system because the mode belongs to the *session*: it is fixed once the game starts, rides in the save (**version 10**; v9 saves load as survival, which is what they all were), and the host owns it in multiplayer like everything else. The HUD says `FUEL INF - CREATIVE` instead of counting kilograms that cannot fall. Everything else — power, ore, build costs, aerodynamics, gravity — still plays by the rules; creative removes the fuel bill, not the physics.
+**A second way to play, chosen on the title screen.** `MODE - CREATIVE - NO FUEL BURN` under NEW GAME: engines produce full thrust and the tanks are never consulted. The skip sits exactly at the burn in `ThrustSystem` — not a refill afterwards, which would jiggle the vessel's mass every tick — and the flag lives on the system because the mode belongs to the *session*: it is fixed once the game starts, rides in the save (**version 10**; v9 saves load as survival, which is what they all were), and the host owns it in multiplayer like everything else. The HUD says `FUEL INF - CREATIVE` instead of counting kilograms that cannot fall. Everything else — power, ore, aerodynamics, gravity — still plays by the rules; creative removes the bills, not the physics. **The assembly hall's bill of materials joined it in F47**: a creative VAB builds a design without consuming a gram of metal, at exactly the same rate, so the panel still reports RUNNING, STARVED or BLOCKED like the machine it is.
 
 ## Previously — F14: The whole solar system
 
@@ -723,7 +879,7 @@ The join panel distinguishes the two failures, because the cure for one is usele
 
 ## Running the tests
 
-277 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, the survey grid and the orbits that can and cannot close it, the ore ramp's monotonicity, a mine's right to dig something wherever the rules let it be built, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
+294 tests, no window, no Vulkan device and no socket required — matter conservation across every recipe, warp exactness, orbital mechanics, aerodynamics against textbook shapes, collision, HUD layout, the whole network stack against a simulated lossy wire, the timeline that holds a future action until its instant arrives, the warp gate, the survey grid and the orbits that can and cannot close it, the four conditions a dock has to clear and the momentum of the pair before and after it, a creative hall that builds on an empty bin and still takes the time, a hand-drawn fairing measured against the cone the textbook says it is and the payload inside it feeling no wind at all, a radial part that may be glued anywhere round its parent at any symmetry, an engine that shuts down when something is bolted over its nozzle, the ore ramp's monotonicity, a mine's right to dig something wherever the rules let it be built, a guard that fails if any script or source file hardcodes a drive letter, and the `.swpart` / `.swrecipe` / `.swship` / `.aero.json` files as shipped.
 
 ```powershell
 # Windows
@@ -753,15 +909,23 @@ ctest --test-dir build/linux-debug --output-on-failure
 
 **Star map:** `M` toggles the system view (real scale, beacon markers, patched-conics flight plan with encounter/impact/SOI-exit markers); mouse wheel zooms from LEO out to the whole Sol system. The map centers on your current SOI primary. It carries no geology: ore lives on the geology screen (`F4`), and the marks it briefly wore over surveyed ground came off when that screen arrived.
 
-**Target (in map view):** left-click a body to target it, click it again to clear. The HUD then shows the CLOSEST APPROACH your plan makes to it — distance, time, relative speed — and the map marks **where that body will have moved to** by then, on its own orbit ring, with your own position at that moment and the gap between them. With a maneuver node up you get a second line for what the burn would achieve.
+**Target (in map view):** left-click a body **or another craft** to target it, click it again to clear. A craft is targeted the same way and answers the same questions — its future position comes from a conic fitted to where it is and how fast it is going, which is the orbit the map already draws round it, so the closest-approach line works for a rendezvous exactly as it does for a transfer. The HUD then shows the CLOSEST APPROACH your plan makes to it — distance, time, relative speed — and the map marks **where that body will have moved to** by then, on its own orbit ring, with your own position at that moment and the gap between them. With a maneuver node up you get a second line for what the burn would achieve.
 
 **Maneuver nodes (in map view):** `N` create/delete, `J`/`L` node time −/+, `I`/`K` prograde +/−, `U`/`O` normal −/+, `Y`/`H` radial +/−. The step is a ladder on the modifiers, and it moves the node's time by the same factor: nothing = 1 m/s / 10 s, `Ctrl` = 0.1 m/s / 1 s, `Shift` = 10 m/s / 100 s, `Alt` = 100 m/s / 1 000 s, `Ctrl+Shift` = 1 000 m/s / 10 000 s. The armed step is on the HUD under the node's vector. Or **grab the violet marker with the left mouse button and drag it along the orbit** — the node's time follows the pixel under the cursor, and the planned trajectory redraws as you move. Fly the burn with the **NODE** SAS button (it holds the nose on the burn vector, which is almost never prograde) and the **WARP TO NODE -1 MIN** button, then burn until DV reaches zero — the readout counts down against the trajectory you would have coasted, so gravity is not mistaken for thrust.
 
 **Geology (`F4`):** the survey screen (sim paused; separate view). The left column lists every world a satellite has **started** to look at, nearest first, with its coverage — nothing you have never flown an instrument over appears. Pick one and it is drawn as a globe coloured by **one element at a time** — FER, CUIVRE, GLACE — as a continuous gradient from dark (nothing) to bright (a core worth flying to), with the scale printed under the ramp. Ground nobody has surveyed keeps its relief in grey, so the edge of your coverage draws itself; the coastline and a 30° graticule are drawn as contours over the data rather than instead of it. Right-drag turns the globe, the wheel zooms, and hovering reads out **all three elements in figures** at that point. **Left-click drops a beacon** on the ground there, labelled with what is under it (`CU 0.74`) — it is anchored to the rotating body, saved with the world, and shows up with its live distance on the HUD and the map from then on, which is what you steer at on the way down. Click it again to clear it.
 
+**Docking:** fly one craft's ring onto another's and it captures — no key. Four conditions, and the HUD names the one you are failing: the two faces must be **touching** (0.35 m), **facing** each other (within 18°), **on axis** (the other craft in front of the ring, not beside it) and **closing slowly** (under 0.5 m/s, and approaching rather than drifting apart). On capture the latches pull the two square, the craft become one vessel — one fuel total, one autopilot, one throttle — and the merged body keeps the momentum both brought to it, so a tug does not teach a station its velocity. To let go, right-click the ring and press **UNDOCK**: the side you pressed on keeps the ship, the other becomes its own craft again, and the two push off each other.
+
+**Staging and decouplers:** `Space` (or `Z`) fires the **tail-most** decoupler on the craft — down the rocket, one press per stage. The **DC-2** cuts a stack; the **TR-2 Radial Decoupler** cuts a *side* mount, which is how a booster comes off a core: glue the TR-2 to the core, glue the booster to the TR-2, and it leaves sideways along the joint that broke rather than sliding down the hull it was strapped to. Radial placement takes **symmetry** (`X` cycles 1/2/3/4/6/8): a ring of boosters is one click, and each copy is bolted to its own decoupler, so firing one drops the one you were looking at.
+
+**Parts below an engine:** engines have a tail node now, so a stage separator (or anything else) bolts under the bell. An engine with something over its exhaust is **off** — no thrust, no fuel flow, no plume — and its menu says `EXHAUST BLOCKED` instead of offering a switch that would do nothing. Stage the obstruction away and it comes back by itself.
+
+**Fairings (the FR-1 base):** place the base and you are **already drawing** — no tool to find, the way KSP does it. The wall follows the cursor, **left click plants a section**, **right click takes the last one back** (and, with nothing left to take back, leaves the mode), `ESC` cancels the whole thing. Bring the radius in towards the axis and the prompt changes from PLACE SECTION to **CLOSE FAIRING**: that click caps the nose and the shell is done. The line under the prompt is what it costs you — rings, height, and the kilograms of aluminium the shape you have drawn adds to the rocket. A closed shell **shields everything inside it completely**: the payload feels no wind at all, and the shell itself answers the air as the stack of flat panels it is. Widest it will go is twice the base's rim. In flight, right-click the base and press **JETTISON**: it comes off as one panel per side, thrown outward and up the stack, simulated for a few hundred ticks and then swept up — and the rocket is lighter and better balanced from that instant. The shipped `SHROUDED` design flies one.
+
 **Chase camera:** hold the right mouse button to orbit around the craft, mouse wheel to zoom, `C` to reset behind it.
 
-**Hangar (VAB):** `B` opens/closes, on foot or in a cockpit (sim paused; separate view). Right-drag orbits, wheel zooms. Click the palette to take a part IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design, LOAD cycles the world's vessels into the editor, **SAVE** — the only button here that touches the world, and only on that press — writes it as a `.swship` and registers it so a VAB can build it. The hangar itself creates nothing; walk to the VAB, pick the design out of its catalogue, and press PRODUCE. `P` in flight switches the piloted vessel. `Space` (or `Z`) fires the decoupler (staging); on foot, `Space` jumps.
+**Hangar (VAB):** `B` opens/closes, on foot or in a cockpit (sim paused; separate view). Right-drag orbits, wheel zooms. The palette is sorted into **shelves** — COMMAND, PROPULSION, STRUCTURE, POWER, AERO and the ENDURANCE kit in its own section — and one is open at a time: click a header to open it, click the open one to shut it. Click a part to take it IN HAND — it follows the mouse: cyan stack nodes snap it magnetically, or it glues to any hull surface under the cursor (radial parts). `W`/`S`/`A`/`D`/`Q`/`E` rotate the held part in 90° steps, left-click places, `ESC` puts it back, `DEL` discards. Click a placed part to grab its whole subtree. `X` cycles symmetry (x1/2/3/4/6/8, radial placements), `C` toggles the CoM (yellow) / thrust (violet) flags, UNDO removes the last placement (symmetry ring included). NEW starts a fresh design, LOAD cycles the world's vessels into the editor, **SAVE** — the only button here that touches the world, and only on that press — writes it as a `.swship` and registers it so a VAB can build it. The hangar itself creates nothing; walk to the VAB, pick the design out of its catalogue, and press PRODUCE. `P` in flight switches the piloted vessel. `Space` (or `Z`) fires the decoupler (staging); on foot, `Space` jumps.
 
 **Part Studio (`PartStudio.exe`, `PartStudio` on Linux):** the part authoring tool. Right-drag orbits, left-click selects a primitive or node, `G`/`R`/`S` move/rotate/scale with `X`/`Y`/`Z` axis constraint (`Shift` = fine, grid-snapped), `K` toggles the orange collision overlay, `DEL` removes. Buttons add primitives (box/cylinder/cone/sphere/tube), duplicate, set colors/emissive/segments, flag visible/collider, add stack/radial nodes (X/Y/Z sets a node's direction, SNAP SURF projects it onto the hull). SAVE writes the `.swpart` into the build AND the source `Assets/Parts/` — the game loads it at next launch.
 
@@ -953,7 +1117,7 @@ variables for the same reason — a capture has no keyboard:
 | | |
 |---|---|
 | `SW_JUMP=<SYSTEM>` | start at another star (`ALPHA CENTAURI`, `SIRIUS`, …) |
-| `SW_TARGET=<BODY>` | select a body as the navigation target |
+| `SW_TARGET=<BODY>` | select a body as the navigation target; `CRAFT` picks the nearest other vessel |
 | `SW_ESCAPE=<bn km>` | park the craft that far out, outbound at 120 km/s |
 | `SW_WARP=<n>` | select warp rung *n* |
 | `SW_BOARD=1` | take the controls of the nearest craft (a new world starts you on foot) |
@@ -962,7 +1126,13 @@ variables for the same reason — a capture has no keyboard:
 | `SW_BURN=<m/s>` | add that much delta-v prograde, where the ship already is |
 | `SW_SPAWN=<design>` | put a shipped design on the ground next to you (`STARLING`) |
 | `SW_HANGAR=[design]` | open the design office, on that design if named |
-| `SW_MACHINE=<definitionId>` | open that machine's front plate (0 = the first building) |
+| `SW_FAIRING=[h:r,…]` | draw a shell on the deck's fairing base; bare `1` draws the usual one |
+| `SW_PLACE=<id>[,sym[,deg[,h]]]` | put a part on the design through the editor's own ray and commit; `;` separates several |
+| `SW_PALETTE=<n>` | open the n-th palette shelf, by pressing its header |
+| `SW_STAGE=<n>` | fire the staging key n times, ten frames apart |
+| `SW_CREATIVE=1` | start the session in creative mode |
+| `SW_DOCK=<design>` | park that design on a docking approach off your free port |
+| `SW_MACHINE=<defId>[,<row>]` | open that machine's front plate, on that catalogue row |
 | `SW_GEOLOGY=<n>[,yaw[,pitch]]` | open the geology screen on channel *n* (1 Fe, 2 Cu, 3 ice) |
 | `SW_GEOBEACON=<lat,lon>` | drop a beacon there; bare `1` uses the best surveyed cell |
 | `SW_ORBIT=<km>` | circularise the controlled craft at that altitude |

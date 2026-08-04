@@ -57,6 +57,17 @@ namespace game
     };
 
     /// Stability Assist System: torques the craft to hold an attitude.
+    /// F48: a piece of something that used to be a vessel, on a clock.
+    ///
+    /// A jettisoned shroud is eight panels tumbling away, and they are worth
+    /// watching for exactly as long as they are still near the rocket. Left
+    /// alone they would be eight more bodies to integrate, draw and save for
+    /// the rest of the session, for a picture nobody is looking at any more.
+    struct DebrisComponent
+    {
+        sw::f32 secondsLeft = 8.0f;
+    };
+
     struct SasComponent
     {
         static constexpr sw::u32 kOff = 0;
@@ -301,4 +312,5 @@ namespace game
     static_assert(std::is_trivially_copyable_v<ShipControlsComponent>);
     static_assert(std::is_trivially_copyable_v<CapsuleComponent>);
     static_assert(std::is_trivially_copyable_v<MapMarkerComponent>);
+    static_assert(std::is_trivially_copyable_v<DebrisComponent>);
 } // namespace game

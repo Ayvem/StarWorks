@@ -1,0 +1,95 @@
+{
+ "name": "TUG",
+ "parts": [
+  {
+   "definitionId": 9,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": -1,
+   "parentPoint": 0,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 6,
+   "position": [
+    0,
+    0,
+    -1.7
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 0,
+   "parentPoint": 0,
+   "childPoint": 1,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 1,
+   "position": [
+    0,
+    0,
+    3.4
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 0,
+   "parentPoint": 1,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 2,
+   "position": [
+    0,
+    0,
+    6.6
+   ],
+   "rotation": [
+    1,
+    0,
+    0,
+    0
+   ],
+   "parent": 2,
+   "parentPoint": 1,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  },
+  {
+   "definitionId": 4,
+   "position": [
+    1.1,
+    0,
+    0.95
+   ],
+   "rotation": [
+    0.7071068,
+    0,
+    0,
+    0.7071068
+   ],
+   "parent": 0,
+   "parentPoint": 2,
+   "childPoint": 0,
+   "symmetryGroup": -1
+  }
+ ]
+}

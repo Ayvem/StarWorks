@@ -323,11 +323,11 @@ namespace game
         // one of them is placed in the frame the orbits are drawn in, so
         // the future position sits on the ring rather than out in the world
         // where the body will really be.
-        if (m_targetIndex >= 0 &&
-            static_cast<sw::usize>(m_targetIndex) < m_celestialIndex.size())
+        sw::WorldVec3 targetNow{};
+        if (targetWorldPosition(targetNow))
         {
             constexpr sw::Vec4 kTargetColor{1.0f, 0.45f, 0.85f, 1.0f};
-            plotDot(m_celestialIndex.positionAt(m_targetIndex, time), kTargetColor, 5.0f);
+            plotDot(targetNow, kTargetColor, 5.0f);
 
             auto framePosition = [&](sw::i32 primaryIndex,
                                      const sw::WorldVec3& relative) {

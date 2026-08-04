@@ -609,9 +609,10 @@ namespace sw::factory
             return;
         }
 
+        const bool freeMaterials = m_freeMaterials;
         world.forEach<AssemblyComponent, InventoryComponent>(
-            [dt, &world](ecs::Entity entity, AssemblyComponent& assembly,
-                         InventoryComponent& inventory) {
+            [dt, freeMaterials, &world](ecs::Entity entity, AssemblyComponent& assembly,
+                                        InventoryComponent& inventory) {
                 const f64 needed = assembly.ironNeededKg + assembly.copperNeededKg;
                 if (assembly.blueprint[0] == '\0' || needed <= 0.0)
                 {
@@ -710,10 +711,26 @@ namespace sw::factory
                         const f64 wantIron = wanted * (remainingIron / remaining);
                         const f64 wantCopper = wanted - wantIron;
 
+                        // CREATIVE MODE PAYS NOTHING AND WAITS THE SAME.
+                        //
+                        // The one line the mode changes is where the metal
+                        // comes from: the slipway is credited with what this
+                        // tick's budget could work, and the bin is not
+                        // touched. Everything around it is untouched — the
+                        // rate, the power draw, the room for the crate, the
+                        // apron, the states the panel reports — so a creative
+                        // hall is the same machine running on a free supply
+                        // rather than a different machine.
                         const f64 gotIron =
-                            inventoryRemove(inventory, res::Resource::Iron, wantIron);
+                            freeMaterials
+                                ? wantIron
+                                : inventoryRemove(inventory, res::Resource::Iron,
+                                                  wantIron);
                         const f64 gotCopper =
-                            inventoryRemove(inventory, res::Resource::Copper, wantCopper);
+                            freeMaterials
+                                ? wantCopper
+                                : inventoryRemove(inventory, res::Resource::Copper,
+                                                  wantCopper);
                         assembly.ironPaidKg += gotIron;
                         assembly.copperPaidKg += gotCopper;
                         budget -= gotIron + gotCopper;

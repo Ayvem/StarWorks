@@ -17,6 +17,8 @@
 
 #include "GameInternal.hpp"
 
+#include <UI/HudRoute.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -210,7 +212,7 @@ namespace game
         // down here is one number per vessel, written into the target of every
         // throttle-triggered animation on it.
         m_world.forEach<sw::parts::PartComponent, sw::parts::PartAnimationComponent>(
-            [&](sw::ecs::Entity, sw::parts::PartComponent& part,
+            [&](sw::ecs::Entity entity, sw::parts::PartComponent& part,
                 sw::parts::PartAnimationComponent& state) {
                 const auto* definition = sw::parts::findDefinition(part.definitionId);
                 if (definition == nullptr)
@@ -236,8 +238,11 @@ namespace game
                     // ...and a shut-down engine's nozzle stays dark however
                     // far the throttle is pushed, which is the one place the
                     // two kinds of animation on a part have to agree.
-                    const sw::f64 armed = sw::parts::animationGate(
-                        *definition, &state, sw::parts::AnimationGates::Thrust);
+                    const sw::f64 armed =
+                        sw::parts::engineExhaustBlocked(m_world, entity)
+                            ? 0.0
+                            : sw::parts::animationGate(
+                                  *definition, &state, sw::parts::AnimationGates::Thrust);
                     state.target[i] = throttle * static_cast<sw::f32>(armed);
                 }
             });
@@ -395,9 +400,13 @@ namespace game
         }
         const auto* transform = m_world.tryGetComponent<TransformComponent>(m_menuPart);
         const auto* part = m_world.tryGetComponent<sw::parts::PartComponent>(m_menuPart);
+        // THE STATE IS OPTIONAL NOW. A docking port has no animations at all,
+        // and requiring one closed its menu the instant it opened — so the one
+        // part in the game whose menu has something urgent on it was the one
+        // part whose menu could not exist.
         const auto* state =
             m_world.tryGetComponent<sw::parts::PartAnimationComponent>(m_menuPart);
-        if (transform == nullptr || part == nullptr || state == nullptr)
+        if (transform == nullptr || part == nullptr)
         {
             m_menuPart = {};
             return;
@@ -406,6 +415,16 @@ namespace game
         if (definition == nullptr)
         {
             m_menuPart = {};
+            return;
+        }
+        const bool docked =
+            !sw::parts::dockingJointOf(m_world, m_menuPart).isNull();
+        const auto* shell = m_world.tryGetComponent<sw::parts::FairingComponent>(m_menuPart);
+        const bool canJettison =
+            shell != nullptr && shell->closed != 0 && shell->jettisoned == 0;
+        if (state == nullptr && !docked && !canJettison)
+        {
+            m_menuPart = {}; // nothing on this part can be operated
             return;
         }
         // Where the part is on screen. Behind the camera closes the menu:
@@ -428,8 +447,13 @@ namespace game
         constexpr sw::f32 kWidth = 0.30f;
         constexpr sw::f32 kRow = 0.052f;
         constexpr sw::f32 kPad = 0.010f;
-        const sw::u32 rows = std::min<sw::u32>(
-            state->count, static_cast<sw::u32>(definition->animations.size()));
+        const sw::u32 animationRows =
+            (state != nullptr)
+                ? std::min<sw::u32>(state->count,
+                                    static_cast<sw::u32>(definition->animations.size()))
+                : 0u;
+        const sw::u32 rows =
+            animationRows + (docked ? 1u : 0u) + (canJettison ? 1u : 0u);
         const sw::f32 x0 = glm::clamp(m_menuAnchor.x + 0.03f, -0.98f, 0.98f - kWidth);
         const sw::f32 y0 =
             glm::clamp(m_menuAnchor.y - 0.02f, -0.98f,
@@ -444,7 +468,7 @@ namespace game
         // where it is going, not for where it is. "CLOSE" on an open panel is
         // the button you press to close it; a label that read "OPEN" while the
         // panel was open would be a status light wearing a button's clothes.
-        for (sw::u32 i = 0; i < rows; ++i)
+        for (sw::u32 i = 0; i < animationRows; ++i)
         {
             const sw::parts::PartAnimation& animation = definition->animations[i];
             if (animation.trigger != sw::parts::AnimationTrigger::Toggle)
@@ -453,6 +477,22 @@ namespace game
             }
             const bool open = state->target[i] > 0.5f;
             const bool moving = std::abs(state->phase[i] - state->target[i]) > 1.0e-3f;
+            // AN ENGINE WITH A PART OVER ITS NOZZLE HAS NO SWITCH WORTH
+            // PRESSING, and saying TURN ON to a pilot whose engine cannot fire
+            // is the panel arguing with the physics. The row states the fact
+            // instead, and goes back to being a switch the moment the thing in
+            // the way is staged off.
+            if (animation.gates == sw::parts::AnimationGates::Thrust &&
+                sw::parts::engineExhaustBlocked(m_world, m_menuPart))
+            {
+                const sw::f32 blockedY =
+                    y0 + kRow * static_cast<sw::f32>(i + 1) + kPad * 0.5f;
+                hudQuad(x0 + 0.008f, blockedY, x0 + kWidth - 0.008f,
+                        blockedY + kRow - 0.008f, {0.24f, 0.16f, 0.12f, 0.95f});
+                hudText("EXHAUST BLOCKED", x0 + 0.020f, blockedY + 0.010f, 0.030f,
+                        sw::Vec4{1.0f, 0.62f, 0.35f, 1.0f});
+                continue;
+            }
             const char* verb = "";
             switch (animation.verbs)
             {
@@ -482,6 +522,47 @@ namespace game
                            : sw::Vec4{0.85f, 0.92f, 1.0f, 1.0f});
             m_hudButtons.push_back({x0 + 0.008f, rowY, x0 + kWidth - 0.008f,
                                     rowY + kRow - 0.008f, 900u + i});
+        }
+
+        // ---- and the one row a docked port always has --------------------
+        //
+        // On the port itself, not on a keyboard shortcut and not on the HUD:
+        // a craft can carry several ports and only one of them is holding the
+        // thing you want to let go of. Pressing the button on the ring you are
+        // looking at cannot mean anything else.
+        if (docked)
+        {
+            const sw::f32 rowY =
+                y0 + kRow * static_cast<sw::f32>(animationRows + 1) + kPad * 0.5f;
+            const bool hot = cursorValid && cursorX >= x0 + 0.008f &&
+                             cursorX <= x0 + kWidth - 0.008f && cursorY >= rowY &&
+                             cursorY <= rowY + kRow - 0.008f;
+            hudQuad(x0 + 0.008f, rowY, x0 + kWidth - 0.008f, rowY + kRow - 0.008f,
+                    hot ? sw::Vec4{0.42f, 0.24f, 0.24f, 0.95f}
+                        : sw::Vec4{0.28f, 0.16f, 0.18f, 0.95f});
+            hudText("UNDOCK", x0 + 0.020f, rowY + 0.010f, 0.030f,
+                    sw::Vec4{1.0f, 0.82f, 0.72f, 1.0f});
+            m_hudButtons.push_back({x0 + 0.008f, rowY, x0 + kWidth - 0.008f,
+                                    rowY + kRow - 0.008f,
+                                    900u + sw::ui::kHudPartAnimationSlots});
+        }
+
+        // ---- and the one a closed shroud always has ----------------------
+        if (canJettison)
+        {
+            const sw::f32 rowY =
+                y0 + kRow * static_cast<sw::f32>(rows) + kPad * 0.5f;
+            const bool hot = cursorValid && cursorX >= x0 + 0.008f &&
+                             cursorX <= x0 + kWidth - 0.008f && cursorY >= rowY &&
+                             cursorY <= rowY + kRow - 0.008f;
+            hudQuad(x0 + 0.008f, rowY, x0 + kWidth - 0.008f, rowY + kRow - 0.008f,
+                    hot ? sw::Vec4{0.42f, 0.30f, 0.16f, 0.95f}
+                        : sw::Vec4{0.28f, 0.20f, 0.12f, 0.95f});
+            hudText("JETTISON", x0 + 0.020f, rowY + 0.010f, 0.030f,
+                    sw::Vec4{1.0f, 0.88f, 0.66f, 1.0f});
+            m_hudButtons.push_back({x0 + 0.008f, rowY, x0 + kWidth - 0.008f,
+                                    rowY + kRow - 0.008f,
+                                    901u + sw::ui::kHudPartAnimationSlots});
         }
     }
 

@@ -20,13 +20,49 @@
       "symmetryGroup": -1
     },
     {
-      "definitionId": 10,
-      "position": [0.05166196823120117, 1.098785400390625, -0.38462328910827637],
-      "rotation": [0.690302312374115, 0, 0, -0.7235210537910461],
+      "definitionId": 3,
+      "position": [-0.07043343037366867, 1.1178045272827148, 0.938956618309021],
+      "rotation": [0.6845123171806335, 0, 0, 0.7290012240409851],
       "parent": 0,
       "parentPoint": 255,
       "childPoint": 0,
+      "symmetryGroup": 2
+    },
+    {
+      "definitionId": 3,
+      "position": [0.07043353468179703, -1.1178045272827148, 0.938956618309021],
+      "rotation": [-0.7290012836456299, 0, 0, 0.6845122575759888],
+      "parent": 0,
+      "parentPoint": 255,
+      "childPoint": 0,
+      "symmetryGroup": 2
+    },
+    {
+      "definitionId": 6,
+      "position": [0, 0, -1.6999999284744263],
+      "rotation": [1, 0, 0, 0],
+      "parent": 0,
+      "parentPoint": 0,
+      "childPoint": 1,
       "symmetryGroup": -1
+    },
+    {
+      "definitionId": 5,
+      "position": [1.096853256225586, -0.08290719985961914, 0.6230014562606812],
+      "rotation": [0.037712763994932175, 0, 0, 0.9992886185646057],
+      "parent": 0,
+      "parentPoint": 255,
+      "childPoint": 0,
+      "symmetryGroup": 3
+    },
+    {
+      "definitionId": 5,
+      "position": [-1.096853256225586, 0.08290711045265198, 0.6230014562606812],
+      "rotation": [-0.9992886185646057, 0, 0, 0.03771271929144859],
+      "parent": 0,
+      "parentPoint": 255,
+      "childPoint": 0,
+      "symmetryGroup": 3
     }
   ]
 }

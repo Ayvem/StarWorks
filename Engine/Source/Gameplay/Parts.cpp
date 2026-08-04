@@ -1,11 +1,14 @@
 #include "Gameplay/Parts.hpp"
 
+#include <glm/gtx/quaternion.hpp> // glm::rotation: the shortest arc between two vectors
+
 #include <cstring>
 
 #include "Core/FileSystem.hpp"
 #include "Core/Json.hpp"
 #include "Core/Log.hpp"
 #include "ECS/World.hpp"
+#include "Gameplay/Fairing.hpp"
 #include "Gameplay/PartGeometry.hpp"
 #include "Physics/Aerodynamics.hpp"
 #include "Physics/PhysicsComponents.hpp"
@@ -51,7 +54,7 @@ namespace sw::parts
         std::vector<PartDefinition> buildFallbackCatalog()
         {
             {
-                std::array<PartDefinition, 9> defs{};
+                std::array<PartDefinition, 10> defs{};
 
                 PartDefinition& tank = defs[0];
                 tank.id = kPartFuelTankMedium;
@@ -81,7 +84,10 @@ namespace sw::parts
                 engine.thrustNewtons = 4.0e5; // 400 kN
                 engine.specificImpulseS = 345.0;
                 engine.shapes.push_back(fallbackBox({0.9f, 0.9f, 1.1f}, {0.35f, 0.35f, 0.38f}));
-                engine.nodes = {stackTop(-1.1f, 0.9f)};
+                // TWO faces, as the shipped V-400 has since F49: the tail one
+                // is what a stage separator bolts to — and what shuts the
+                // engine down while it is there.
+                engine.nodes = {stackTop(-1.1f, 0.9f), stackBottom(1.1f, 0.9f)};
 
                 PartDefinition& fin = defs[2];
                 fin.id = kPartFinBasic;
@@ -178,6 +184,25 @@ namespace sw::parts
                 core.nodes = {stackTop(-1.3f, 1.1f), stackBottom(1.3f, 1.1f),
                               radial(1.1f, 0.0f), radial(-1.1f, 0.0f)};
 
+                // The fairing base carries no shell of its own — the shell is
+                // a profile the pilot draws in the hangar and lives on the
+                // blueprint, not in the catalogue. The base is the ring the
+                // panels hinge from, and it is here so that the fallback
+                // catalogue still names every part TYPE when no assets load.
+                PartDefinition& fairing = defs[9];
+                fairing.id = kPartFairingBase;
+                fairing.type = PartType::Fairing;
+                fairing.name = "FR-1 Fairing Base";
+                fairing.dryMassKg = 180.0;
+                fairing.costCredits = 900.0;
+                fairing.volumeM3 = 1.0;
+                fairing.crashToleranceMps = 8.0;
+                fairing.breakingForceN = 2.6e5;
+                fairing.dragCoefficientArea = 0.35;
+                fairing.shapes.push_back(fallbackBox({1.25f, 1.25f, 0.42f},
+                                                     {0.82f, 0.83f, 0.86f}));
+                fairing.nodes = {stackTop(-0.42f, 1.25f), stackBottom(0.42f, 1.25f)};
+
                 return std::vector<PartDefinition>(defs.begin(), defs.end());
             }
         }
@@ -194,7 +219,7 @@ namespace sw::parts
         // ------------------------- JSON mapping --------------------------------
         constexpr std::string_view kPartTypeNames[] = {
             "FuelTank", "Engine", "Wing", "Battery", "SolarPanel",
-            "DockingPort", "Decoupler", "CargoBay", "Structural"};
+            "DockingPort", "Decoupler", "CargoBay", "Structural", "Fairing"};
         constexpr std::string_view kShapeKindNames[] = {
             "box", "cylinder", "cone", "sphere", "tube"};
         // Node type names as they appear in .swpart JSON. Kept lower-case and
@@ -744,6 +769,105 @@ namespace sw::parts
     // ------------------------------------------------------------------------
     // Vessel operations
     // ------------------------------------------------------------------------
+    // ---- attach-node queries, shared by decoupling and docking ------------
+    //
+    // Up here rather than beside the docking code that first needed them:
+    // staging asks the same two questions — where does this face point,
+    // and is anything already bolted to it.
+    namespace
+    {
+        /// A node's face in world space: where it is, and which way it looks.
+        struct NodeFace
+        {
+            WorldVec3 position{0.0};
+            Vec3 direction{0.0f, 0.0f, 1.0f};
+        };
+
+        [[nodiscard]] bool nodeFaceOf(const ecs::World& world, ecs::Entity part,
+                                      u8 nodeIndex, NodeFace& out)
+        {
+            auto& mutableWorld = const_cast<ecs::World&>(world);
+            const auto* component = mutableWorld.tryGetComponent<PartComponent>(part);
+            const auto* transform = mutableWorld.tryGetComponent<TransformComponent>(part);
+            if (component == nullptr || transform == nullptr)
+            {
+                return false;
+            }
+            const PartDefinition* definition = findDefinition(component->definitionId);
+            if (definition == nullptr || nodeIndex >= definition->nodes.size())
+            {
+                return false;
+            }
+            const AttachNode& node = definition->nodes[nodeIndex];
+            out.position =
+                transform->position + WorldVec3(transform->rotation * node.position);
+            out.direction = glm::normalize(transform->rotation * node.direction);
+            return true;
+        }
+
+        /// True when some joint already uses that face. THE OCCUPANCY TEST IS
+        /// THE WHOLE NODE-CHOOSING RULE: a docking ring's other node is bolted
+        /// to the rocket that carries it, so it is busy, and the only free face
+        /// left is the one that faces out. No part file has to name anything.
+        [[nodiscard]] bool nodeIsTaken(const ecs::World& world, ecs::Entity part,
+                                       u8 nodeIndex)
+        {
+            auto& mutableWorld = const_cast<ecs::World&>(world);
+            bool taken = false;
+            mutableWorld.forEach<JointComponent>(
+                [&](ecs::Entity, JointComponent& joint) {
+                    if (taken)
+                    {
+                        return;
+                    }
+                    if ((joint.partA == part && joint.attachPointA == nodeIndex) ||
+                        (joint.partB == part && joint.attachPointB == nodeIndex))
+                    {
+                        taken = true;
+                    }
+                });
+            return taken;
+        }
+
+    } // namespace
+
+    bool engineExhaustBlocked(const ecs::World& world, ecs::Entity part)
+    {
+        auto& mutableWorld = const_cast<ecs::World&>(world);
+        const auto* component = mutableWorld.tryGetComponent<PartComponent>(part);
+        if (component == nullptr)
+        {
+            return false;
+        }
+        const PartDefinition* definition = findDefinition(component->definitionId);
+        if (definition == nullptr || definition->thrustNewtons <= 0.0)
+        {
+            return false; // not an engine: nothing to block
+        }
+        const f32 thrustLength = glm::length(definition->thrustDirection);
+        if (!(thrustLength > 1.0e-4f))
+        {
+            return false;
+        }
+        // The gas leaves the way the push does not.
+        const Vec3 exhaust = -definition->thrustDirection / thrustLength;
+        for (u8 n = 0; n < static_cast<u8>(definition->nodes.size()); ++n)
+        {
+            const AttachNode& node = definition->nodes[n];
+            const f32 length = glm::length(node.direction);
+            if (!(length > 1.0e-4f))
+            {
+                continue;
+            }
+            if (glm::dot(node.direction / length, exhaust) > 0.5f &&
+                nodeIsTaken(world, part, n))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     ecs::Entity connectParts(ecs::World& world, ecs::Entity partA, ecs::Entity partB,
                              u8 attachPointA, u8 attachPointB, JointType type,
                              f64 strengthN, f64 breakForceN)
@@ -762,7 +886,8 @@ namespace sw::parts
     }
 
     ecs::Entity splitVessel(ecs::World& world, ecs::Entity vessel,
-                            std::span<const ecs::Entity> partsToDetach)
+                            std::span<const ecs::Entity> partsToDetach,
+                            const Vec3& separationWorld, f64 separationMps)
     {
         if (partsToDetach.empty())
         {
@@ -786,8 +911,17 @@ namespace sw::parts
         {
             body = *rootBody;
         }
-        // Gentle separation shove tail-ward (+Z of the vessel frame).
-        body.velocity += WorldVec3(rootTransform->rotation * Vec3{0.0f, 0.0f, 1.5f});
+        // THE SHOVE GOES ALONG THE JOINT THAT BROKE, and only if the caller
+        // knows which way that is. The old line pushed every separation
+        // tail-ward in the VESSEL's frame at a fixed 1.5 m/s, which is right
+        // for a spent stage falling off the bottom of a rocket and wrong for
+        // anything else — a radial booster shoved along the stack axis grinds
+        // down the side of the core it was bolted to.
+        const f32 length = glm::length(separationWorld);
+        if (length > 1.0e-4f && separationMps > 0.0)
+        {
+            body.velocity += WorldVec3(separationWorld / length) * separationMps;
+        }
         world.addComponent(newRoot, body);
         world.addComponent(newRoot, VesselComponent{});
         // A DISCARDED STAGE STILL FLIES. It inherits the aerodynamic slot
@@ -831,34 +965,64 @@ namespace sw::parts
         {
             ecs::Entity entity;
             ecs::Entity a, b;
+            u8 pointA = 0;
+            u8 pointB = 0;
         };
         std::vector<JointRecord> joints;
         world.forEach<JointComponent>([&](ecs::Entity entity, JointComponent& joint) {
             const auto* partA = world.tryGetComponent<PartComponent>(joint.partA);
             if (partA != nullptr && partA->vessel == vessel)
             {
-                joints.push_back({entity, joint.partA, joint.partB});
+                joints.push_back({entity, joint.partA, joint.partB, joint.attachPointA,
+                                  joint.attachPointB});
             }
         });
 
-        // The joint to sever: the decoupler's TAIL-side link (largest +Z
-        // local offset of the far part — away from the nose/root).
+        // THE JOINT TO SEVER IS THE ONE ON THE DECOUPLER'S CHILD SIDE. `partA`
+        // is the root-ward half of every joint the editor makes, so a joint
+        // where the decoupler is A leads AWAY from the ship — which is the
+        // half that leaves. The old rule took whichever neighbour sat furthest
+        // along +Z instead, and that is only the same answer on a vertical
+        // stack: on a radial decoupler the booster is BESIDE its parent, at no
+        // particular height, and the rule picked the core about half the time.
         ecs::Entity severed{};
+        const JointRecord* severedRecord = nullptr;
         f32 bestZ = -1.0e9f;
         for (const JointRecord& joint : joints)
         {
-            const ecs::Entity other = (joint.a == decouplerPart) ? joint.b
-                                      : (joint.b == decouplerPart) ? joint.a
-                                                                   : ecs::Entity{};
-            if (other.isNull())
+            if (joint.a != decouplerPart)
             {
                 continue;
             }
-            if (const auto* otherPart = world.tryGetComponent<PartComponent>(other);
-                otherPart != nullptr && otherPart->localPosition.z > bestZ)
+            const auto* otherPart = world.tryGetComponent<PartComponent>(joint.b);
+            if (otherPart != nullptr && otherPart->localPosition.z > bestZ)
             {
                 bestZ = otherPart->localPosition.z;
                 severed = joint.entity;
+                severedRecord = &joint;
+            }
+        }
+        if (severed.isNull())
+        {
+            // A decoupler with nothing under it: the player bolted it on last.
+            // Fall back to the tail-most neighbour, which is what this did
+            // before there was a child side to ask about.
+            for (const JointRecord& joint : joints)
+            {
+                const ecs::Entity other = (joint.a == decouplerPart) ? joint.b
+                                          : (joint.b == decouplerPart) ? joint.a
+                                                                       : ecs::Entity{};
+                if (other.isNull())
+                {
+                    continue;
+                }
+                if (const auto* otherPart = world.tryGetComponent<PartComponent>(other);
+                    otherPart != nullptr && otherPart->localPosition.z > bestZ)
+                {
+                    bestZ = otherPart->localPosition.z;
+                    severed = joint.entity;
+                    severedRecord = &joint;
+                }
             }
         }
         if (severed.isNull())
@@ -924,14 +1088,231 @@ namespace sw::parts
         {
             return {};
         }
+        // WHICH WAY THE DROPPED PIECE GOES: along the severed joint's own
+        // face, from the half that stays towards the half that leaves. On a
+        // stack that is straight down the rocket, which is what it always
+        // was; on a radial decoupler it is straight out sideways, which is
+        // the whole reason boosters can be dropped at all.
+        Vec3 separation{0.0f};
+        if (severedRecord != nullptr)
+        {
+            const bool detachedIsB = [&] {
+                for (const ecs::Entity part : detached)
+                {
+                    if (part == severedRecord->b) { return true; }
+                }
+                return false;
+            }();
+            NodeFace face{};
+            const ecs::Entity staying = detachedIsB ? severedRecord->a : severedRecord->b;
+            const u8 stayingPoint =
+                detachedIsB ? severedRecord->pointA : severedRecord->pointB;
+            const ecs::Entity leaving = detachedIsB ? severedRecord->b : severedRecord->a;
+            const u8 leavingPoint =
+                detachedIsB ? severedRecord->pointB : severedRecord->pointA;
+            if (nodeFaceOf(world, staying, stayingPoint, face))
+            {
+                separation = face.direction; // away from what stays
+            }
+            else if (nodeFaceOf(world, leaving, leavingPoint, face))
+            {
+                // A SURFACE ATTACHMENT HAS NO NODE ON THE PARENT'S SIDE — the
+                // sentinel 255 is the whole point of it — so the direction
+                // comes from the far half instead: its glue node looks INTO
+                // the thing it was stuck to, and out is the other way.
+                separation = -face.direction;
+            }
+            else if (const auto* transform =
+                         world.tryGetComponent<TransformComponent>(vessel))
+            {
+                separation = transform->rotation * Vec3{0.0f, 0.0f, 1.0f};
+            }
+        }
         world.destroyEntity(severed);
-        return splitVessel(world, vessel, detached);
+        return splitVessel(world, vessel, detached, separation, 1.5);
     }
 
-    bool dockVessels(ecs::World& world, ecs::Entity portPartA, ecs::Entity portPartB)
+    // ------------------------------------------------------------------------
+    // DOCKING
+    // ------------------------------------------------------------------------
+    namespace
     {
-        auto* portA = world.tryGetComponent<PartComponent>(portPartA);
-        auto* portB = world.tryGetComponent<PartComponent>(portPartB);
+        /// The world velocity of a point on a vessel: the root's velocity plus
+        /// the spin about the balance point, which is the fixed point the
+        /// angular integrator turns around.
+        [[nodiscard]] WorldVec3 pointVelocity(const ecs::World& world,
+                                              ecs::Entity vessel,
+                                              const WorldVec3& point)
+        {
+            auto& mutableWorld = const_cast<ecs::World&>(world);
+            const auto* body = mutableWorld.tryGetComponent<phys::DynamicBodyComponent>(vessel);
+            const auto* transform = mutableWorld.tryGetComponent<TransformComponent>(vessel);
+            if (body == nullptr || transform == nullptr)
+            {
+                return WorldVec3{0.0};
+            }
+            WorldVec3 centre = transform->position;
+            if (const auto* aggregate = mutableWorld.tryGetComponent<VesselComponent>(vessel))
+            {
+                centre += WorldVec3(transform->rotation * aggregate->centreOfMass);
+            }
+            const Vec3 spinWorld = transform->rotation * body->angularVelocity;
+            return body->velocity + WorldVec3(glm::cross(glm::dvec3(spinWorld),
+                                                         glm::dvec3(point - centre)));
+        }
+
+        /// The inertia tensor of a vessel about its own centre of mass, in the
+        /// frame `into`. VesselAssemblySystem stores it diagonal in the body
+        /// frame; rotating a diagonal tensor into another frame is R I Rt, and
+        /// the result is not diagonal, which is exactly why the merge needs a
+        /// 3x3 rather than three numbers.
+        [[nodiscard]] glm::dmat3 inertiaIn(const Vec3& diagonal, const Quat& bodyToTarget)
+        {
+            const glm::dmat3 rotation = glm::dmat3(glm::dquat(bodyToTarget));
+            const glm::dmat3 local{glm::dvec3{diagonal.x, 0.0, 0.0},
+                                   glm::dvec3{0.0, diagonal.y, 0.0},
+                                   glm::dvec3{0.0, 0.0, diagonal.z}};
+            return rotation * local * glm::transpose(rotation);
+        }
+
+        /// The parallel-axis term for a point mass offset `d`: m ((d.d)E - d x d).
+        [[nodiscard]] glm::dmat3 parallelAxis(f64 mass, const glm::dvec3& d)
+        {
+            const f64 dd = glm::dot(d, d);
+            glm::dmat3 term{0.0};
+            for (int i = 0; i < 3; ++i)
+            {
+                for (int j = 0; j < 3; ++j)
+                {
+                    term[i][j] = mass * ((i == j ? dd : 0.0) - d[i] * d[j]);
+                }
+            }
+            return term;
+        }
+
+        /// Dry mass of a set of parts, for splitting a separation impulse.
+        [[nodiscard]] f64 dryMassOf(const ecs::World& world,
+                                    std::span<const ecs::Entity> parts)
+        {
+            auto& mutableWorld = const_cast<ecs::World&>(world);
+            f64 mass = 0.0;
+            for (const ecs::Entity part : parts)
+            {
+                if (const auto* component = mutableWorld.tryGetComponent<PartComponent>(part))
+                {
+                    if (const PartDefinition* definition =
+                            findDefinition(component->definitionId))
+                    {
+                        mass += definition->dryMassKg;
+                    }
+                }
+            }
+            return std::max(mass, 1.0);
+        }
+    } // namespace
+
+    DockingCapture dockingCapture(const ecs::World& world, ecs::Entity portPartA,
+                                  ecs::Entity portPartB, const DockingLimits& limits)
+    {
+        DockingCapture best{};
+        best.partA = portPartA;
+        best.partB = portPartB;
+        auto& mutableWorld = const_cast<ecs::World&>(world);
+        const auto* componentA = mutableWorld.tryGetComponent<PartComponent>(portPartA);
+        const auto* componentB = mutableWorld.tryGetComponent<PartComponent>(portPartB);
+        if (componentA == nullptr || componentB == nullptr ||
+            componentA->vessel == componentB->vessel)
+        {
+            return best; // the same craft cannot dock with itself
+        }
+        const PartDefinition* definitionA = findDefinition(componentA->definitionId);
+        const PartDefinition* definitionB = findDefinition(componentB->definitionId);
+        if (definitionA == nullptr || definitionB == nullptr)
+        {
+            return best;
+        }
+
+        for (usize a = 0; a < definitionA->nodes.size(); ++a)
+        {
+            NodeFace faceA{};
+            if (nodeIsTaken(world, portPartA, static_cast<u8>(a)) ||
+                !nodeFaceOf(world, portPartA, static_cast<u8>(a), faceA))
+            {
+                continue;
+            }
+            for (usize b = 0; b < definitionB->nodes.size(); ++b)
+            {
+                NodeFace faceB{};
+                if (nodeIsTaken(world, portPartB, static_cast<u8>(b)) ||
+                    !nodeFaceOf(world, portPartB, static_cast<u8>(b), faceB))
+                {
+                    continue;
+                }
+                DockingCapture candidate{};
+                candidate.partA = portPartA;
+                candidate.partB = portPartB;
+                candidate.nodeA = static_cast<u8>(a);
+                candidate.nodeB = static_cast<u8>(b);
+                const WorldVec3 gap = faceB.position - faceA.position;
+                candidate.gapM = static_cast<f32>(glm::length(gap));
+                // FACING: the two faces must look at each other, so their
+                // outward normals are opposed.
+                candidate.facing = -glm::dot(faceA.direction, faceB.direction);
+                // ON AXIS: and B must be sitting in FRONT of A's face rather
+                // than beside it. Two rings side by side, normals opposed, is
+                // a near miss and not a dock.
+                candidate.onAxis =
+                    (candidate.gapM > 1.0e-4f)
+                        ? static_cast<f32>(glm::dot(glm::dvec3(faceA.direction),
+                                                    glm::dvec3(gap) /
+                                                        static_cast<f64>(candidate.gapM)))
+                        : 1.0f;
+                // CLOSING, SIGNED — and the sign is the whole of it. Measured
+                // as a speed, a release was re-captured on the next search:
+                // the two rings are still touching at the instant they let go,
+                // and the separation impulse is inside any sane speed limit,
+                // so the pair docked, undocked, docked again, forever. Two
+                // craft moving APART are not docking, and saying so needs no
+                // cool-down, no timer and nothing stored on the port.
+                const WorldVec3 relative =
+                    pointVelocity(world, componentB->vessel, faceB.position) -
+                    pointVelocity(world, componentA->vessel, faceA.position);
+                candidate.closingMps =
+                    static_cast<f32>(-glm::dot(glm::dvec3(relative),
+                                               glm::dvec3(faceA.direction)));
+                // ...and a fast sideways slide across the face is not a
+                // capture either, however gently it is arriving along the axis.
+                const glm::dvec3 lateral =
+                    glm::dvec3(relative) + glm::dvec3(faceA.direction) *
+                                               static_cast<f64>(candidate.closingMps);
+                candidate.valid = candidate.gapM <= limits.gapM &&
+                                  candidate.facing >= limits.facing &&
+                                  candidate.onAxis >= limits.onAxis &&
+                                  candidate.closingMps <= limits.closingMps &&
+                                  candidate.closingMps >= -0.02f &&
+                                  glm::length(lateral) <=
+                                      static_cast<f64>(limits.closingMps);
+                // The best candidate is the closest one; a failing capture is
+                // still reported so a HUD can say which limit was missed.
+                if (candidate.valid > best.valid ||
+                    (candidate.valid == best.valid &&
+                     (best.facing < -0.5f || candidate.gapM < best.gapM)))
+                {
+                    best = candidate;
+                }
+            }
+        }
+        return best;
+    }
+
+    bool dockVessels(ecs::World& world, const DockingCapture& capture)
+    {
+        if (!capture.valid)
+        {
+            return false;
+        }
+        auto* portA = world.tryGetComponent<PartComponent>(capture.partA);
+        auto* portB = world.tryGetComponent<PartComponent>(capture.partB);
         if (portA == nullptr || portB == nullptr || portA->vessel == portB->vessel)
         {
             return false;
@@ -939,30 +1320,262 @@ namespace sw::parts
         const ecs::Entity vesselA = portA->vessel;
         const ecs::Entity vesselB = portB->vessel;
         const auto* rootA = world.tryGetComponent<TransformComponent>(vesselA);
-        if (rootA == nullptr)
+        const auto* rootB = world.tryGetComponent<TransformComponent>(vesselB);
+        if (rootA == nullptr || rootB == nullptr)
         {
             return false;
         }
-        const Quat inverseRotation = glm::inverse(rootA->rotation);
+        NodeFace faceA{};
+        NodeFace faceB{};
+        if (!nodeFaceOf(world, capture.partA, capture.nodeA, faceA) ||
+            !nodeFaceOf(world, capture.partB, capture.nodeB, faceB))
+        {
+            return false;
+        }
 
-        // Re-localize every part of B into A's frame (their WORLD poses are
-        // current — the attachment system ran this tick).
-        world.forEach<PartComponent, TransformComponent>(
-            [&](ecs::Entity, PartComponent& part, TransformComponent& transform) {
-                if (part.vessel != vesselB)
-                {
-                    return;
-                }
-                part.vessel = vesselA;
-                part.localPosition =
-                    inverseRotation * Vec3(transform.position - rootA->position);
-                part.localRotation = inverseRotation * transform.rotation;
-            });
+        // ---- 1. the latches pull B onto A's face --------------------------
+        //
+        // SHORTEST ARC, so the roll the pilot arrived with is the roll the
+        // docked craft keeps. Picking any other rotation that satisfies the
+        // constraint would spin a station about its axis at the moment of
+        // capture for no reason a pilot could name.
+        const Quat snap = glm::rotation(faceB.direction, -faceA.direction);
+        const Quat rotationB = glm::normalize(snap * rootB->rotation);
+        const WorldVec3 positionB =
+            faceA.position - WorldVec3(snap * Vec3(faceB.position - rootB->position));
 
-        connectParts(world, portPartA, portPartB, 1, 1, JointType::Docking, 3.0e5,
-                     3.0e5);
+        // ---- 2. the momentum of the pair, before anything is destroyed ----
+        auto* bodyA = world.tryGetComponent<phys::DynamicBodyComponent>(vesselA);
+        const auto* bodyB = world.tryGetComponent<phys::DynamicBodyComponent>(vesselB);
+        const auto* aggregateA = world.tryGetComponent<VesselComponent>(vesselA);
+        const auto* aggregateB = world.tryGetComponent<VesselComponent>(vesselB);
+        if (bodyA != nullptr && bodyB != nullptr)
+        {
+            const f64 massA = std::max(bodyA->mass, 1.0);
+            const f64 massB = std::max(bodyB->mass, 1.0);
+            const f64 total = massA + massB;
+            // Everything below is expressed in A's body frame, which is the
+            // frame that survives.
+            const glm::dquat inverseA = glm::inverse(glm::dquat(rootA->rotation));
+            const Vec3 comA = (aggregateA != nullptr) ? aggregateA->centreOfMass
+                                                      : Vec3{0.0f};
+            const Vec3 comBLocalB = (aggregateB != nullptr) ? aggregateB->centreOfMass
+                                                            : Vec3{0.0f};
+            const WorldVec3 comAWorld =
+                rootA->position + WorldVec3(rootA->rotation * comA);
+            const WorldVec3 comBWorld = positionB + WorldVec3(rotationB * comBLocalB);
+            const glm::dvec3 comAIn = glm::dvec3(comA);
+            const glm::dvec3 comBIn = inverseA * glm::dvec3(comBWorld - rootA->position);
+            const glm::dvec3 comNew = (comAIn * massA + comBIn * massB) / total;
+
+            const glm::dvec3 velocityA = inverseA * glm::dvec3(bodyA->velocity);
+            const glm::dvec3 velocityB = inverseA * glm::dvec3(bodyB->velocity);
+            const glm::dvec3 velocityNew = (velocityA * massA + velocityB * massB) / total;
+
+            // Angular momentum about the NEW balance point: each craft's own
+            // spin, plus the moment of its centre's motion around that point.
+            // The second term is what makes a tug arriving off-axis set a
+            // station slowly turning instead of nudging it sideways only.
+            const Quat bToA = glm::normalize(glm::inverse(rootA->rotation) * rotationB);
+            const glm::dmat3 inertiaA =
+                inertiaIn((aggregateA != nullptr) ? aggregateA->inertiaKgM2 : Vec3{1.0f},
+                          Quat{1.0f, 0.0f, 0.0f, 0.0f});
+            const glm::dmat3 inertiaB =
+                inertiaIn((aggregateB != nullptr) ? aggregateB->inertiaKgM2 : Vec3{1.0f},
+                          bToA);
+            const glm::dvec3 spinA = glm::dvec3(bodyA->angularVelocity);
+            const glm::dvec3 spinB = glm::dvec3(bToA * bodyB->angularVelocity);
+            const glm::dvec3 offsetA = comAIn - comNew;
+            const glm::dvec3 offsetB = comBIn - comNew;
+            const glm::dvec3 momentum =
+                inertiaA * spinA + inertiaB * spinB +
+                massA * glm::cross(offsetA, velocityA - velocityNew) +
+                massB * glm::cross(offsetB, velocityB - velocityNew);
+            const glm::dmat3 inertiaNew = inertiaA + parallelAxis(massA, offsetA) +
+                                          inertiaB + parallelAxis(massB, offsetB);
+            const glm::dvec3 spinNew = glm::inverse(inertiaNew) * momentum;
+
+            bodyA->velocity = WorldVec3(glm::dquat(rootA->rotation) * velocityNew);
+            bodyA->angularVelocity = Vec3(spinNew);
+            bodyA->mass = total;
+            // The pair is one body now, so the memory of how fast it was
+            // changing has to be the same body's. Left alone, PartFlexSystem
+            // reads the jump from A's old velocity to the merged one as an
+            // acceleration of thousands of g and bends every joint on the
+            // craft at the instant of capture.
+            if (auto* memory = world.tryGetComponent<VesselComponent>(vesselA))
+            {
+                memory->previousVelocity = bodyA->velocity;
+                memory->previousAngularVelocity = bodyA->angularVelocity;
+            }
+        }
+
+        // ---- 3. B's parts move into A's frame -----------------------------
+        const glm::dquat inverseRotation = glm::inverse(glm::dquat(rootA->rotation));
+        const WorldVec3 originA = rootA->position;
+        world.forEach<PartComponent>([&](ecs::Entity, PartComponent& part) {
+            if (part.vessel != vesselB)
+            {
+                return;
+            }
+            // Composed from the SNAPPED root rather than from the part's own
+            // world transform: the attachment system may not have run since
+            // the snap, and a pose read one tick late is a pose that puts the
+            // whole craft a metre out.
+            const WorldVec3 world_ =
+                positionB + WorldVec3(rotationB * part.localPosition);
+            part.vessel = vesselA;
+            part.localPosition = Vec3(inverseRotation * glm::dvec3(world_ - originA));
+            part.localRotation =
+                glm::normalize(Quat(inverseRotation * glm::dquat(rotationB *
+                                                                part.localRotation)));
+        });
+
+        connectParts(world, capture.partA, capture.partB, capture.nodeA, capture.nodeB,
+                     JointType::Docking, 3.0e5, 3.0e5);
         world.destroyEntity(vesselB); // the absorbed root vanishes
         return true;
+    }
+
+    ecs::Entity dockingJointOf(const ecs::World& world, ecs::Entity portPart)
+    {
+        auto& mutableWorld = const_cast<ecs::World&>(world);
+        ecs::Entity found{};
+        mutableWorld.forEach<JointComponent>([&](ecs::Entity entity,
+                                                 JointComponent& joint) {
+            if (found.isNull() && joint.type == JointType::Docking &&
+                (joint.partA == portPart || joint.partB == portPart))
+            {
+                found = entity;
+            }
+        });
+        return found;
+    }
+
+    ecs::Entity undockAt(ecs::World& world, ecs::Entity portPart, f32 separationMps)
+    {
+        const ecs::Entity severed = dockingJointOf(world, portPart);
+        if (severed.isNull())
+        {
+            return {};
+        }
+        const auto* port = world.tryGetComponent<PartComponent>(portPart);
+        if (port == nullptr)
+        {
+            return {};
+        }
+        const ecs::Entity vessel = port->vessel;
+
+        // Every part and joint of this craft.
+        std::vector<ecs::Entity> parts;
+        world.forEach<PartComponent>([&](ecs::Entity entity, PartComponent& part) {
+            if (part.vessel == vessel)
+            {
+                parts.push_back(entity);
+            }
+        });
+        struct Link
+        {
+            ecs::Entity entity;
+            ecs::Entity a;
+            ecs::Entity b;
+        };
+        std::vector<Link> links;
+        world.forEach<JointComponent>([&](ecs::Entity entity, JointComponent& joint) {
+            const auto* partA = world.tryGetComponent<PartComponent>(joint.partA);
+            if (partA != nullptr && partA->vessel == vessel)
+            {
+                links.push_back({entity, joint.partA, joint.partB});
+            }
+        });
+
+        // THE SIDE THAT KEEPS THE ROOT IS THE SIDE YOU PRESSED THE BUTTON ON.
+        //
+        // decoupleAt seeds its search from the nose-most part, which is a
+        // rocket-stack assumption: a docked pair is two stacks nose to nose and
+        // has no nose. Seeding from the port itself needs no assumption at all,
+        // and it is what a pilot means — the other craft leaves.
+        std::vector<ecs::Entity> kept{portPart};
+        for (usize scan = 0; scan < kept.size(); ++scan)
+        {
+            for (const Link& link : links)
+            {
+                if (link.entity == severed)
+                {
+                    continue;
+                }
+                ecs::Entity next{};
+                if (link.a == kept[scan]) { next = link.b; }
+                else if (link.b == kept[scan]) { next = link.a; }
+                if (next.isNull())
+                {
+                    continue;
+                }
+                if (std::find(kept.begin(), kept.end(), next) == kept.end())
+                {
+                    kept.push_back(next);
+                }
+            }
+        }
+        std::vector<ecs::Entity> leaving;
+        for (const ecs::Entity part : parts)
+        {
+            if (std::find(kept.begin(), kept.end(), part) == kept.end())
+            {
+                leaving.push_back(part);
+            }
+        }
+        if (leaving.empty())
+        {
+            return {}; // the joint held nothing apart: not a dock any more
+        }
+
+        // Which way the two sides go: along the released face's own axis.
+        NodeFace face{};
+        const auto& joint = world.getComponent<JointComponent>(severed);
+        const bool portIsA = joint.partA == portPart;
+        if (!nodeFaceOf(world, portPart, portIsA ? joint.attachPointA : joint.attachPointB,
+                        face))
+        {
+            face.direction = Vec3{0.0f, 0.0f, 1.0f};
+        }
+
+        world.destroyEntity(severed);
+        const ecs::Entity newRoot = splitVessel(world, vessel, leaving);
+        if (newRoot.isNull())
+        {
+            return {};
+        }
+
+        // EQUAL AND OPPOSITE, split by mass. splitVessel's own tail-ward shove
+        // is right for a spent stage falling off a rocket and wrong here: it
+        // pushes one side only, in the vessel's frame rather than along the
+        // joint, and it invents momentum out of nothing. A release is two
+        // craft pushing off each other.
+        auto* keptBody = world.tryGetComponent<phys::DynamicBodyComponent>(vessel);
+        auto* leavingBody = world.tryGetComponent<phys::DynamicBodyComponent>(newRoot);
+        if (keptBody != nullptr && leavingBody != nullptr)
+        {
+            leavingBody->velocity = keptBody->velocity;
+            leavingBody->angularVelocity = keptBody->angularVelocity;
+            const f64 massKept = dryMassOf(world, kept);
+            const f64 massLeaving = dryMassOf(world, leaving);
+            const f64 total = massKept + massLeaving;
+            const WorldVec3 push = WorldVec3(face.direction) *
+                                   static_cast<f64>(separationMps);
+            leavingBody->velocity += push * (massKept / total);
+            keptBody->velocity -= push * (massLeaving / total);
+            if (auto* memory = world.tryGetComponent<VesselComponent>(vessel))
+            {
+                memory->previousVelocity = keptBody->velocity;
+            }
+            if (auto* memory = world.tryGetComponent<VesselComponent>(newRoot))
+            {
+                memory->previousVelocity = leavingBody->velocity;
+                memory->previousAngularVelocity = leavingBody->angularVelocity;
+            }
+        }
+        return newRoot;
     }
 
     // ------------------------------------------------------------------------
@@ -1051,8 +1664,17 @@ namespace sw::parts
                 world.tryGetComponent<PartAnimationComponent>(entity);
             const f64 powerGate = animationGate(*definition, animation,
                                                 AnimationGates::Power);
-            const f64 thrustGate = animationGate(*definition, animation,
-                                                 AnimationGates::Thrust);
+            // ...AND AN ENGINE WITH SOMETHING BOLTED OVER ITS NOZZLE IS OFF.
+            // Not throttled, not weakened: a decoupler under a bell is a plate
+            // in front of the flame, and the honest number is zero — for the
+            // thrust, for the fuel it would have burned making it, and for the
+            // torque its position would have applied. It comes back by itself
+            // when the obstruction is staged away, because this is read from
+            // the joints every tick rather than remembered anywhere.
+            const f64 thrustGate =
+                engineExhaustBlocked(world, entity)
+                    ? 0.0
+                    : animationGate(*definition, animation, AnimationGates::Thrust);
             vessel->solarChargeRateKw += definition->chargeRateKw * powerGate;
             vessel->partCount += 1;
             if (definition->thrustNewtons > 0.0 && definition->specificImpulseS > 0.0)
@@ -1103,6 +1725,34 @@ namespace sw::parts
                 point.halfExtents = (partMax - partMin) * 0.5f;
             }
             massPoints[part.vessel].push_back(point);
+
+            // F48: THE SHELL IS PART OF THE ROCKET UNTIL IT IS NOT. Its mass
+            // is the surface the player drew rather than anything in the
+            // catalogue, and it rides metres ahead of the base it bolts to —
+            // so it goes in as its own mass point, and the instant it is
+            // thrown away the vessel is lighter and better balanced without a
+            // single other line having to know it happened.
+            //
+            // The scalar `dragCoefficientArea` deliberately gets nothing: a
+            // flying shell answers the wind through its own panels in
+            // VesselAerodynamicsSystem, and adding it here as well would
+            // charge the same shroud for its drag twice.
+            if (const auto* shell = world.tryGetComponent<FairingComponent>(entity);
+                shell != nullptr && fairingIsFlying(*shell))
+            {
+                const f64 shellMass = fairingMassKg(*shell);
+                vessel->dryMassKg += shellMass;
+                vessel->totalCostCredits += fairingCostCredits(*shell);
+                const f32 height = fairingCentroidHeight(*shell);
+                const f32 radius = fairingRadiusAt(*shell, height);
+                MassPoint shellPoint{};
+                shellPoint.massKg = shellMass;
+                shellPoint.position =
+                    part.localPosition + part.localRotation * Vec3{0.0f, 0.0f, -height};
+                shellPoint.halfExtents = {radius, radius,
+                                          shell->rings[shell->ringCount - 1].x * 0.5f};
+                massPoints[part.vessel].push_back(shellPoint);
+            }
         });
 
         // Push the aggregate into the vessel's rigid body.

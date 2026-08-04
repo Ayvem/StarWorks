@@ -438,15 +438,117 @@ namespace sw::space
         }
     }
 
+    TargetPath bodyTargetPath(const CelestialIndex& index, i32 targetIndex)
+    {
+        TargetPath path{};
+        if (targetIndex < 0 || static_cast<usize>(targetIndex) >= index.size())
+        {
+            return path;
+        }
+        const CelestialIndex::Body& body = index.body(static_cast<usize>(targetIndex));
+        path.bodyRadius = body.bodyRadius;
+        if (body.hasOrbit != 0 && body.parentIndex >= 0)
+        {
+            path.primaryIndex = body.parentIndex;
+            path.hasOrbit = true;
+            path.orbit = body.orbit;
+        }
+        else
+        {
+            path.staticPosition = body.staticPosition;
+        }
+        return path;
+    }
+
+    TargetPath craftTargetPath(const CelestialIndex& index, i32 primaryIndex,
+                               const WorldVec3& worldPosition,
+                               const WorldVec3& worldVelocity, f64 nowSeconds)
+    {
+        TargetPath path{};
+        if (primaryIndex < 0 || static_cast<usize>(primaryIndex) >= index.size())
+        {
+            path.staticPosition = worldPosition;
+            return path;
+        }
+        WorldVec3 primaryPosition{};
+        WorldVec3 primaryVelocity{};
+        index.stateAt(primaryIndex, nowSeconds, primaryPosition, &primaryVelocity);
+        path.primaryIndex = primaryIndex;
+        phys::KeplerOrbit orbit{};
+        if (phys::kepler::fromStateVectors(index.body(static_cast<usize>(primaryIndex)).mu,
+                                           worldPosition - primaryPosition,
+                                           worldVelocity - primaryVelocity, nowSeconds,
+                                           orbit, true))
+        {
+            path.hasOrbit = true;
+            path.orbit = orbit;
+        }
+        else
+        {
+            // No conic in that state — straight up, straight down, or exactly
+            // parabolic. Pinning it where it is beats inventing an ellipse.
+            path.staticPosition = worldPosition - primaryPosition;
+        }
+        return path;
+    }
+
+    namespace
+    {
+        /// Where a target is, in the world, at an absolute time.
+        [[nodiscard]] WorldVec3 pathPositionAt(const CelestialIndex& index,
+                                               const TargetPath& target, f64 time)
+        {
+            WorldVec3 local = target.staticPosition;
+            if (target.hasOrbit)
+            {
+                phys::kepler::evaluate(target.orbit, time, local);
+            }
+            return (target.primaryIndex >= 0)
+                       ? index.positionAt(target.primaryIndex, time) + local
+                       : local;
+        }
+
+        void pathStateAt(const CelestialIndex& index, const TargetPath& target, f64 time,
+                         WorldVec3& outPosition, WorldVec3& outVelocity)
+        {
+            WorldVec3 local = target.staticPosition;
+            WorldVec3 localVelocity{0.0};
+            if (target.hasOrbit)
+            {
+                phys::kepler::evaluate(target.orbit, time, local, &localVelocity);
+            }
+            if (target.primaryIndex >= 0)
+            {
+                WorldVec3 primaryPosition{};
+                WorldVec3 primaryVelocity{};
+                index.stateAt(target.primaryIndex, time, primaryPosition,
+                              &primaryVelocity);
+                outPosition = primaryPosition + local;
+                outVelocity = primaryVelocity + localVelocity;
+                return;
+            }
+            outPosition = local;
+            outVelocity = localVelocity;
+        }
+    } // namespace
+
     ClosestApproach closestApproachToBody(const CelestialIndex& index,
                                           const std::vector<TrajectorySegment>& segments,
                                           i32 targetIndex, u32 samplesPerSegment)
     {
-        ClosestApproach result{};
         if (targetIndex < 0 || static_cast<usize>(targetIndex) >= index.size())
         {
-            return result;
+            return {};
         }
+        return closestApproachToPath(index, segments, bodyTargetPath(index, targetIndex),
+                                     samplesPerSegment);
+    }
+
+    ClosestApproach closestApproachToPath(const CelestialIndex& index,
+                                          const std::vector<TrajectorySegment>& segments,
+                                          const TargetPath& target, u32 samplesPerSegment)
+    {
+        ClosestApproach result{};
         const u32 samples = std::max(samplesPerSegment, 16u);
 
         // Separation at an absolute time, on a given segment's conic.
@@ -454,7 +556,7 @@ namespace sw::space
             WorldVec3 relative{};
             phys::kepler::evaluate(segment.orbit, time, relative);
             const WorldVec3 ours = index.positionAt(segment.primaryIndex, time) + relative;
-            return glm::length(index.positionAt(targetIndex, time) - ours);
+            return glm::length(pathPositionAt(index, target, time) - ours);
         };
 
         const TrajectorySegment* bestSegment = nullptr;
@@ -556,7 +658,7 @@ namespace sw::space
                       &primaryVelocity);
         WorldVec3 targetPosition{};
         WorldVec3 targetVelocity{};
-        index.stateAt(targetIndex, bestTime, targetPosition, &targetVelocity);
+        pathStateAt(index, target, bestTime, targetPosition, targetVelocity);
 
         result.valid = true;
         result.timeSeconds = bestTime;
@@ -568,12 +670,11 @@ namespace sw::space
 
         // The target, in ITS OWN orbit's frame, so the marker lands on the
         // ring the map has drawn rather than out in the world.
-        const CelestialIndex::Body& target = index.body(static_cast<usize>(targetIndex));
-        if (target.hasOrbit != 0 && target.parentIndex >= 0)
+        if (target.primaryIndex >= 0)
         {
-            result.targetPrimaryIndex = target.parentIndex;
+            result.targetPrimaryIndex = target.primaryIndex;
             result.targetRelativePosition =
-                targetPosition - index.positionAt(target.parentIndex, bestTime);
+                targetPosition - index.positionAt(target.primaryIndex, bestTime);
         }
         else
         {

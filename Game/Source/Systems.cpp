@@ -751,3 +751,37 @@ namespace game
                     storedOre, storedIron);
     }
 } // namespace game
+
+namespace game
+{
+    void DebrisLifetimeSystem::update(sw::ecs::World& world, sw::f32 deltaSeconds)
+    {
+        if (!(deltaSeconds > 0.0f))
+        {
+            return;
+        }
+        // COLLECTED FIRST, DESTROYED AFTER. Removing an entity from inside the
+        // iteration it is being visited by is the one thing this ECS asks you
+        // not to do.
+        std::vector<sw::ecs::Entity> expired;
+        world.forEach<DebrisComponent>([&](sw::ecs::Entity entity,
+                                           DebrisComponent& debris) {
+            debris.secondsLeft -= deltaSeconds;
+            if (debris.secondsLeft <= 0.0f)
+            {
+                expired.push_back(entity);
+            }
+        });
+        for (const sw::ecs::Entity entity : expired)
+        {
+            world.destroyEntity(entity);
+        }
+        if (!expired.empty())
+        {
+            // Said out loud once per batch: "the panels are gone" and "the
+            // panels were never there" look the same in a screenshot, and this
+            // is the only line that tells them apart.
+            SW_LOG_INFO("Game", "DEBRIS: {} piece(s) swept up", expired.size());
+        }
+    }
+} // namespace game
